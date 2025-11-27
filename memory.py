@@ -7,10 +7,10 @@ Maintains terminology, style notes, and context across chunks.
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
 import json
-import re
 
-from pairs import SubtitlePair
-from utils import estimate_tokens
+from config import Config
+from pairs import SubtitlePair, pairs_to_json_list
+from utils import estimate_tokens, extract_json_from_response
 
 
 @dataclass
@@ -64,65 +64,161 @@ def init_global_memory() -> GlobalMemory:
     )
 
 
-def extract_terminology_from_chunk(pairs: List[SubtitlePair]) -> List[Dict[str, str]]:
-    """
-    Extract potential terminology from a chunk of subtitle pairs.
+@dataclass
+class TerminologyEntry:
+    """Structured terminology item returned by the extractor."""
 
-    Uses simple heuristics:
-    - Capitalized words in English that might be proper nouns
-    - Their corresponding positions in Chinese text
+    eng: str
+    zh: str
+    type: str
+    confidence: float
+    evidence_ids: List[int] = field(default_factory=list)
 
-    Args:
-        pairs: List of SubtitlePair objects
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to serializable dictionary."""
+        return {
+            "eng": self.eng,
+            "zh": self.zh,
+            "type": self.type,
+            "confidence": self.confidence,
+            "evidence_ids": self.evidence_ids
+        }
 
-    Returns:
-        List of terminology entries
-    """
-    terminology = []
 
-    # Pattern to find capitalized words (potential proper nouns)
-    # Look for words that start with capital letter and are 2+ characters
-    proper_noun_pattern = re.compile(r'\b[A-Z][a-z]{1,}(?:\s+[A-Z][a-z]+)*\b')
+VALID_TERMINOLOGY_TYPES = {
+    "person",
+    "place",
+    "organization",
+    "title",
+    "acronym",
+    "unit",
+    "ship",
+    "project",
+    "law",
+    "other"
+}
 
-    # Common words to exclude (not proper nouns)
-    exclude_words = {
-        "I", "I'm", "I've", "I'll", "The", "This", "That", "These", "Those",
-        "What", "When", "Where", "Why", "How", "Who", "Which",
-        "Yes", "No", "Okay", "OK", "Well", "So"
-    }
+MIN_TERM_CONFIDENCE = 0.6
 
-    seen_terms = set()
 
-    for pair in pairs:
-        # Find capitalized words in English
-        matches = proper_noun_pattern.findall(pair.eng)
 
-        for match in matches:
-            # Skip if in exclude list
-            if match in exclude_words:
-                continue
 
-            # Skip if we've already seen this term
-            if match in seen_terms:
-                continue
+def _coerce_evidence_ids(raw_ids: Any) -> List[int]:
+    """Normalize evidence id list coming from LLM output."""
+    if not isinstance(raw_ids, list):
+        return []
 
-            # For now, we don't have a good way to automatically extract
-            # the Chinese translation, so we just note the English term
-            # In a real system, you might use alignment or ask the LLM
-            terminology.append({
-                "eng": match,
-                "zh": "",  # Would need alignment or LLM extraction
-                "type": "unknown"
-            })
+    evidence: List[int] = []
+    for item in raw_ids:
+        try:
+            idx = int(item)
+        except (TypeError, ValueError):
+            continue
+        if idx not in evidence:
+            evidence.append(idx)
+        if len(evidence) >= 5:
+            break
+    return evidence
 
-            seen_terms.add(match)
 
-    return terminology
+def _parse_terminology_entries(raw_data: Any) -> List[TerminologyEntry]:
+    """Validate and convert raw JSON array to TerminologyEntry objects."""
+    if not isinstance(raw_data, list):
+        return []
+
+    entries: List[TerminologyEntry] = []
+    for item in raw_data:
+        if not isinstance(item, dict):
+            continue
+
+        eng = str(item.get("eng", "")).strip()
+        zh = str(item.get("zh", "")).strip()
+        type_value = str(item.get("type", "")).strip().lower()
+        confidence_raw = item.get("confidence")
+
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            continue
+
+        if not eng or not zh:
+            continue
+        if confidence < MIN_TERM_CONFIDENCE:
+            continue
+        if type_value not in VALID_TERMINOLOGY_TYPES:
+            continue
+
+        evidence_ids = _coerce_evidence_ids(item.get("evidence_ids", []))
+        entries.append(
+            TerminologyEntry(
+                eng=eng,
+                zh=zh,
+                type=type_value,
+                confidence=confidence,
+                evidence_ids=evidence_ids
+            )
+        )
+
+    return entries
+
+
+def extract_terminology_from_chunk(
+    pairs: List[SubtitlePair],
+    config: Config,
+    max_retries: int = 2
+) -> List[Dict[str, Any]]:
+    """Extract terminology by calling the dedicated terminology LLM."""
+    if not pairs:
+        return []
+
+    try:
+        from llm_client import call_openai_api, LLMAPIError  # Local import to avoid circular dependency
+        from prompts import (
+            TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT,
+            TERMINOLOGY_EXTRACTION_USER_TEMPLATE
+        )
+    except Exception:
+        # If prompts or client cannot be imported, fail silently to avoid breaking pipeline
+        return []
+
+    pairs_json = json.dumps(pairs_to_json_list(pairs), ensure_ascii=False, indent=2)
+    user_prompt = TERMINOLOGY_EXTRACTION_USER_TEMPLATE.replace("{{PAIRS_JSON}}", pairs_json)
+
+    messages = [
+        {"role": "system", "content": TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    try:
+        response_text, _ = call_openai_api(
+            messages,
+            config,
+            max_retries=max_retries,
+            model_settings=getattr(config, "terminology_model", None),
+            reasoning_effort=None
+        )
+    except Exception as e:  # Catch broad exceptions to avoid blocking main flow
+        if 'LLMAPIError' in locals() and isinstance(e, LLMAPIError):
+            print(f"  Warning: Terminology extraction failed: {e}")
+        else:
+            print(f"  Warning: Terminology extraction error: {e}")
+        return []
+
+    json_str = extract_json_from_response(response_text) or response_text.strip()
+    try:
+        raw_terms = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        print(f"  Warning: Failed to parse terminology response: {exc}")
+        return []
+
+    parsed_entries = _parse_terminology_entries(raw_terms)
+    return [entry.to_dict() for entry in parsed_entries]
 
 
 def update_global_memory(
     memory: GlobalMemory,
-    corrected_pairs: List[SubtitlePair]
+    corrected_pairs: List[SubtitlePair],
+    config: Config
 ) -> GlobalMemory:
     """
     Update global memory with information from corrected pairs.
@@ -130,12 +226,13 @@ def update_global_memory(
     Args:
         memory: Current GlobalMemory object
         corrected_pairs: List of corrected SubtitlePair objects
+        config: Runtime configuration (provides API/model info)
 
     Returns:
         Updated GlobalMemory object
     """
     # Extract new terminology from this chunk
-    new_terms = extract_terminology_from_chunk(corrected_pairs)
+    new_terms = extract_terminology_from_chunk(corrected_pairs, config)
 
     # Get existing English terms for deduplication
     existing_terms = {entry.get("eng", "") for entry in memory.glossary}

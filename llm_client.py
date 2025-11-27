@@ -6,10 +6,10 @@ Handles API calls for subtitle refinement and memory compression.
 
 import json
 import time
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 import requests
 
-from config import Config
+from config import Config, MainModelSettings, TerminologyModelSettings
 from pairs import SubtitlePair, pairs_to_json_list, pairs_from_json_list
 from memory import GlobalMemory, validate_memory_structure
 from prompts import (
@@ -31,7 +31,13 @@ class LLMAPIError(Exception):
 def call_openai_api(
     messages: List[dict],
     config: Config,
-    max_retries: int = 3
+    max_retries: int = 3,
+    *,
+    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    model_name: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+    reasoning_effort: Optional[str] = None,
+    temperature: Optional[float] = None
 ) -> Tuple[str, UsageStats]:
     """
     Call OpenAI-style API with retry logic.
@@ -40,6 +46,11 @@ def call_openai_api(
         messages: List of message dictionaries with 'role' and 'content'
         config: Configuration object
         max_retries: Maximum number of retry attempts
+        model_settings: Optional model settings block (defaults to config.main_model)
+        model_name: Optional explicit model override (rare; use model_settings instead)
+        max_output_tokens: Override completion token limit for this call
+        reasoning_effort: Override reasoning effort hint (GPT-5 only)
+        temperature: Override sampling temperature (defaults to model settings)
 
     Returns:
         Tuple of (response_text, usage_stats)
@@ -53,16 +64,34 @@ def call_openai_api(
         "Authorization": f"Bearer {config.api_key}"
     }
 
-    reasoning_effort = getattr(config, "reasoning_effort", "medium")
+    settings = model_settings or getattr(config, "main_model", None)
+
+    target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
+    target_output_tokens = max_output_tokens or (
+        settings.max_output_tokens if settings else getattr(config, "max_output_tokens", None)
+    )
+    default_reasoning = getattr(settings, "reasoning_effort", None)
+    target_reasoning = reasoning_effort if reasoning_effort is not None else default_reasoning
+    target_temperature = temperature if temperature is not None else getattr(settings, "temperature", None)
+
+    if not target_model:
+        raise LLMAPIError("Model name is not configured")
+
+    if target_output_tokens is None:
+        raise LLMAPIError("max_output_tokens must be specified for the selected model")
 
     attempt = 0
     while attempt < max_retries:
         payload = {
-            "model": config.model_name,
+            "model": target_model,
             "messages": messages,
-            "max_completion_tokens": config.max_output_tokens,
-            "reasoning_effort": reasoning_effort
+            "max_completion_tokens": target_output_tokens
         }
+
+        if target_reasoning and str(target_model).lower().startswith("gpt-5"):
+            payload["reasoning_effort"] = target_reasoning
+        if target_temperature is not None:
+            payload["temperature"] = target_temperature
 
         try:
             response = requests.post(
@@ -156,7 +185,11 @@ def refine_chunk(
 
     # Call API
     try:
-        response_text, usage = call_openai_api(messages, config)
+        response_text, usage = call_openai_api(
+            messages,
+            config,
+            model_settings=config.main_model
+        )
 
         # Try to extract and parse JSON from response
         json_str = extract_json_from_response(response_text)
@@ -224,7 +257,11 @@ def compress_memory(
 
     # Call API
     try:
-        response_text, usage = call_openai_api(messages, config)
+        response_text, usage = call_openai_api(
+            messages,
+            config,
+            model_settings=config.main_model
+        )
 
         # Extract JSON
         json_str = extract_json_from_response(response_text)
@@ -263,7 +300,12 @@ def test_api_connection(config: Config) -> bool:
         messages = [
             {"role": "user", "content": "Reply with just 'OK'"}
         ]
-        response_text, _ = call_openai_api(messages, config, max_retries=1)
+        response_text, _ = call_openai_api(
+            messages,
+            config,
+            max_retries=1,
+            model_settings=config.main_model
+        )
         return "OK" in response_text or "ok" in response_text.lower()
     except Exception as e:
         print(f"API connection test failed: {str(e)}")

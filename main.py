@@ -74,7 +74,7 @@ def estimate_base_prompt_tokens(config: Config) -> int:
     global_memory = init_global_memory()
     system_prompt = build_system_prompt(global_memory)
 
-    return estimate_tokens(system_prompt, config.model_name)
+    return estimate_tokens(system_prompt, config.main_model.name)
 
 
 def process_subtitles(
@@ -99,7 +99,7 @@ def process_subtitles(
         print(f"{'='*60}")
         print(f"Input:  {input_path}")
         print(f"Output: {output_path}")
-        print(f"Model:  {config.model_name}")
+        print(f"Model:  {config.main_model.name}")
         print(f"{'='*60}\n")
 
         # Step 1: Parse ASS file
@@ -137,7 +137,7 @@ def process_subtitles(
             print(f"  Chunking strategy: Token-based (max ~{config.chunk_token_soft_limit:,} tokens)")
 
         chunks = chunk_pairs(pairs, config, base_prompt_tokens)
-        print_chunk_statistics(chunks, config.model_name)
+        print_chunk_statistics(chunks, config.main_model.name)
 
         # Apply max_chunks limit if set
         if config.max_chunks is not None and config.max_chunks < len(chunks):
@@ -184,10 +184,10 @@ def process_subtitles(
                 apply_corrections_to_global_pairs(pairs, corrected_pairs)
 
                 # Update global memory
-                global_memory = update_global_memory(global_memory, corrected_pairs)
+                global_memory = update_global_memory(global_memory, corrected_pairs, config)
 
                 # Check if memory needs compression
-                memory_tokens = estimate_memory_tokens(global_memory, config.model_name)
+                memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
                 if memory_tokens > config.memory_token_limit:
                     print(f"  Memory size ({memory_tokens} tokens) exceeds limit. Compressing...")
                     try:
@@ -198,7 +198,7 @@ def process_subtitles(
                         global_memory = compressed_memory
                         total_usage = accumulate_usage(total_usage, compression_usage)
 
-                        new_size = estimate_memory_tokens(global_memory, config.model_name)
+                        new_size = estimate_memory_tokens(global_memory, config.main_model.name)
                         print(f"  Memory compressed: {memory_tokens} → {new_size} tokens")
                     except LLMAPIError as e:
                         print(f"  Warning: Memory compression failed: {e}")

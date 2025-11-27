@@ -379,31 +379,47 @@ Success rate:  100%
 Edit [config.py](config.py) to customize:
 
 ```python
+from dataclasses import dataclass, field
 from typing import Optional
 
 @dataclass
+class MainModelSettings:
+    name: str = "gpt-5.1"
+    max_output_tokens: int = 12000
+    reasoning_effort: str = "medium"
+    temperature: float = 1.0      # GPT-5.* needs more randomness for natural fixes
+
+
+@dataclass
+class TerminologyModelSettings:
+    name: str = "gpt-4o-mini"
+    max_output_tokens: int = 1500
+    temperature: float = 0.3      # Lower temperature keeps glossary extraction stable
+
+
+@dataclass
 class Config:
-    model_name: str = "gpt-5.1"              # LLM model to use
-    api_key: str = ""                         # OpenAI API key
+    api_key: str = ""
     api_base_url: str = "https://api.openai.com/v1"
-    max_context_tokens: int = 128000          # Model context window
-    max_output_tokens: int = 16000            # Max tokens per response
-    memory_token_limit: int = 2000            # Global memory size
-    chunk_token_soft_limit: int = 100000      # ~80% of context
-    pairs_per_chunk: Optional[int] = None     # Force fixed chunk size (optional)
-    reasoning_effort: str = "medium"          # Hint for GPT-5.1 reasoning effort ("none"/"low"/"medium"/"high")
-    api_timeout: int = 120                    # API request timeout (seconds)
-    verbose: bool = False                     # Verbose logging flag
-    very_verbose: bool = False                # Dump full API responses when True
-    debug_prompts: bool = False               # Print system prompts/memory when using -vvv
-    stats_interval: float = 1.0               # Refresh interval for verbose stats
-    dry_run: bool = False                     # Limit processing for tests
-    max_chunks: Optional[int] = None          # Cap number of chunks processed
-    price_per_1k_prompt_tokens: float = 0.03  # USD per 1K prompt tokens
-    price_per_1k_completion_tokens: float = 0.06  # USD per 1K completion
+    max_context_tokens: int = 128000
+    memory_token_limit: int = 2000
+    chunk_token_soft_limit: int = 100000
+    pairs_per_chunk: Optional[int] = None
+    api_timeout: int = 120
+    verbose: bool = False
+    very_verbose: bool = False
+    debug_prompts: bool = False
+    stats_interval: float = 1.0
+    dry_run: bool = False
+    max_chunks: Optional[int] = None
+    price_per_1k_prompt_tokens: float = 0.03
+    price_per_1k_completion_tokens: float = 0.06
+    main_model: MainModelSettings = field(default_factory=MainModelSettings)
+    terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
 ```
 
-- **Reasoning effort**: Adjust `reasoning_effort` to hint the model's reasoning depth (`"none"`, `"low"`, `"medium"`, `"high"`). The API currently returns reasoning token counts but not the free-form reasoning text.
+- **Reasoning effort**: Adjust `config.main_model.reasoning_effort` to hint GPT-5.1's reasoning depth (`"none"`, `"low"`, `"medium"`, `"high"`).
+- **Temperature**: Tune `config.main_model.temperature` (defaults to `1.0`) for the primary GPT-5 run, and `config.terminology_model.temperature` for the GPT-4o terminology extractor if you need stricter or looser extraction.
 
 ### Using Alternative API Providers
 
@@ -412,7 +428,11 @@ To use a different OpenAI-compatible API:
 ```python
 # In config.py
 api_base_url: str = "https://your-api-endpoint.com/v1"
-model_name: str = "your-model-name"
+
+@dataclass
+class MainModelSettings:
+    name: str = "your-model-name"
+    ...
 ```
 
 ## Error Handling

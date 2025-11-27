@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 - Removed the `thinking_enabled` config flag; the client now just sends the standard `reasoning_effort` hint supported by GPT-5.1
 - `UsageStats` tracks `reasoning_tokens`, and verbose previews display that count alongside the JSON snippet
 - Documentation updated to clarify that the API exposes reasoning tokens but not reasoning content
+- `config.py` now separates main GPT-5 model settings from the GPT-4o terminology extractor, with per-model temperature controls (main defaults to `1.0`, terminology defaults to `0.3`)
+- `call_openai_api()` automatically injects the proper temperature/reasoning hints based on the selected model configuration
 
 ## [1.0.2] - 2025-11-27
 

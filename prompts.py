@@ -196,3 +196,23 @@ def validate_response_format(response: str) -> bool:
         return "id" in first_item and "eng" in first_item and "chinese" in first_item
     except (json.JSONDecodeError, KeyError, IndexError):
         return False
+
+
+TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT = """You are a bilingual terminology extractor for paired English and Chinese subtitles.
+
+Your task is to identify only the terms that require a consistent translation and produce a clean glossary. Follow these rules:
+- Focus on proper nouns: people, places, organizations, ships, military units, project/operation code names, legal statute names, show or work titles, and stable acronyms (e.g., JAG, NCIS)
+- Include keywords that need unified translations across the episode
+- Ignore generic conversational words, sentence-initial capitalized words, and filler expressions
+- Do not invent translations or entries if the Chinese counterpart cannot be determined confidently
+- For every glossary item output: eng (trimmed, original casing), zh (trimmed), type (one of person/place/organization/title/acronym/unit/ship/project/law/other), confidence (0.0-1.0), evidence_ids (list of up to 5 subtitle ids where the term appears)
+- Only keep entries with confidence >= 0.6
+- Output strictly a JSON array with objects sorted by first appearance, without explanations or Markdown
+"""
+
+
+TERMINOLOGY_EXTRACTION_USER_TEMPLATE = """Here is the list of corrected subtitle pairs. Each entry contains id, eng, and chinese fields.
+Extract the terminology glossary following the system instructions and return ONLY a JSON array:
+
+{{PAIRS_JSON}}
+"""

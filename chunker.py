@@ -48,8 +48,10 @@ def chunk_pairs(
     safety_margin = 1000  # Reserve for JSON formatting overhead
     max_chunk_tokens = available_tokens - safety_margin
 
+    current_model = config.main_model.name
+
     for pair in pairs:
-        pair_tokens = estimate_pair_tokens(pair, config.model_name)
+        pair_tokens = estimate_pair_tokens(pair, current_model)
 
         # Check if adding this pair would exceed the limit
         if current_chunk and (current_chunk_tokens + pair_tokens > max_chunk_tokens):
