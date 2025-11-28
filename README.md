@@ -374,7 +374,7 @@ Success rate:  100%
 - Natural phrasing: ~15% of lines
 - All ASS tags preserved: 100%
 
-## Configuration
+## Configuration (v0.0.5)
 
 Edit [config.py](config.py) to customize:
 
@@ -415,6 +415,9 @@ class Config:
     price_per_1k_prompt_tokens: float = 0.03
     price_per_1k_completion_tokens: float = 0.06
     glossary_max_entries: int = 100
+    glossary_policy: str = "lock"
+    user_prompt_path: str = "custom_main_prompt.md"
+    terminology_min_confidence: float = 0.6
     main_model: MainModelSettings = field(default_factory=MainModelSettings)
     terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
 ```
@@ -422,6 +425,9 @@ class Config:
 - **Reasoning effort**: Adjust `config.main_model.reasoning_effort` to hint GPT-5.1's reasoning depth (`"none"`, `"low"`, `"medium"`, `"high"`).
 - **Temperature**: Tune `config.main_model.temperature` (defaults to `1.0`) for the primary GPT-5 run, and `config.terminology_model.temperature` for the GPT-4o terminology extractor if you need stricter or looser extraction.
 - **Glossary limit**: Adjust `config.glossary_max_entries` (default `100`) if you need to retain more/fewer global terminology entries in the prompt.
+- **Glossary policy**: `config.glossary_policy="lock"` means learned terminology can only add new entries and will never override user-defined mappings from the user glossary.
+- **User prompt file**: Set `config.user_prompt_path` to point at a Markdown file whose contents are split into extra system instructions and a user glossary (`* Term -> 术语`).
+- **Terminology confidence**: `config.terminology_min_confidence` controls both the GPT‑4o prompt threshold and local filtering of extracted terms.
 
 ### Using Alternative API Providers
 

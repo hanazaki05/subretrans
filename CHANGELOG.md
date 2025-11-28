@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.5] - 2025-11-29
+
+### Added
+- User-defined main prompt support via `Config.user_prompt_path` (default `custom_main_prompt.md`): the file is split into extra system instructions and a high-priority user glossary.
+- `GlobalMemory` now distinguishes `user_glossary` (authoritative) from learned `glossary` (supplementary), and the system prompt prints them separately in `-vvv` mode.
+
+### Changed
+- Introduced `Config.glossary_policy = "lock"` (default) so learned terminology can only add new entries and will never override or conflict with user-defined glossary entries; conflicts are logged.
+- Terminology extraction prompt and post-filter now share a single configurable threshold `Config.terminology_min_confidence` (default `0.6`), keeping the model's "keep" rule consistent with local filtering.
+- In very verbose mode, terminology calls print the raw GPT‑4o output plus a compact debug summary (`parsed N`, `added M`, `user-locked`, `existing`) after each chunk.
+- The main refinement system prompt is now built as `BASE_CORE + user instructions + memory section + CRITICAL tail`, ensuring the "ONLY return JSON" constraint always appears at the end of the prompt.
+
 ## [0.0.4] - 2025-11-28
 
 ### Changed
