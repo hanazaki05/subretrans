@@ -557,6 +557,8 @@ Dialogue: -1,0:00:02.56,0:00:04.00,English3,NTP,0000,0000,0000,,Tonight, on JAG.
 - **LLM Quality**: Output quality depends on the model used (GPT-5.1 recommended)
 - **Edge Cases**: May not preserve all complex ASS formatting in rare cases
 - **Single File Processing**: Processes one file at a time (no batch mode)
+Here are two polished versions—you can choose the tone you prefer:
+- **No compatibility with other API formats is guaranteed:** There are plans to support OpenAI-compatible APIs (e.g., NewAPI).
 
 ## Future Enhancements
 
@@ -583,7 +585,7 @@ All dependencies are listed in [requirements.txt](requirements.txt).
 
 ## License
 
-This tool is provided as-is for subtitle refinement purposes. No warranty is provided.
+This repository is licensed under the MIT License. The example subtitle is not part of the licensed content, and its copyright holder retains all rights.
 
 ## Contributing
 
