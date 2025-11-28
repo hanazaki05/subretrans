@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.4] - 2025-11-28
+## [0.0.4] - 2025-11-28
 
 ### Changed
 - `config.py` now separates main GPT-5.1 settings (`MainModelSettings`) from the dedicated GPT-4o terminology extractor (`TerminologyModelSettings`), each with their own temperature and token limits.
@@ -10,7 +10,7 @@ All notable changes to this project will be documented in this file.
 - `memory.py` hooks into the new terminology model: each chunk is sent to GPT-4o-mini via `extract_terminology_from_chunk()`, which validates the returned glossary entries (confidence ≥ 0.6, normalized types, evidence trimming) before merging.
 - Global glossary growth is configurable via `config.glossary_max_entries` (default 100) to balance context richness vs. prompt size.
 
-## [1.0.3] - 2025-11-27
+## [0.0.3] - 2025-11-27
 
 ### Added
 - Verbose preview now shows reasoning token counts (from API usage) instead of truncated reasoning text
@@ -24,7 +24,7 @@ All notable changes to this project will be documented in this file.
 - `config.py` now separates main GPT-5 model settings from the GPT-4o terminology extractor, with per-model temperature controls (main defaults to `1.0`, terminology defaults to `0.3`)
 - `call_openai_api()` automatically injects the proper temperature/reasoning hints based on the selected model configuration
 
-## [1.0.2] - 2025-11-27
+## [0.0.2] - 2025-11-27
 
 ### Added
 - **Verbose mode** (`-v` or `--verbose`)
@@ -90,7 +90,7 @@ Processing chunk 1/2 (30 pairs)...
 
 ---
 
-## [1.0.1] - 2025-11-27
+## [0.0.1] - 2025-11-27
 
 ### Added
 - **Pair-based chunking option** (`--pairs-per-chunk N`)
@@ -130,7 +130,7 @@ python main.py input.ass output.ass
 
 ---
 
-## [1.0.0] - 2025-11-27
+## [0.0.0] - 2025-11-27
 
 ### Initial Release
 - Complete subtitle refinement tool for bilingual (English-Chinese) ASS files

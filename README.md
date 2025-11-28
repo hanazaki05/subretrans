@@ -627,6 +627,6 @@ For issues, questions, or suggestions:
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: November 27, 2025
-**Status**: Production Ready ✅
+**Version**: 0.0.4
+**Last Updated**: November 28, 2025
+**Status**: Use at your own dangers
