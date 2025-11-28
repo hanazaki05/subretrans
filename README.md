@@ -387,7 +387,7 @@ class MainModelSettings:
     name: str = "gpt-5.1"
     max_output_tokens: int = 12000
     reasoning_effort: str = "medium"
-    temperature: float = 1.0      # GPT-5.* needs more randomness for natural fixes
+    temperature: float = 1.0      # GPT-5.* has no temperature setting
 
 
 @dataclass

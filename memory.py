@@ -19,11 +19,13 @@ class GlobalMemory:
     Global memory structure for cross-chunk information.
 
     Attributes:
-        glossary: List of terminology entries (people, places, organizations)
+        user_glossary: High-priority user-defined terminology entries (authoritative)
+        glossary: LLM-learned terminology entries (supplementary)
         style_notes: Style and tone guidelines
         summary: Brief context or plot summary
     """
 
+    user_glossary: List[Dict[str, str]] = field(default_factory=list)
     glossary: List[Dict[str, str]] = field(default_factory=list)
     style_notes: str = ""
     summary: str = ""
@@ -31,6 +33,7 @@ class GlobalMemory:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
+            "user_glossary": self.user_glossary,
             "glossary": self.glossary,
             "style_notes": self.style_notes,
             "summary": self.summary
@@ -40,6 +43,7 @@ class GlobalMemory:
     def from_dict(cls, data: Dict[str, Any]) -> 'GlobalMemory':
         """Create GlobalMemory from dictionary."""
         return cls(
+            user_glossary=data.get("user_glossary", []),
             glossary=data.get("glossary", []),
             style_notes=data.get("style_notes", ""),
             summary=data.get("summary", "")
@@ -58,6 +62,7 @@ def init_global_memory() -> GlobalMemory:
         New GlobalMemory instance
     """
     return GlobalMemory(
+        user_glossary=[],
         glossary=[],
         style_notes="",
         summary=""
@@ -174,7 +179,7 @@ def extract_terminology_from_chunk(
     try:
         from llm_client import call_openai_api, LLMAPIError  # Local import to avoid circular dependency
         from prompts import (
-            TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT,
+            build_terminology_system_prompt,
             TERMINOLOGY_EXTRACTION_USER_TEMPLATE
         )
     except Exception:
@@ -182,10 +187,24 @@ def extract_terminology_from_chunk(
         return []
 
     pairs_json = json.dumps(pairs_to_json_list(pairs), ensure_ascii=False, indent=2)
-    user_prompt = TERMINOLOGY_EXTRACTION_USER_TEMPLATE.replace("{{PAIRS_JSON}}", pairs_json)
+
+    # User glossary is injected as a JSON array (may be empty)
+    user_glossary_payload = user_glossary or []
+    user_glossary_json = json.dumps(user_glossary_payload, ensure_ascii=False, indent=2)
+
+    user_prompt = (
+        TERMINOLOGY_EXTRACTION_USER_TEMPLATE
+        .replace("{{PAIRS_JSON}}", pairs_json)
+        .replace("{{USER_GLOSSARY_JSON}}", user_glossary_json)
+    )
+
+    # Use configured confidence threshold for both prompt and post-filtering
+    min_conf = getattr(config, "terminology_min_confidence", 0.6)
+
+    system_prompt = build_terminology_system_prompt(min_conf)
 
     messages = [
-        {"role": "system", "content": TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
 
@@ -197,6 +216,11 @@ def extract_terminology_from_chunk(
             model_settings=getattr(config, "terminology_model", None),
             reasoning_effort=None
         )
+        # Optional debug: show raw terminology model output in very verbose mode
+        if getattr(config, "very_verbose", False):
+            print("\n  [Terminology extraction raw response]:\n")
+            print(response_text.rstrip() if response_text else "[Empty response]")
+            print()
     except Exception as e:  # Catch broad exceptions to avoid blocking main flow
         if 'LLMAPIError' in locals() and isinstance(e, LLMAPIError):
             print(f"  Warning: Terminology extraction failed: {e}")
@@ -211,7 +235,11 @@ def extract_terminology_from_chunk(
         print(f"  Warning: Failed to parse terminology response: {exc}")
         return []
 
-    parsed_entries = _parse_terminology_entries(raw_terms)
+    parsed_entries = _parse_terminology_entries(raw_terms, min_confidence=min_conf)
+
+    if getattr(config, "verbose", False):
+        print(f"  Terminology extractor parsed {len(parsed_entries)} candidate term(s)")
+
     return [entry.to_dict() for entry in parsed_entries]
 
 
@@ -232,16 +260,52 @@ def update_global_memory(
         Updated GlobalMemory object
     """
     # Extract new terminology from this chunk
-    new_terms = extract_terminology_from_chunk(corrected_pairs, config)
+    new_terms = extract_terminology_from_chunk(
+        corrected_pairs,
+        config,
+        user_glossary=memory.user_glossary,
+    )
 
-    # Get existing English terms for deduplication
+    # Build lookup for user glossary (case-insensitive) for lock policy
+    user_map = {entry.get("eng", "").strip().casefold(): entry for entry in memory.user_glossary}
+
+    # Get existing English terms for deduplication (learned glossary only)
     existing_terms = {entry.get("eng", "") for entry in memory.glossary}
 
-    # Add only new terms
+    # Add only new terms, respecting glossary_policy
+    policy = getattr(config, "glossary_policy", "lock")
+
+    added = 0
+    skipped_conflict = 0
+    skipped_user_dup = 0
+    skipped_existing = 0
+
     for term in new_terms:
-        if term["eng"] and term["eng"] not in existing_terms:
-            memory.glossary.append(term)
-            existing_terms.add(term["eng"])
+        eng = term.get("eng", "").strip()
+        zh = term.get("zh", "").strip()
+        if not eng or not zh:
+            continue
+
+        eng_key = eng.casefold()
+
+        if policy == "lock" and eng_key in user_map:
+            user_zh = user_map[eng_key].get("zh", "").strip()
+            if user_zh and user_zh != zh:
+                # Conflict: learned translation differs from user glossary; log and skip
+                print(f"  [Glossary lock] Skip learned term '{eng}' -> '{zh}' (conflicts with user '{user_zh}')")
+                skipped_conflict += 1
+            else:
+                skipped_user_dup += 1
+            # Either way, do not add if user glossary already defines this term
+            continue
+
+        if eng in existing_terms:
+            skipped_existing += 1
+            continue
+
+        memory.glossary.append(term)
+        existing_terms.add(eng)
+        added += 1
 
     # Limit glossary size to prevent unbounded growth
     # Keep most recent entries if we exceed limit
@@ -249,6 +313,14 @@ def update_global_memory(
     if max_glossary_entries and max_glossary_entries > 0:
         if len(memory.glossary) > max_glossary_entries:
             memory.glossary = memory.glossary[-max_glossary_entries:]
+
+    if getattr(config, "verbose", False) and new_terms:
+        locked_total = skipped_conflict + skipped_user_dup
+        print(
+            f"  Terminology merge: {len(new_terms)} candidate(s), "
+            f"added {added}, user-locked {locked_total} (conflicts {skipped_conflict}, duplicates {skipped_user_dup}), "
+            f"already in learned glossary {skipped_existing}"
+        )
 
     return memory
 

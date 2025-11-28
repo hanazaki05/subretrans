@@ -1,10 +1,10 @@
-"""
-Prompt templates for LLM interactions.
+"""Prompt templates and helpers for LLM interactions.
 
-Contains system prompts for subtitle refinement and memory compression.
+Contains system prompts for subtitle refinement, memory compression, and
+terminology extraction, plus utilities to inject user customization.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Dict, Tuple
 
 if TYPE_CHECKING:
     from memory import GlobalMemory
@@ -70,9 +70,19 @@ def build_memory_section(global_memory: 'GlobalMemory') -> str:
 
     sections = []
 
-    # Add glossary if present
+    # Add user glossary first (highest priority)
+    user_glossary = getattr(global_memory, "user_glossary", None)
+    if user_glossary:
+        sections.append("\n\n**User Terminology (authoritative):**")
+        for entry in user_glossary:
+            eng = entry.get("eng", "")
+            zh = entry.get("zh", "")
+            if eng and zh:
+                sections.append(f"- {eng}: {zh}")
+
+    # Add learned glossary if present
     if global_memory.glossary:
-        sections.append("\n\n**Terminology Reference:**")
+        sections.append("\n\n**Learned Terminology (supplement):**")
         for entry in global_memory.glossary:
             eng = entry.get("eng", "")
             zh = entry.get("zh", "")
@@ -214,7 +224,68 @@ Your task is to identify only the terms that require a consistent translation an
 
 
 TERMINOLOGY_EXTRACTION_USER_TEMPLATE = """Here is the list of corrected subtitle pairs. Each entry contains id, eng, and chinese fields.
-Extract the terminology glossary following the system instructions and return ONLY a JSON array:
+Extract the terminology glossary following the system instructions and return ONLY a JSON array.
 
+You will also receive an optional "user glossary" that already defines some eng→zh mappings.
+- Do NOT output entries whose eng already appears in the user glossary.
+- Do NOT output any entry whose zh conflicts with the user glossary for the same eng.
+
+Subtitle pairs (JSON):
 {{PAIRS_JSON}}
+
+User glossary (JSON array, may be empty):
+{{USER_GLOSSARY_JSON}}
 """
+
+
+def build_terminology_system_prompt(min_confidence: float) -> str:
+    """Build the system prompt for terminology extraction using the configured confidence.
+
+    The numerical threshold shown to the model is kept in sync with the
+    post-filtering threshold used in memory.py via Config.terminology_min_confidence.
+    """
+
+    # Keep a short, human-friendly representation (e.g., 0.6 rather than 0.600000)
+    if min_confidence is None:
+        min_confidence = 0.6
+    return TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT_TEMPLATE.format(min_conf=min_confidence)
+
+
+def split_user_prompt_and_glossary(text: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Split a custom main prompt into instructions and a simple eng→zh glossary.
+
+    Lines like "* Term -> 术语" or "- Term -> 术语" are parsed into glossary entries
+    and removed from the instruction text.
+    """
+    import re
+
+    instructions: List[str] = []
+    glossary: List[Dict[str, str]] = []
+
+    pattern = re.compile(r"^\s*[-*]\s+(.+?)\s*->\s*(.+?)\s*$")
+
+    skip_prefixes = {
+        "Use the following name translations consistently:",
+        "Use the following institutional correspondences:"
+    }
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\n")
+
+        # Drop section headers that only introduce the glossary list
+        stripped = line.strip()
+        if stripped in skip_prefixes:
+            continue
+
+        match = pattern.match(line)
+        if match:
+            eng = match.group(1).strip()
+            zh = match.group(2).strip()
+            if eng and zh:
+                glossary.append({"eng": eng, "zh": zh})
+            # Skip adding this line to instructions
+            continue
+        instructions.append(line)
+
+    instructions_text = "\n".join(instructions).strip()
+    return instructions_text, glossary

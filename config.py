@@ -56,6 +56,9 @@ class Config:
     price_per_1k_prompt_tokens: float = 0.03
     price_per_1k_completion_tokens: float = 0.06
     glossary_max_entries: int = 100
+    glossary_policy: str = "lock"  # lock: user glossary is authoritative; learned terms cannot override
+    user_prompt_path: str = "custom_main_prompt.md"  # Relative or absolute path to extra user prompt
+    terminology_min_confidence: float = 0.6  # Minimum confidence for extracted terminology entries
     main_model: MainModelSettings = field(default_factory=MainModelSettings)
     terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
 
@@ -96,7 +99,10 @@ def load_config(
     very_verbose: bool = False,
     debug_prompts: bool = False,
     stats_interval: Optional[float] = None,
-    glossary_limit: Optional[int] = None
+    glossary_limit: Optional[int] = None,
+    glossary_policy: Optional[str] = None,
+    user_prompt_path: Optional[str] = None,
+    terminology_min_confidence: Optional[float] = None
 ) -> Config:
     """
     Load configuration with optional overrides.
@@ -115,6 +121,9 @@ def load_config(
         debug_prompts: Print system prompt/memory for debugging
         stats_interval: Stats refresh interval in seconds
         glossary_limit: Maximum number of terminology entries to keep in memory
+        glossary_policy: Glossary merge policy ("lock" currently supported)
+        user_prompt_path: Path to extra user prompt file (default: "custom_main_prompt.md")
+        terminology_min_confidence: Minimum confidence for terminology entries (both prompt and filter)
 
     Returns:
         Config object with specified settings
@@ -150,5 +159,11 @@ def load_config(
         config.stats_interval = stats_interval
     if glossary_limit is not None:
         config.glossary_max_entries = glossary_limit
+    if glossary_policy is not None:
+        config.glossary_policy = glossary_policy
+    if user_prompt_path is not None:
+        config.user_prompt_path = user_prompt_path
+    if terminology_min_confidence is not None:
+        config.terminology_min_confidence = terminology_min_confidence
 
     return config

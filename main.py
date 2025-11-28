@@ -22,6 +22,7 @@ from ass_parser import (
 )
 from chunker import chunk_pairs, print_chunk_statistics
 from memory import (
+    GlobalMemory,
     init_global_memory,
     update_global_memory,
     estimate_memory_tokens
@@ -34,7 +35,7 @@ from stats import (
     print_usage_report,
     print_chunk_progress
 )
-from prompts import build_system_prompt
+from prompts import build_system_prompt, set_user_instruction, split_user_prompt_and_glossary
 from utils import estimate_tokens, print_verbose_preview, format_time
 
 
@@ -60,7 +61,7 @@ def apply_corrections_to_global_pairs(
             pair.chinese = corrected.chinese
 
 
-def estimate_base_prompt_tokens(config: Config) -> int:
+def estimate_base_prompt_tokens(config: Config, global_memory: GlobalMemory) -> int:
     """
     Estimate tokens for base prompt (system prompt + memory).
 
@@ -70,8 +71,7 @@ def estimate_base_prompt_tokens(config: Config) -> int:
     Returns:
         Estimated token count
     """
-    # Build a sample system prompt with empty memory
-    global_memory = init_global_memory()
+    # Build a sample system prompt with current memory (including user glossary)
     system_prompt = build_system_prompt(global_memory)
 
     return estimate_tokens(system_prompt, config.main_model.name)
@@ -126,9 +126,30 @@ def process_subtitles(
             pairs = pairs[:min(10, len(pairs))]  # Limit to first 10 pairs
             print(f"  [DRY RUN] Limited to {len(pairs)} pairs (from {original_count})")
 
-        # Step 3: Chunk pairs
+        # Step 3: Initialize global memory and user-defined prompt/glossary
+        global_memory = init_global_memory()
+
+        # Load custom main prompt (if present) and split into instructions + user glossary
+        prompt_path_cfg = getattr(config, "user_prompt_path", "custom_main_prompt.md")
+        if os.path.isabs(prompt_path_cfg):
+            custom_prompt_path = prompt_path_cfg
+        else:
+            custom_prompt_path = os.path.join(os.path.dirname(__file__), prompt_path_cfg)
+        if os.path.exists(custom_prompt_path):
+            try:
+                with open(custom_prompt_path, "r", encoding="utf-8") as f:
+                    custom_text = f.read()
+                user_instructions, user_glossary = split_user_prompt_and_glossary(custom_text)
+                if user_instructions:
+                    set_user_instruction(user_instructions)
+                if user_glossary:
+                    global_memory.user_glossary = user_glossary
+            except Exception as e:
+                print(f"  Warning: Failed to load custom_main_prompt.md: {e}")
+
+        # Step 4: Chunk pairs
         print("\nStep 3: Splitting into chunks...")
-        base_prompt_tokens = estimate_base_prompt_tokens(config)
+        base_prompt_tokens = estimate_base_prompt_tokens(config, global_memory)
         print(f"  Base prompt tokens: {base_prompt_tokens:,}")
 
         if config.pairs_per_chunk:
@@ -144,8 +165,7 @@ def process_subtitles(
             print(f"  [LIMITED] Processing only first {config.max_chunks} chunks (from {len(chunks)})")
             chunks = chunks[:config.max_chunks]
 
-        # Step 4: Initialize global memory and stats
-        global_memory = init_global_memory()
+        # Step 4: Initialize stats (memory already initialized above)
         total_usage = init_usage_stats()
 
         # Step 5: Process each chunk
