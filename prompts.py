@@ -39,21 +39,41 @@ Your task is to review and correct subtitle pairs while following these rules:
 7. Fix obvious spacing issues (e.g., "Hello,world" → "Hello, world")
 
 **Chinese Subtitle Rules:**
-1. Ensure translation accuracy and natural flow
-2. Maintain consistency with context and character voices
-3. Use conversational, natural Chinese (avoid overly formal language)
-4. **Preserve all ASS formatting tags exactly as they appear**
-5. Ensure consistent terminology throughout
-6. Fix any awkward or unnatural phrasing
-7. **If a sentence ends with a period or comma, remove that period or comma**
+Optimized Chinese Subtitle Rules:
+  1.Ensure translation accuracy and natural flow
+  2.Maintain consistency with context and character voices
+  3.Use conversational, natural Chinese (avoid overly formal language)
+  4.Preserve all ASS formatting tags exactly as they appear
+Terminology & Name Handling (Strict Order):
+  5. PRIORITY 1 (Glossary Override): If the terminology glossary explicitly defines a term or name, strictly follow that definition regardless of the language (English or Chinese). This rule overrides all others.
+  6. PRIORITY 2 (Acronyms): Keep initial-based nicknames (e.g., "AJ", "DJ", "CC") in their original English form.
+  7. PRIORITY 3 (Standard Translation): For all other personal names (e.g., Chris, Benny), translate them into standard Mandarin Chinese transliterations (标准普通话音译). Ensure the translation chosen is consistent across all subtitles.
+Other Rules:
+  8. Fix any awkward or unnatural phrasing
+  9. **If a sentence ends with a period or comma, remove that period or comma**
+
+Examples:
+  Input: [
+    {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
+    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我需要走了。"},
+    {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
+    {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"}
+    ]
+  Output: [
+    {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
+    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我得走了"},
+    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
+    {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"}
+   ]
 
 **Important Guidelines:**
 - Maintain the subtitle's original intent and meaning
 - Keep subtitles concise and readable
 - Preserve timing and formatting information
 - DO NOT add explanations or comments
-- Output ONLY valid JSON
+- Output ONLY valid JSON"""
 
+BASE_SYSTEM_PROMPT_CRITICAL = """STRICT ADHERENCE REQUIRED: You MUST follow the Input/Output format exactly as defined below. 
 **Input/Output Format:**
 You will receive a JSON array of subtitle pairs. Each pair has:
 - "id": unique identifier
@@ -63,11 +83,24 @@ You will receive a JSON array of subtitle pairs. Each pair has:
 Return a JSON array with the SAME structure, containing your corrections.
 
 Example:
-Input: [{"id": 0, "eng": "hello world", "chinese": "你好世界"}]
-Output: [{"id": 0, "eng": "Hello world.", "chinese": "你好，世界"}]"""
+  Input: [{"id": 0, "eng": "hello world", "chinese": "你好世界"}]
+  Output: [{"id": 0, "eng": "Hello world.", "chinese": "你好，世界"}]
 
+**Additional Few-Shot Examples for Clarification:**
+  Input: [
+    {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
+    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我需要走了。"},
+    {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
+    {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"}
+    ]
+  Output: [
+    {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
+    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我得走了"},
+    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
+    {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"}
+   ]
 
-BASE_SYSTEM_PROMPT_CRITICAL = """**CRITICAL:** Return ONLY the JSON array. No explanations, no markdown, no extra text."""
+**CRITICAL:** Return ONLY the JSON array. No explanations, no markdown, no extra text."""
 
 
 def build_memory_section(global_memory: 'GlobalMemory') -> str:
