@@ -47,7 +47,7 @@ user:
 
 # Runtime options (can be overridden by CLI flags)
 runtime:
-  use_streaming: true  # Use streaming API for real-time output (recommended)
+  use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
   verbose: false  # Enable verbose output with detailed progress
   very_verbose: false  # Dump full API responses (requires verbose)
   debug_prompts: false  # Print system prompt/memory (requires very_verbose)
