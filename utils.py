@@ -229,7 +229,7 @@ def print_verbose_preview(_response_text: str, reasoning_tokens: int, _clear_lin
         reasoning_tokens: Reasoning tokens reported by API (if available)
         _clear_lines: Number of lines to clear before printing (kept for compatibility, not used)
     """
-    print(f"  Reasoning tokens: {reasoning_tokens:,}")
+    print(f"  Reasoning tokens: {reasoning_tokens:,}", flush=True)
 
 
 def format_time(seconds: float) -> str:
