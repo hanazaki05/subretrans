@@ -200,6 +200,17 @@ def refine_chunk(
 
         # Validate format before parsing
         if not validate_response_format(json_str):
+            # When the model does not return the expected JSON array, print
+            # the raw response to help debugging before raising an error.
+            try:
+                preview = (response_text or "").rstrip()
+            except Exception:
+                preview = "[Unavailable raw response]"
+
+            print("\n  [Raw LLM response (invalid JSON)]:\n")
+            print(preview if preview else "[Empty response]")
+            print()
+
             raise LLMAPIError("Response is not in expected JSON format")
 
         # Parse JSON
