@@ -25,7 +25,7 @@ class TerminologyModelSettings:
 
     name: str = "gpt-4o-mini"
     max_output_tokens: int = 1800
-    temperature: float = 0.35
+    temperature: float = 0.5
 
 
 @dataclass
@@ -46,7 +46,7 @@ class Config:
     memory_token_limit: int = 4000
     chunk_token_soft_limit: int = 60000  # ~0.8 * max_context_tokens
     pairs_per_chunk: Optional[int] = None  # If set, override token-based chunking
-    api_timeout: int = 240  # API request timeout in seconds
+    api_timeout: int = 280  # API request timeout in seconds
     verbose: bool = False  # Enable verbose output with detailed progress
     very_verbose: bool = False  # Dump full API responses (requires verbose)
     debug_prompts: bool = False  # Print system prompt/memory (requires very verbose)
