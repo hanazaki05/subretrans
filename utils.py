@@ -220,50 +220,16 @@ def validate_json_structure(data: any, expected_keys: List[str]) -> bool:
     return True
 
 
-def print_verbose_preview(response_text: str, reasoning_tokens: int, clear_lines: int = 4) -> None:
+def print_verbose_preview(_response_text: str, reasoning_tokens: int, _clear_lines: int = 4) -> None:
     """
-    Print a 4-line preview of response with refreshable display.
+    Print reasoning token count.
 
     Args:
-        response_text: Response text from LLM (subtitle pairs JSON)
+        _response_text: Response text from LLM (kept for compatibility, not used)
         reasoning_tokens: Reasoning tokens reported by API (if available)
-        clear_lines: Number of lines to clear before printing
+        _clear_lines: Number of lines to clear before printing (kept for compatibility, not used)
     """
-    import sys
-
-    # Move cursor up and clear lines
-    if clear_lines > 0:
-        for _ in range(clear_lines):
-            sys.stdout.write('\033[F')  # Move cursor up one line
-            sys.stdout.write('\033[K')  # Clear line
-
-    def _flatten_to_preview_lines(text: str) -> List[str]:
-        """Compact whitespace and convert to wrapped preview lines."""
-        import textwrap
-
-        if not text:
-            return []
-
-        # Collapse internal whitespace/newlines to keep preview on one line
-        flattened = " ".join(text.split())
-        if not flattened:
-            return []
-
-        # Wrap into ~100-character chunks for readability
-        wrapped = textwrap.wrap(flattened, width=100, break_long_words=True, break_on_hyphens=False)
-        return wrapped or [flattened]
-
-    # Extract preview from response text (first 2 wrapped sections)
-    response_lines = _flatten_to_preview_lines(response_text)
-    response_preview_1 = response_lines[0] if len(response_lines) > 0 else ""
-    response_preview_2 = response_lines[1] if len(response_lines) > 1 else ""
-
-    # Print preview lines plus reasoning token count
-    print(f"  Response: {response_preview_1}")
-    print(f"            {response_preview_2}")
     print(f"  Reasoning tokens: {reasoning_tokens:,}")
-
-    sys.stdout.flush()
 
 
 def format_time(seconds: float) -> str:
