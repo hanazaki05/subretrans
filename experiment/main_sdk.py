@@ -246,7 +246,6 @@ def process_subtitles(
                 # Print timing if verbose
                 if config.verbose:
                     print(f"  Time: {format_time(elapsed_time)}")
-                    # Print 4-line preview
                     print()  # Add blank line for spacing
                     print_verbose_preview(response_text, usage.reasoning_tokens, clear_lines=0)
                     if config.very_verbose:
