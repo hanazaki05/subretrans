@@ -5,26 +5,28 @@
 api:
   key_file: "../key"  # Path to file containing API key (relative to this config file)
   base_url: "https://api.openai.com/v1"
-  timeout: 280  # API request timeout in seconds
+  timeout: 800  # API request timeout in seconds
 
 # Main refinement model settings (GPT-5.* for subtitle correction)
 main_model:
   name: "gpt-5-mini"
-  max_output_tokens: 12000
-  reasoning_effort: "medium"  # none, low, medium, high
+  #name: "gpt-4o"
+  max_output_tokens: 27000
+  reasoning_effort: "low"  # none, low, medium, high
   temperature: 1.0
+  #temperature: 0.4
 
 # Terminology extraction model settings (GPT-4o-mini for glossary extraction)
 terminology_model:
   name: "gpt-4o-mini"
   max_output_tokens: 1800
-  temperature: 0.5
+  temperature: 0.45
 
 # Token management
 tokens:
-  max_context_tokens: 128000
+  max_context_tokens: 160000
   memory_token_limit: 4000
-  chunk_token_soft_limit: 60000
+  chunk_token_soft_limit: 85000
 
 # Chunking strategy
 chunking:
