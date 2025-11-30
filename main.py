@@ -193,7 +193,7 @@ def process_subtitles(
                 if config.verbose:
                     print(f"  Time: {format_time(elapsed_time)}")
                     print()  # Add blank line for spacing
-                    print_verbose_preview(response_text, usage.reasoning_tokens, clear_lines=0)
+                    print_verbose_preview(response_text, usage.reasoning_tokens)
                     if config.very_verbose:
                         print("\n  Full API response:\n")
                         print(response_text.rstrip() if response_text else "[Empty response]")

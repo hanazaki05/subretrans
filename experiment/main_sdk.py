@@ -299,7 +299,7 @@ def process_subtitles(
                 if config.verbose:
                     print(f"  Time: {format_time(elapsed_time)}")
                     print()  # Add blank line for spacing
-                    print_verbose_preview(response_text, usage.reasoning_tokens, clear_lines=0)
+                    print_verbose_preview(response_text, usage.reasoning_tokens)
                     # Only show full response in non-streaming mode
                     # (in streaming mode, content was already shown in real-time)
                     if config.very_verbose and not use_streaming:
