@@ -1,15 +1,17 @@
 # Subtitle Refinement Tool
 
-A Python tool for refining bilingual (English-Chinese) ASS subtitles using Large Language Models (LLMs).
+A Python tool for refining bilingual (currently English-Chinese) ASS subtitles using Large Language Models (LLMs). With a basic level **memory** support, it allows you to resume progress via the checkpoint file. This implementation is especially suitable when you're looking for translation quality over batch speed. 
 
 ## Features
+
+**Check** `/experiment` and find more!
 
 - **Smart ASS Parsing**: Parses `.ass` subtitle files and matches English-Chinese pairs by timestamp
 - **Intelligent Chunking**: Splits subtitles into chunks that fit within LLM token limits
 - **Bilingual Refinement**:
   - **English**: Fixes capitalization, spacing, and punctuation only (preserves meaning)
   - **Chinese**: Improves translation quality, naturalness, and consistency
-- **Global Memory**: Maintains terminology glossary and style notes across chunks
+- **Global Memory**: Maintains a terminology glossary and style notes across chunks, with a resume and checkpoint to allow you to continue work easily.
 - **ASS Tag Preservation**: Keeps all formatting tags (e.g., `{\i1}`, `{\b1}`, `\N`) intact
 - **Token Tracking**: Monitors API usage and estimates costs in real-time
 - **Robust Error Handling**: Automatic retries with exponential backoff
