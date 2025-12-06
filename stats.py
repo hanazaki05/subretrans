@@ -136,11 +136,12 @@ def format_usage_report(usage: UsageStats, cost: float) -> str:
         "=" * 50,
         f"Prompt tokens:     {usage.prompt_tokens:>10,}",
         f"Completion tokens: {usage.completion_tokens:>10,}",
-        f"Total tokens:      {usage.total_tokens:>10,}",
     ]
 
     if usage.reasoning_tokens:
-        lines.append(f"Reasoning tokens: {usage.reasoning_tokens:>10,}")
+        lines.append(f"Reasoning tokens:  {usage.reasoning_tokens:>10,}")
+
+    lines.append(f"Total tokens:      {usage.total_tokens:>10,}")
 
     lines.extend([
         "-" * 50,
@@ -173,7 +174,9 @@ def print_chunk_progress(chunk_idx: int, total_chunks: int, chunk_usage: UsageSt
     progress_pct = ((chunk_idx + 1) / total_chunks) * 100
     print(f"\n[Chunk {chunk_idx + 1}/{total_chunks}] ({progress_pct:.1f}% complete)")
     print(f"  Tokens used: {chunk_usage.total_tokens:,} "
-          f"(prompt: {chunk_usage.prompt_tokens:,}, completion: {chunk_usage.completion_tokens:,})")
+          f"(prompt: {chunk_usage.prompt_tokens:,}, "
+          f"completion: {chunk_usage.completion_tokens:,}, "
+          f"reasoning: {chunk_usage.reasoning_tokens:,})")
 
 
 def calculate_token_efficiency(usage: UsageStats) -> Dict[str, float]:

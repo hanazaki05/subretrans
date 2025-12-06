@@ -222,13 +222,14 @@ def validate_json_structure(data: any, expected_keys: List[str]) -> bool:
 
 def print_verbose_preview(response_text: str, reasoning_tokens: int) -> None:
     """
-    Print reasoning token count.
+    Print verbose preview (currently disabled as token info is shown in chunk progress).
 
     Args:
         response_text: Response text from LLM (unused, kept for backward compatibility)
-        reasoning_tokens: Reasoning tokens reported by API (if available)
+        reasoning_tokens: Reasoning tokens reported by API (unused, kept for backward compatibility)
     """
-    print(f"  Reasoning tokens: {reasoning_tokens:,}", flush=True)
+    # Token information including reasoning tokens is now shown in chunk progress
+    _ = response_text, reasoning_tokens  # Mark as intentionally unused
 
 
 def format_time(seconds: float) -> str:
