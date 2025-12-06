@@ -2,6 +2,108 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.8] - 2025-12-07
+
+### Added
+- **Resume mode** for restarting subtitle processing from a specific pair index (experiment SDK):
+  - New `--resume INDEX` command-line parameter to restart from any pair index
+  - Automatically loads and preserves earlier pairs from existing output file
+  - Processes only pairs from resume index onwards
+  - Useful for recovering from errors, interruptions, or re-processing specific sections
+  - Works seamlessly with all other options (`--pairs-per-chunk`, `--streaming`, `-vvv`, etc.)
+- **Glossary checkpoint system** for persistent learned terminology (experiment SDK):
+  - Opt-in feature enabled with `--checkpoint` flag
+  - Automatic checkpoint saving after each glossary update (when enabled)
+  - Automatic checkpoint loading on startup (when enabled)
+  - YAML format for human-readable checkpoint files
+  - Checkpoint filename inherits from input file (e.g., `input.ass.glossary.yaml`)
+  - Preserves learned terminology across runs and resume sessions
+  - Ensures consistent translation of terms across interrupted/resumed processing
+- New documentation file in `experiment/`:
+  - `RESUME_MODE.md`: Complete guide with examples, use cases, and technical details (includes checkpoint system)
+
+### Changed
+- `experiment/main_sdk.py`:
+  - Added `--resume INDEX` argument to argparse
+  - Added `--checkpoint` argument to enable glossary checkpoint system (opt-in)
+  - Updated `process_subtitles()` function signature to accept `resume_index: Optional[int]` and `enable_checkpoint: bool`
+  - Implemented resume logic that loads existing output file and preserves earlier pairs
+  - Added validation for resume index (non-negative, within pair count)
+  - Updated help text with resume and checkpoint examples
+  - Added glossary checkpoint functions: `get_checkpoint_path()`, `save_glossary_checkpoint()`, `load_glossary_checkpoint()`
+  - Integrated checkpoint loading after global memory initialization (only if enabled)
+  - Integrated checkpoint saving after each `update_global_memory()` call (only if enabled)
+  - Integrated checkpoint saving after memory compression (only if enabled)
+  - Changed checkpoint format from JSON to YAML using PyYAML library
+- `experiment/README.md`:
+  - Added "Resume mode" to "Implemented Features" list
+  - Added `RESUME_MODE.md` to documentation list
+
+### Technical Details
+- Resume workflow:
+  1. Parse input file and build all subtitle pairs
+  2. If resume index specified and output file exists, load and preserve pairs 0 to (index-1)
+  3. Create `pairs_to_process` containing only pairs from resume_index onwards
+  4. Process chunks from filtered pairs
+  5. Apply corrections using ID-based matching to update correct pairs in full list
+  6. Write complete pairs list (preserved + newly processed) to output file
+- Glossary checkpoint workflow:
+  1. On startup: Check for checkpoint file (`{input_file}.glossary.yaml`)
+  2. If found: Load learned glossary into GlobalMemory
+  3. After each chunk: Save updated glossary to checkpoint (YAML format using PyYAML)
+  4. After memory compression: Save compressed glossary to checkpoint
+  5. On resume: Checkpoint is automatically loaded, preserving all learned terms
+- Checkpoint benefits:
+  - Terminology consistency across runs and resume sessions
+  - No re-learning of previously extracted terms
+  - Human-readable YAML format for manual inspection/editing
+  - Automatic and transparent (no user intervention required)
+- Error handling:
+  - Validates resume index is non-negative
+  - Validates resume index is within total pair count
+  - If existing output file is corrupted: warning, continues without preserved pairs
+  - If output file doesn't exist: info message, creates new file
+- ID-based matching ensures corrections are applied to the right pairs regardless of position
+- Backward compatible: Resume is opt-in, no changes to existing functionality
+
+### Examples
+```bash
+# Resume from pair 680 after an error (without checkpoint)
+python experiment/main_sdk.py input.ass output.ass --resume 680 --pairs-per-chunk 75 --streaming
+
+# Resume with checkpoint enabled (preserves learned terms)
+python experiment/main_sdk.py input.ass output.ass --resume 680 --checkpoint --streaming
+
+# Resume with verbose mode to see what's being processed
+python experiment/main_sdk.py input.ass output.ass --resume 500 -vvv --streaming
+
+# Resume for re-processing last section with different settings
+python experiment/main_sdk.py input.ass output.ass --resume 800 --max-chunks 2
+
+# Normal run with checkpoint enabled (creates checkpoint file)
+python experiment/main_sdk.py input.ass output.ass --checkpoint --pairs-per-chunk 75 --streaming
+# Creates: input.ass.glossary.yaml (checkpoint file)
+
+# Subsequent run on same file with checkpoint (loads learned terminology)
+python experiment/main_sdk.py input.ass output_v2.ass --checkpoint --pairs-per-chunk 75 --streaming
+# Loads: input.ass.glossary.yaml (preserves learned terminology)
+```
+
+### Output Example (with `--checkpoint` enabled)
+```
+Step 3: Initialize global memory
+  [CHECKPOINT] Loaded 42 glossary entries from: input.ass.glossary.yaml
+
+[RESUME MODE] Starting from pair index 680
+Skipping first 680 pairs, processing remaining 320 pairs
+Loading existing output file: output.ass
+Preserved 680 pairs from existing output
+Processing pairs 680 to 999 (320 pairs)
+
+Processing chunk 1/5 (75 pairs)...
+  [Chunk completed, checkpoint updated]
+```
+
 ## [0.0.7] - 2025-12-07
 
 ### Added

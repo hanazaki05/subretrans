@@ -9,6 +9,7 @@ import argparse
 import sys
 import os
 import time
+import yaml
 from typing import Optional
 
 # Add parent directory to path for imports
@@ -48,6 +49,62 @@ from stats import (
 )
 from prompts import build_system_prompt
 from utils import estimate_tokens, print_verbose_preview, format_time
+
+
+def get_checkpoint_path(input_path: str) -> str:
+    """
+    Generate checkpoint file path from input file path.
+
+    Args:
+        input_path: Path to input subtitle file
+
+    Returns:
+        Path to checkpoint file (e.g., input.ass -> input.ass.glossary.yaml)
+    """
+    return f"{input_path}.glossary.yaml"
+
+
+def save_glossary_checkpoint(glossary: list, checkpoint_path: str) -> None:
+    """
+    Save learned glossary to checkpoint file in YAML format.
+
+    Args:
+        glossary: List of learned glossary entries
+        checkpoint_path: Path to checkpoint file
+    """
+    try:
+        with open(checkpoint_path, 'w', encoding='utf-8') as f:
+            yaml.dump(glossary, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        print(f"  Warning: Could not save glossary checkpoint: {e}")
+
+
+def load_glossary_checkpoint(checkpoint_path: str) -> Optional[list]:
+    """
+    Load learned glossary from checkpoint file in YAML format.
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+
+    Returns:
+        List of glossary entries if file exists and is valid, None otherwise
+    """
+    if not os.path.exists(checkpoint_path):
+        return None
+
+    try:
+        with open(checkpoint_path, 'r', encoding='utf-8') as f:
+            glossary = yaml.safe_load(f)
+
+        # Validate that it's a list
+        if not isinstance(glossary, list):
+            print(f"  Warning: Invalid checkpoint format in {checkpoint_path}")
+            return None
+
+        return glossary
+    except Exception as e:
+        print(f"  Warning: Could not load glossary checkpoint: {e}")
+        return None
 
 
 def apply_corrections_to_global_pairs(
@@ -134,7 +191,9 @@ def process_subtitles(
     input_path: str,
     output_path: str,
     config,
-    use_streaming: bool = False
+    use_streaming: bool = False,
+    resume_index: Optional[int] = None,
+    enable_checkpoint: bool = False
 ) -> bool:
     """
     Main processing function for subtitle refinement using SDK.
@@ -144,6 +203,8 @@ def process_subtitles(
         output_path: Path to output .ass file
         config: ConfigSDK object
         use_streaming: Whether to use streaming API
+        resume_index: Optional pair index to resume from (skips pairs before this index)
+        enable_checkpoint: Whether to enable glossary checkpoint system (default: False)
 
     Returns:
         True if successful, False otherwise
@@ -176,17 +237,66 @@ def process_subtitles(
             print("Error: No subtitle pairs found")
             return False
 
+        # Apply resume logic if enabled
+        if resume_index is not None:
+            if resume_index < 0:
+                print(f"Error: Resume index must be non-negative (got {resume_index})")
+                return False
+            if resume_index >= len(pairs):
+                print(f"Error: Resume index {resume_index} exceeds total pairs {len(pairs)}")
+                return False
+
+            print(f"\n  [RESUME MODE] Starting from pair index {resume_index}")
+            print(f"  Skipping first {resume_index} pairs, processing remaining {len(pairs) - resume_index} pairs")
+
+            # Load existing output file if it exists to preserve earlier pairs
+            if os.path.exists(output_path):
+                print(f"  Loading existing output file: {output_path}")
+                try:
+                    existing_header, existing_ass_lines = parse_ass_file(output_path)
+                    existing_pairs = build_pairs_from_ass_lines(existing_ass_lines)
+
+                    # Copy corrected pairs from existing file (before resume_index)
+                    for i in range(min(resume_index, len(existing_pairs))):
+                        if i < len(pairs) and existing_pairs[i].id == pairs[i].id:
+                            pairs[i].eng = existing_pairs[i].eng
+                            pairs[i].chinese = existing_pairs[i].chinese
+
+                    print(f"  Preserved {resume_index} pairs from existing output")
+                except Exception as e:
+                    print(f"  Warning: Could not load existing output file: {e}")
+                    print(f"  Continuing without preserving earlier pairs...")
+            else:
+                print(f"  Note: Output file does not exist yet, will create new file")
+
+            # Filter to only process pairs from resume_index onwards
+            pairs_to_process = pairs[resume_index:]
+            print(f"  Processing pairs {resume_index} to {len(pairs)-1} ({len(pairs_to_process)} pairs)")
+        else:
+            pairs_to_process = pairs
+
         # Apply dry-run limit if enabled
         if config.dry_run:
-            original_count = len(pairs)
-            pairs = pairs[:min(10, len(pairs))]  # Limit to first 10 pairs
-            print(f"  [DRY RUN] Limited to {len(pairs)} pairs (from {original_count})")
+            original_count = len(pairs_to_process)
+            pairs_to_process = pairs_to_process[:min(10, len(pairs_to_process))]  # Limit to first 10 pairs
+            print(f"  [DRY RUN] Limited to {len(pairs_to_process)} pairs (from {original_count})")
 
         # Step 3: Initialize global memory
         # NOTE: The new template-based approach (plan3.md) loads the prompt template
         # directly in build_system_prompt() and injects terminology from GlobalMemory.
         # User glossary from template is parsed and merged at prompt build time.
         global_memory = init_global_memory()
+
+        # Load glossary checkpoint if enabled
+        checkpoint_path = None
+        if enable_checkpoint:
+            checkpoint_path = get_checkpoint_path(input_path)
+            checkpoint_glossary = load_glossary_checkpoint(checkpoint_path)
+            if checkpoint_glossary:
+                print(f"  [CHECKPOINT] Loaded {len(checkpoint_glossary)} glossary entries from: {os.path.basename(checkpoint_path)}")
+                global_memory.glossary = checkpoint_glossary
+            else:
+                print(f"  [CHECKPOINT] No existing checkpoint found, will create: {os.path.basename(checkpoint_path)}")
 
         # Step 4: Chunk pairs
         print("\nStep 3: Splitting into chunks...")
@@ -198,7 +308,7 @@ def process_subtitles(
         else:
             print(f"  Chunking strategy: Token-based (max ~{config.chunk_token_soft_limit:,} tokens)")
 
-        chunks = chunk_pairs(pairs, config, base_prompt_tokens)
+        chunks = chunk_pairs(pairs_to_process, config, base_prompt_tokens)
         print_chunk_statistics(chunks, config.main_model.name)
 
         # Apply max_chunks limit if set
@@ -295,6 +405,10 @@ def process_subtitles(
                 # Update global memory
                 global_memory = update_global_memory(global_memory, corrected_pairs, config)
 
+                # Save updated glossary to checkpoint file (if enabled)
+                if enable_checkpoint and checkpoint_path:
+                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+
                 # Check if memory needs compression
                 memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
                 if memory_tokens > config.memory_token_limit:
@@ -309,6 +423,10 @@ def process_subtitles(
 
                         new_size = estimate_memory_tokens(global_memory, config.main_model.name)
                         print(f"  Memory compressed: {memory_tokens} → {new_size} tokens")
+
+                        # Save compressed glossary to checkpoint (if enabled)
+                        if enable_checkpoint and checkpoint_path:
+                            save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
                     except LLMAPIError as e:
                         print(f"  Warning: Memory compression failed: {e}")
                         print(f"  Continuing with uncompressed memory...")
@@ -371,6 +489,15 @@ Examples:
 
   # Limit number of chunks
   python main_sdk.py input.ass output.ass --max-chunks 5
+
+  # Resume from a specific pair index (e.g., after error)
+  python main_sdk.py input.ass output.ass --resume 680 --pairs-per-chunk 75
+
+  # Enable checkpoint system to save/load learned terminology
+  python main_sdk.py input.ass output.ass --checkpoint --streaming
+
+  # Resume with checkpoint (preserves learned terms across runs)
+  python main_sdk.py input.ass output.ass --resume 680 --checkpoint
 
 Note: API key is automatically loaded from ../key file
         """
@@ -441,6 +568,18 @@ Note: API key is automatically loaded from ../key file
         action="store_true",
         help="Test API connection and exit"
     )
+    parser.add_argument(
+        "--resume",
+        type=int,
+        default=None,
+        metavar="INDEX",
+        help="Resume processing from a specific pair index (e.g., --resume 680 starts from pair 680)"
+    )
+    parser.add_argument(
+        "--checkpoint",
+        action="store_true",
+        help="Enable glossary checkpoint system (save/load learned terminology to/from .glossary.yaml file)"
+    )
 
     args = parser.parse_args()
 
@@ -483,7 +622,9 @@ Note: API key is automatically loaded from ../key file
         args.input,
         args.output,
         config,
-        use_streaming=config.use_streaming
+        use_streaming=config.use_streaming,
+        resume_index=args.resume,
+        enable_checkpoint=args.checkpoint
     )
 
     return 0 if success else 1

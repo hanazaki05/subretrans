@@ -32,6 +32,7 @@ The main project uses `requests` library to make HTTP POST calls to OpenAI API. 
 - **PER_MODEL_CREDENTIALS.md**: Per-model API credential configuration guide (✨ NEW)
 - **STREAMING_API.md**: Technical documentation for streaming API
 - **REALTIME_STREAMING.md**: Real-time streaming output guide (✨ NEW)
+- **RESUME_MODE.md**: Resume mode documentation for restarting from specific pair index (✨ NEW)
 - **SUMMARY.md**: Project summary and completion report
 
 ## Installation
@@ -400,6 +401,7 @@ Total: 3/3 tests passed
 ✅ **Callback support** - Real-time streaming feedback via callbacks
 ✅ **Per-model credentials** - Configure different API keys/endpoints per model (NEW!)
 ✅ **Verbose debugging** - `-vvv` mode shows credential resolution and system prompts
+✅ **Resume mode** - Restart processing from a specific pair index with `--resume INDEX` (NEW!)
 
 ## Future Enhancements
 
