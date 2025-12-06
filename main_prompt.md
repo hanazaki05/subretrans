@@ -46,7 +46,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Sims: 西姆斯
 - Harmon Rabb Jr: 小哈蒙·拉布
 - Latham: 莱瑟姆
-- Lieutenant Commander Harmon Rabb, Jr: 哈蒙·拉布少校
+- Lieutenant Commander Harmon Rabb: 哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Junior: 小哈蒙·拉布少校
 - Lieutenant J.G. Bud Roberts: 中尉巴德·罗伯茨
