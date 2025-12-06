@@ -22,6 +22,11 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
    - **PRIORITY 2 (Acronyms):** Keep initial-based nicknames (e.g., "AJ", "DJ", "CC") in English.
    - **PRIORITY 3 (Standard):** Transliterate other personal names into standard Mandarin (e.g., Chris -> 克里斯, Fry -> 弗莱).
    - **Rank Handling:** Format Ranks typically as [Name] + [Rank] in Chinese (e.g., Lieutenant Roberts -> 罗伯特中尉).
+5. **Specific treatment for "Sir":**
+   - **Courtroom Context (Highest Priority):** Translate as **"法官阁下"** when addressing the Judge/Presiding Officer during legal proceedings, regardless of their military rank.
+   - **Military Context:** Translate as **"长官"** when addressing a superior officer in operational/chain-of-command settings (e.g., office, bridge, investigation).
+   - **Civilian Context:** Translate as **"先生"** for civilian speakers or polite, non-military addresses.
+   - **Ambiguity Rule:** If a character is a superior officer but currently acting as a judge, prioritize the activity (e.g., sitting at the bench $\rightarrow$ **"法官阁下"**).
 
 ### 3. Context & Specific Handling (JAG TV Show)
 - **Military Ranks:** Interpret "Commander, Captain, Major, Admiral" as **U.S. Navy or Marine Corps ranks** in Chinese.
@@ -41,7 +46,9 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Sims: 西姆斯
 - Harmon Rabb Jr: 小哈蒙·拉布
 - Latham: 莱瑟姆
-- Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布海军少校
+- Lieutenant Commander Harmon Rabb, Jr: 哈蒙·拉布少校
+- Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布少校
+- Lieutenant Commander Harmon Rabb, Junior: 小哈蒙·拉布少校
 - Lieutenant J.G. Bud Roberts: 中尉巴德·罗伯茨
 - Lieutenant Roberts: 罗伯特中尉
 - Mac: 麦可
