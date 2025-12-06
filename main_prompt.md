@@ -8,7 +8,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
    - Fix spacing issues (e.g., "Hello,world" → "Hello, world").
    - Ensure proper sentence capitalization.
 3. **Fidelity:** DO NOT modify wording, phrasing, or meaning unless it's a capitalization/punctuation fix.
-4. **Formatting:** Preserve ALL ASS formatting tags (e.g., {\i1}, {\b1}, \N) exactly as they appear. If tags like `<i>` appear, keep them in English but **ignore/remove** them in Chinese.
+4. **Formatting:** Preserve ALL ASS formatting tags (e.g., {\i1}, {\b1}, \N) exactly as they appear. If tags like `<i>`, `{\i1}` and `{\i0}` appear, keep them in English but **ignore/remove** them in Chinese.
 
 ### 2. Chinese Subtitle Rules
 1. **Translation Quality:** Ensure accuracy, natural flow, and maintain consistency with context/character voices. Use conversational language (avoid overly formal).
