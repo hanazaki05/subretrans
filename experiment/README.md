@@ -9,14 +9,14 @@ The main project uses `requests` library to make HTTP POST calls to OpenAI API. 
 - Better error handling and retry logic
 - Automatic rate limiting
 - Type-safe API calls
-- **Support for streaming (✅ IMPLEMENTED)**
+- Support for OpenAI `/chat/completion` api for both stream and non-stream option
 - Better compatibility with OpenAI's evolving API
 
 ## Files
 
 ### Core Modules
-- **config_sdk.py**: Configuration module with YAML-based settings (✨ NEW: YAML support)
-- **config.yaml**: YAML configuration file for easy customization (✨ NEW)
+- **config_sdk.py**: Configuration module with YAML-based settings 
+- **config.yaml**: YAML configuration file for easy customization 
 - **llm_client_sdk.py**: LLM client implementation using OpenAI SDK (supports both streaming and non-streaming)
 - **main_sdk.py**: Complete subtitle refinement tool with streaming support
 
@@ -28,8 +28,7 @@ The main project uses `requests` library to make HTTP POST calls to OpenAI API. 
 ### Documentation
 - **README.md**: This file - project overview and quick start
 - **USAGE.md**: Complete usage guide for main_sdk.py (quick start + advanced usage)
-- **CONFIG_YAML.md**: YAML configuration guide (✨ NEW)
-- **PER_MODEL_CREDENTIALS.md**: Per-model API credential configuration guide (✨ NEW)
+- **CONFIG_YAML.md**: YAML configuration guide with per-model API credential configuration guide (✨ NEW)
 - **STREAMING_API.md**: Technical documentation for streaming API
 - **REALTIME_STREAMING.md**: Real-time streaming output guide (✨ NEW)
 - **RESUME_MODE.md**: Resume mode documentation for restarting from specific pair index (✨ NEW)
