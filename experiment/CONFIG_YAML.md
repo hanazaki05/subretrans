@@ -74,6 +74,9 @@ main_model:
   max_output_tokens: 12000        # Max tokens per response
   reasoning_effort: "medium"      # Reasoning effort: none/low/medium/high
   temperature: 1.0                # Sampling temperature
+  # Optional per-model API credentials (overrides global api settings)
+  #key_file: "../key-main"        # Model-specific API key file
+  #base_url: "https://another.url/v1"  # Model-specific endpoint
 ```
 
 ### Terminology Model (Glossary Extraction)
@@ -83,6 +86,9 @@ terminology_model:
   name: "gpt-4o-mini"             # Model name
   max_output_tokens: 1800         # Max tokens per response
   temperature: 0.5                # Lower temp for stable extraction
+  # Optional per-model API credentials (overrides global api settings)
+  #key_file: "../key-terminology" # Model-specific API key file
+  #base_url: "https://another.url/v1"  # Model-specific endpoint
 ```
 
 ### Token Management
@@ -160,6 +166,96 @@ runtime:
 **Streaming API:**
 - `true` (recommended): Real-time output, 2.7x faster perceived speed
 - `false`: Wait for complete response before displaying
+
+### Per-Model API Credentials
+
+**NEW in v0.0.7:** You can now configure different API keys and endpoints for each model independently.
+
+Each model (`main_model` and `terminology_model`) can optionally specify:
+- `key_file`: Path to a model-specific API key file (overrides global `api.key_file`)
+- `base_url`: Model-specific API endpoint (overrides global `api.base_url`)
+
+**Credential Resolution Order:**
+1. Start with global `api.key_file` and `api.base_url`
+2. If model has `base_url` → use model's endpoint
+3. If model has `key_file` → load API key from model's file
+
+**Use Cases:**
+
+1. **Cost Tracking** - Separate billing for different models
+   ```yaml
+   main_model:
+     key_file: "../key-main"  # Main model uses separate API key
+
+   terminology_model:
+     key_file: "../key-terminology"  # Terminology model uses separate API key
+   ```
+
+2. **Multi-Provider** - Route models to different providers
+   ```yaml
+   main_model:
+     base_url: "https://api.openai.com/v1"  # OpenAI for main model
+
+   terminology_model:
+     base_url: "http://localhost:8000/v1"  # Local server for terminology
+     key_file: "../test-key"
+   ```
+
+3. **Development/Testing** - Production vs test endpoints
+   ```yaml
+   main_model:
+     base_url: "https://api.openai.com/v1"  # Production
+
+   terminology_model:
+     base_url: "https://dev-api.example.com/v1"  # Development endpoint
+   ```
+
+4. **Load Balancing** - Distribute requests across multiple endpoints
+   ```yaml
+   main_model:
+     base_url: "https://proxy-1.example.com/v1"
+
+   terminology_model:
+     base_url: "https://proxy-2.example.com/v1"
+   ```
+
+**Verbose Debugging (`-vvv` mode):**
+
+When running with `-vvv`, the system displays credential resolution information:
+
+```bash
+python main_sdk.py input.ass output.ass -vvv
+```
+
+Output example:
+```
+[Credential Resolution for gpt-5-mini]
+  API Key: Model-specific (../key-main) [sk-proj-AbC...]
+  Base URL: Model-specific → https://my-proxy.example.com/v1
+
+Processing chunk 1/5 (30 pairs)...
+```
+
+This shows:
+- Which model is being used
+- Whether API key is from global config or model-specific override
+- Which key file was loaded (if model-specific)
+- Whether base URL is from global config or model-specific override
+- The actual endpoint being used
+
+**Path Resolution:**
+- Relative paths (e.g., `../key-main`) are resolved from the `experiment/` directory
+- Absolute paths are supported
+- Clear error messages show full path if key file loading fails
+
+**Testing:**
+```bash
+# Test per-model configuration
+./venv/bin/python experiment/test_per_model_config.py
+
+# Run with verbose output to see credential resolution
+python experiment/main_sdk.py input.ass output.ass -vvv --max-chunks 1
+```
 
 ## Examples
 
@@ -256,6 +352,63 @@ python main_sdk.py input.ass output.ass --no-streaming
 python main_sdk.py input.ass output.ass --streaming -v
 ```
 
+### Example 6: Per-Model Credentials
+
+**Scenario: Use different API keys for cost tracking**
+
+Edit `config.yaml`:
+
+```yaml
+api:
+  key_file: "../key"                    # Default key
+  base_url: "https://api.openai.com/v1"
+
+main_model:
+  name: "gpt-5-mini"
+  max_output_tokens: 27000
+  reasoning_effort: "low"
+  temperature: 1.0
+  key_file: "../key-main"               # Separate billing for main model
+
+terminology_model:
+  name: "gpt-4o-mini"
+  max_output_tokens: 1800
+  temperature: 0.45
+  key_file: "../key-terminology"        # Separate billing for terminology model
+```
+
+Run with verbose debugging to see credential resolution:
+
+```bash
+python main_sdk.py input.ass output.ass -vvv --max-chunks 1
+```
+
+**Scenario: Use custom proxy for main model**
+
+```yaml
+main_model:
+  name: "gpt-5-mini"
+  base_url: "https://my-proxy.example.com/v1"  # Custom proxy endpoint
+  # Uses global api.key_file
+
+terminology_model:
+  name: "gpt-4o-mini"
+  # Uses global api settings (no overrides)
+```
+
+**Scenario: Development setup with local server**
+
+```yaml
+main_model:
+  name: "gpt-5-mini"
+  base_url: "https://api.openai.com/v1"        # Production OpenAI
+
+terminology_model:
+  name: "gpt-4o-mini"
+  base_url: "http://localhost:8000/v1"         # Local test server
+  key_file: "../test-key"                       # Test API key
+```
+
 ## Testing Configuration
 
 Run the test script to verify your configuration:
@@ -284,11 +437,13 @@ All existing code using `load_config_sdk()` continues to work without changes.
 
 ## Tips
 
-1. **Keep key file secure** - Don't commit `key` file to git
+1. **Keep key files secure** - Don't commit `key`, `key-main`, or other API key files to git
 2. **Use relative paths** - Paths in YAML are relative to `config.yaml` location
 3. **Start with defaults** - Default `config.yaml` has recommended settings
 4. **Test changes** - Use `--dry-run` and `--max-chunks` to test new settings
 5. **Version control** - Commit `config.yaml` but add comments for custom values
+6. **Per-model credentials** - Use `-vvv` to verify which credentials are being used for each model
+7. **Backward compatible** - Per-model `key_file` and `base_url` are optional; omit them to use global settings
 
 ## Troubleshooting
 
@@ -315,5 +470,6 @@ Remember CLI overrides take precedence over YAML settings. Check if you're passi
 
 ---
 
-**Last Updated:** 2025-12-01
+**Last Updated:** 2025-12-07
 **Status:** Production Ready ✅
+**Version:** 0.0.7 (Added per-model credentials)

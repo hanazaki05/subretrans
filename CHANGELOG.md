@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.7] - 2025-12-07
+
+### Added
+- **Per-model API credential configuration** (experiment SDK):
+  - `key_file` and `base_url` can now be specified per model (`main_model` and `terminology_model`)
+  - Override global `api` settings on a per-model basis
+  - Support for different API providers, endpoints, or keys for each model
+  - Useful for cost tracking, multi-provider setups, development/testing, and load balancing
+- **Verbose credential debugging** (`-vvv` mode):
+  - Shows which API key and base URL are being used for each model
+  - Displays whether credentials are from global config or model-specific overrides
+  - Shows the actual key file path and endpoint URL
+  - Example output: `[Credential Resolution for gpt-5-mini]`
+- New documentation files in `experiment/`:
+  - `PER_MODEL_CREDENTIALS.md`: Complete user guide with examples and use cases
+  - `FEATURE_SUMMARY.md`: Technical overview of the implementation
+  - `test_per_model_config.py`: Comprehensive test suite (5 tests)
+  - `demo_per_model_config.py`: Interactive demo with 4 usage scenarios
+
+### Changed
+- `experiment/config_sdk.py`:
+  - Added `key_file: Optional[str]` and `base_url: Optional[str]` to `MainModelSettings`
+  - Added `key_file: Optional[str]` and `base_url: Optional[str]` to `TerminologyModelSettings`
+  - Updated `load_config_from_yaml()` to read per-model credential overrides
+- `experiment/llm_client_sdk.py`:
+  - New `_resolve_model_credentials()` function to resolve API key and base URL per model
+  - Both `call_openai_api_sdk()` and `call_openai_api_sdk_streaming()` now use credential resolver
+  - Verbose mode (`config.debug_prompts`) displays credential resolution information
+- `experiment/config.yaml`:
+  - Added commented examples for `key_file` and `base_url` in both model settings
+  - Examples show how to override global API credentials
+
+### Technical Details
+- Credential resolution order:
+  1. Start with global `api.key_file` and `api.base_url`
+  2. Override with model-specific `base_url` if present
+  3. Load API key from model-specific `key_file` if present
+- Path resolution: Relative key file paths are resolved relative to `experiment/` directory
+- Independent resolution: Each model's credentials are resolved independently on every API call
+- Backward compatible: Existing configurations work without changes (feature is opt-in)
+- Error handling: Clear error messages with file paths if key file loading fails
+
+### Examples
+```yaml
+# config.yaml - Per-model credentials
+main_model:
+  name: "gpt-5-mini"
+  key_file: "../key-main"  # Different API key
+  base_url: "https://custom-endpoint.com/v1"  # Different endpoint
+
+terminology_model:
+  name: "gpt-4o-mini"
+  # Omit to use global api settings
+```
+
+```bash
+# View credential resolution in verbose mode
+python experiment/main_sdk.py input.ass output.ass -vvv
+```
+
 ## [0.0.6] - 2025-12-01
 
 ### Added

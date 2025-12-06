@@ -1,81 +1,81 @@
-# 项目总结 - OpenAI SDK 实验
+# Project Summary - OpenAI SDK Experiment
 
-## 🎉 完成状态
+## 🎉 Completion Status
 
-**✅ 全部完成 - 2025-11-30**
+**✅ All Complete - 2025-11-30**
 
-## 📦 交付内容
+## 📦 Deliverables
 
-### 1. 核心功能模块
+### 1. Core Functional Modules
 
-| 文件 | 大小 | 功能 | 状态 |
-|------|------|------|------|
-| `config_sdk.py` | 5.6K | SDK 配置，自动加载 API key | ✅ |
-| `llm_client_sdk.py` | 21K | SDK 客户端（流式 + 非流式） | ✅ |
-| `main_sdk.py` | 14K | 完整字幕处理工具 | ✅ |
-| `__init__.py` | 734B | 包导出 | ✅ |
+| File | Size | Function | Status |
+|------|------|----------|--------|
+| `config_sdk.py` | 5.6K | SDK configuration, auto-load API key | ✅ |
+| `llm_client_sdk.py` | 21K | SDK client (streaming + non-streaming) | ✅ |
+| `main_sdk.py` | 14K | Complete subtitle processing tool | ✅ |
+| `__init__.py` | 734B | Package exports | ✅ |
 
-### 2. 测试套件
+### 2. Test Suite
 
-| 文件 | 测试内容 | 状态 |
-|------|----------|------|
-| `test_sdk.py` | 非流式 API 测试（3 个测试） | ✅ 全部通过 |
-| `test_streaming.py` | 流式 API 测试（4 个测试） | ✅ 全部通过 |
+| File | Test Content | Status |
+|------|-------------|--------|
+| `test_sdk.py` | Non-streaming API tests (3 tests) | ✅ All passed |
+| `test_streaming.py` | Streaming API tests (4 tests) | ✅ All passed |
 
-### 3. 文档
+### 3. Documentation
 
-| 文件 | 内容 | 状态 |
-|------|------|------|
-| `README.md` | 完整项目文档 | ✅ |
-| `QUICKSTART.md` | 5 分钟快速上手 | ✅ |
-| `USAGE.md` | 详细使用指南 | ✅ |
-| `STREAMING_API.md` | 流式 API 技术文档 | ✅ |
-| `SUMMARY.md` | 项目总结（本文档） | ✅ |
+| File | Content | Status |
+|------|---------|--------|
+| `README.md` | Complete project documentation | ✅ |
+| `QUICKSTART.md` | 5-minute quick start | ✅ |
+| `USAGE.md` | Detailed usage guide | ✅ |
+| `STREAMING_API.md` | Streaming API technical documentation | ✅ |
+| `SUMMARY.md` | Project summary (this document) | ✅ |
 
-### 4. 测试输出
+### 4. Test Outputs
 
-| 文件 | 类型 | 状态 |
-|------|------|------|
-| `test_output_sdk.ass` | 非流式测试输出 | ✅ |
-| `test_output_sdk_streaming.ass` | 流式测试输出 | ✅ |
+| File | Type | Status |
+|------|------|--------|
+| `test_output_sdk.ass` | Non-streaming test output | ✅ |
+| `test_output_sdk_streaming.ass` | Streaming test output | ✅ |
 
-## 🌟 核心功能
+## 🌟 Core Features
 
-### ✅ 已实现
+### ✅ Implemented
 
-1. **OpenAI SDK 集成**
-   - 替代 HTTP POST 请求
-   - 使用官方 SDK (v2.8.1)
-   - 类型安全的 API 调用
+1. **OpenAI SDK Integration**
+   - Replaces HTTP POST requests
+   - Uses official SDK (v2.8.1)
+   - Type-safe API calls
 
-2. **流式 API 支持**
-   - 实时 token 生成
-   - 自定义回调函数
-   - 2.7x 更快的感知速度
+2. **Streaming API Support**
+   - Real-time token generation
+   - Custom callback functions
+   - 2.7x faster perceived speed
 
-3. **完整功能工具**
-   - `main_sdk.py` - 完整字幕处理
-   - 支持流式/非流式切换
-   - 与主项目功能一致
+3. **Complete Functional Tool**
+   - `main_sdk.py` - Complete subtitle processing
+   - Supports streaming/non-streaming toggle
+   - Consistent with main project features
 
-4. **配置管理**
-   - 自动从 `../key` 加载 API key
-   - 完整的参数控制
-   - 兼容主项目配置
+4. **Configuration Management**
+   - Auto-loads API key from `../key`
+   - Complete parameter control
+   - Compatible with main project configuration
 
-5. **错误处理**
-   - 自动重试（3 次，指数退避）
-   - 详细错误信息
-   - 跳过失败的 chunk
+5. **Error Handling**
+   - Automatic retry (3 attempts, exponential backoff)
+   - Detailed error messages
+   - Skip failed chunks
 
-6. **使用统计**
-   - Token 使用追踪
-   - 包含 GPT-5 reasoning tokens
-   - 成本估算
+6. **Usage Statistics**
+   - Token usage tracking
+   - Includes GPT-5 reasoning tokens
+   - Cost estimation
 
-## 📊 测试结果
+## 📊 Test Results
 
-### 非流式模式测试
+### Non-Streaming Mode Test
 
 ```
 Test: main_sdk.py --dry-run
@@ -86,7 +86,7 @@ Cost: $0.43
 Time: ~30s
 ```
 
-### 流式模式测试
+### Streaming Mode Test
 
 ```
 Test: main_sdk.py --dry-run --streaming -v
@@ -98,7 +98,7 @@ Time: ~53s (with streaming feedback)
 Perceived Speed: 2.7x faster
 ```
 
-### 完整测试套件
+### Complete Test Suite
 
 ```bash
 # test_sdk.py
@@ -115,46 +115,46 @@ Total: 3/3 tests passed
 Total: 4/4 tests passed
 ```
 
-## 🎯 使用方式
+## 🎯 Usage
 
-### 基础用法
+### Basic Usage
 
 ```bash
-# 进入 experiment 目录
+# Enter experiment directory
 cd experiment
 
-# 测试连接
+# Test connection
 python main_sdk.py ../example_input.ass output.ass --test-connection
 
-# 快速测试（非流式）
+# Quick test (non-streaming)
 python main_sdk.py ../example_input.ass output.ass --dry-run
 
-# 快速测试（流式）
+# Quick test (streaming)
 python main_sdk.py ../example_input.ass output.ass --dry-run --streaming
 
-# 完整处理（流式 + 详细输出）
+# Full processing (streaming + verbose output)
 python main_sdk.py ../example_input.ass output.ass --streaming -v
 ```
 
-### 高级用法
+### Advanced Usage
 
 ```bash
-# 固定 chunk 大小
+# Fixed chunk size
 python main_sdk.py input.ass output.ass --pairs-per-chunk 50
 
-# 限制处理数量
+# Limit processing count
 python main_sdk.py input.ass output.ass --max-chunks 5
 
-# 使用更便宜的模型
+# Use cheaper model
 python main_sdk.py input.ass output.ass --model gpt-4o-mini
 
-# 超详细输出（包含完整响应和系统提示）
+# Ultra-verbose output (includes full response and system prompt)
 python main_sdk.py input.ass output.ass --streaming -vvv
 ```
 
-## 🔄 API 对比
+## 🔄 API Comparison
 
-### HTTP POST (主项目)
+### HTTP POST (Main Project)
 
 ```python
 import requests
@@ -168,7 +168,7 @@ response = requests.post(
 result = response.json()
 ```
 
-### OpenAI SDK (experiment)
+### OpenAI SDK (Experiment)
 
 ```python
 from openai import OpenAI
@@ -178,219 +178,219 @@ response = client.chat.completions.create(
     model=model,
     messages=messages,
     max_completion_tokens=tokens,
-    stream=True  # 流式模式
+    stream=True  # Streaming mode
 )
 ```
 
-## 📈 性能对比
+## 📈 Performance Comparison
 
-| 指标 | 非流式 | 流式 | 提升 |
-|------|--------|------|------|
-| 首个 token | 2.91s | 1.09s | **2.7x** |
-| 总时间 | 2.91s | 1.52s | 1.9x |
-| 用户体验 | ⭐⭐ | ⭐⭐⭐⭐⭐ | 显著提升 |
-| 实时反馈 | ❌ | ✅ | - |
+| Metric | Non-Streaming | Streaming | Improvement |
+|--------|--------------|-----------|-------------|
+| First token | 2.91s | 1.09s | **2.7x** |
+| Total time | 2.91s | 1.52s | 1.9x |
+| User experience | ⭐⭐ | ⭐⭐⭐⭐⭐ | Significant improvement |
+| Real-time feedback | ❌ | ✅ | - |
 
-## 💰 成本分析
+## 💰 Cost Analysis
 
-基于 10 对字幕的 dry-run 测试：
+Based on dry-run test with 10 subtitle pairs:
 
-| 模式 | Tokens | 成本 | 备注 |
-|------|--------|------|------|
-| 非流式 | 9,028 | $0.43 | 标准处理 |
-| 流式 | 8,195 | $0.38 | 略低（11% cheaper） |
+| Mode | Tokens | Cost | Notes |
+|------|--------|------|-------|
+| Non-streaming | 9,028 | $0.43 | Standard processing |
+| Streaming | 8,195 | $0.38 | Slightly lower (11% cheaper) |
 
-完整文件（152 对）估算成本：~$6-7 USD
+Estimated cost for full file (152 pairs): ~$6-7 USD
 
-## 🏆 关键优势
+## 🏆 Key Advantages
 
-### 1. 实时反馈
-- 流式 API 提供即时反馈
-- 2.7x 更快的感知速度
-- 更好的用户体验
+### 1. Real-Time Feedback
+- Streaming API provides immediate feedback
+- 2.7x faster perceived speed
+- Better user experience
 
-### 2. 类型安全
-- 使用 Pydantic 模型
-- 编译时类型检查
-- 减少运行时错误
+### 2. Type Safety
+- Uses Pydantic models
+- Compile-time type checking
+- Reduces runtime errors
 
-### 3. 更好的错误处理
-- SDK 内置重试逻辑
-- 自动指数退避
-- 详细的错误信息
+### 3. Better Error Handling
+- SDK built-in retry logic
+- Automatic exponential backoff
+- Detailed error messages
 
-### 4. 易于维护
-- 更简洁的代码
-- 官方 SDK 支持
-- 自动更新兼容性
+### 4. Easy to Maintain
+- More concise code
+- Official SDK support
+- Automatic update compatibility
 
-### 5. 完全兼容
-- 与主项目完全兼容
-- 使用相同的数据结构
-- 无缝切换
+### 5. Full Compatibility
+- Fully compatible with main project
+- Uses same data structures
+- Seamless switching
 
-## 🚀 未来增强
+## 🚀 Future Enhancements
 
-基于当前 SDK 实现，可以轻松添加：
+Based on current SDK implementation, can easily add:
 
-1. **异步处理** - 使用 `AsyncOpenAI` 并行处理多个 chunk
-2. **函数调用** - 使用 OpenAI function calling 生成结构化输出
-3. **批处理 API** - 使用 OpenAI Batch API 降低成本
-4. **Vision API** - 基于图像的字幕对齐
-5. **Embeddings** - 更智能的术语匹配
+1. **Async processing** - Use `AsyncOpenAI` for parallel chunk processing
+2. **Function calling** - Use OpenAI function calling for structured output
+3. **Batch API** - Use OpenAI Batch API to reduce costs
+4. **Vision API** - Image-based subtitle alignment
+5. **Embeddings** - Smarter terminology matching
 
-## 📝 文件清单
+## 📝 File Inventory
 
-### Python 代码 (4 files, ~47K)
+### Python Code (4 files, ~47K)
 ```
-config_sdk.py           5.6K   配置管理
-llm_client_sdk.py      21K    SDK 客户端
-main_sdk.py            14K    完整工具
-__init__.py            734B   包导出
-```
-
-### 测试文件 (2 files, ~15K)
-```
-test_sdk.py            6.5K   非流式测试
-test_streaming.py      8.8K   流式测试
+config_sdk.py           5.6K   Configuration management
+llm_client_sdk.py      21K    SDK client
+main_sdk.py            14K    Complete tool
+__init__.py            734B   Package exports
 ```
 
-### 文档 (5 files, ~28K)
+### Test Files (2 files, ~15K)
 ```
-README.md              8.4K   项目文档
-QUICKSTART.md          6.0K   快速开始
-USAGE.md               7.2K   使用指南
-STREAMING_API.md       6.2K   技术文档
-SUMMARY.md             (本文档)
+test_sdk.py            6.5K   Non-streaming tests
+test_streaming.py      8.8K   Streaming tests
 ```
 
-### 测试输出 (2 files, ~60K)
+### Documentation (5 files, ~28K)
+```
+README.md              8.4K   Project documentation
+QUICKSTART.md          6.0K   Quick start
+USAGE.md               7.2K   Usage guide
+STREAMING_API.md       6.2K   Technical documentation
+SUMMARY.md             (this document)
+```
+
+### Test Outputs (2 files, ~60K)
 ```
 test_output_sdk.ass           30K
 test_output_sdk_streaming.ass 30K
 ```
 
-## ✅ 验收清单
+## ✅ Acceptance Checklist
 
-- [x] OpenAI SDK 集成
-- [x] 流式 API 实现
-- [x] 非流式 API 实现
-- [x] 完整工具 (main_sdk.py)
-- [x] 配置管理
-- [x] 错误处理
-- [x] 自动重试
-- [x] 使用统计
-- [x] 测试套件
-- [x] 完整文档
-- [x] 实际测试通过
+- [x] OpenAI SDK integration
+- [x] Streaming API implementation
+- [x] Non-streaming API implementation
+- [x] Complete tool (main_sdk.py)
+- [x] Configuration management
+- [x] Error handling
+- [x] Automatic retry
+- [x] Usage statistics
+- [x] Test suite
+- [x] Complete documentation
+- [x] Actual test passed
 
-## 🎓 学习要点
+## 🎓 Learning Points
 
-1. **流式 vs 非流式**
-   - 流式: 更好的用户体验，实时反馈
-   - 非流式: 更简单，适合批处理
+1. **Streaming vs Non-Streaming**
+   - Streaming: Better user experience, real-time feedback
+   - Non-streaming: Simpler, suitable for batch processing
 
-2. **参数控制**
-   - `--streaming`: 启用流式
-   - `--pairs-per-chunk`: 控制 chunk 大小
-   - `-v/-vv/-vvv`: 控制输出详细度
+2. **Parameter Control**
+   - `--streaming`: Enable streaming
+   - `--pairs-per-chunk`: Control chunk size
+   - `-v/-vv/-vvv`: Control output verbosity
 
-3. **成本优化**
-   - 增大 chunk 减少 API 调用
-   - 使用更便宜的模型
-   - 限制处理数量
+3. **Cost Optimization**
+   - Increase chunk size to reduce API calls
+   - Use cheaper models
+   - Limit processing count
 
-4. **调试技巧**
-   - 先用 `--dry-run` 测试
-   - 使用 `-vvv` 查看详细日志
-   - 检查 test_output 确认结果
+4. **Debugging Tips**
+   - Start with `--dry-run` for testing
+   - Use `-vvv` to view detailed logs
+   - Check test_output to confirm results
 
-## 📞 快速帮助
+## 📞 Quick Help
 
-| 需求 | 命令 |
-|------|------|
-| 快速测试 | `python main_sdk.py input.ass output.ass --dry-run` |
-| 流式处理 | `python main_sdk.py input.ass output.ass --streaming` |
-| 查看帮助 | `python main_sdk.py --help` |
-| 测试连接 | `python main_sdk.py input.ass output.ass --test-connection` |
-| 详细输出 | `python main_sdk.py input.ass output.ass --streaming -v` |
+| Need | Command |
+|------|---------|
+| Quick test | `python main_sdk.py input.ass output.ass --dry-run` |
+| Streaming processing | `python main_sdk.py input.ass output.ass --streaming` |
+| View help | `python main_sdk.py --help` |
+| Test connection | `python main_sdk.py input.ass output.ass --test-connection` |
+| Verbose output | `python main_sdk.py input.ass output.ass --streaming -v` |
 
-## 🎯 推荐工作流
+## 🎯 Recommended Workflow
 
 ```bash
-# 1. 测试连接
+# 1. Test connection
 python main_sdk.py input.ass output.ass --test-connection
 
-# 2. Dry-run 测试
+# 2. Dry-run test
 python main_sdk.py input.ass output.ass --dry-run --streaming -v
 
-# 3. 处理完整文件
+# 3. Process complete file
 python main_sdk.py input.ass output.ass --streaming -v
 
-# 4. 检查输出
+# 4. Check output
 diff input.ass output.ass
 ```
 
 ---
 
-**项目状态**: ✅ 完成并测试通过
-**创建日期**: 2025-11-30
-**版本**: 1.0.0
-**维护者**: Experiment Team
+**Project Status**: ✅ Complete and tested
+**Creation Date**: 2025-11-30
+**Version**: 1.0.0
+**Maintainer**: Experiment Team
 
 ========================================
-✅ 实时流式输出功能 - 完成总结
+✅ Real-Time Streaming Output Feature - Completion Summary
 ========================================
 
-功能概述：
+Feature Overview:
 -----------
-在流式模式下使用 -vvv 参数时，可以实时看到 LLM 的输出内容（JSON 响应），而不是等待全部完成后才显示。
+When using -vvv parameter in streaming mode, you can see LLM output content (JSON response) in real-time, instead of waiting for complete response.
 
-修改的文件：
+Modified Files:
 -----------
 1. experiment/main_sdk.py
-   ✓ 修改 streaming_progress_callback() 函数
-   ✓ 根据 config.debug_prompts 决定是打印实际内容还是进度点
+   ✓ Modified streaming_progress_callback() function
+   ✓ Print actual content or progress dots based on config.debug_prompts
 
-2. experiment/llm_client_sdk.py  
-   ✓ 为 refine_chunk_sdk_streaming() 添加 print_system_prompt 参数
-   ✓ 避免系统 prompt 混入实时流式输出
+2. experiment/llm_client_sdk.py
+   ✓ Added print_system_prompt parameter to refine_chunk_sdk_streaming()
+   ✓ Avoid system prompt mixing into real-time streaming output
 
 3. experiment/README.md
-   ✓ 添加 REALTIME_STREAMING.md 到文档列表
-   ✓ 新增"Real-time LLM Output"示例部分
+   ✓ Added REALTIME_STREAMING.md to documentation list
+   ✓ New "Real-time LLM Output" example section
 
-新增文件：
+New Files:
 -----------
 1. experiment/REALTIME_STREAMING.md (8.7K)
-   ✓ 完整的实时流式输出指南
-   ✓ 3种详细程度级别对比
-   ✓ 实用案例和故障排除
-   ✓ 性能对比和使用建议
+   ✓ Complete real-time streaming output guide
+   ✓ Comparison of 3 verbosity levels
+   ✓ Practical use cases and troubleshooting
+   ✓ Performance comparison and usage recommendations
 
 2. experiment/test_realtime_streaming.py (5.1K)
-   ✓ 演示不同 verbose 级别的测试脚本
-   ✓ 可以实际看到三种模式的输出差异
+   ✓ Test script demonstrating different verbose levels
+   ✓ Visualize output differences across three modes
 
-三种详细级别：
+Three Verbosity Levels:
 -----------
 
-级别 1：无参数
+Level 1: No parameters
   python main_sdk.py input.ass output.ass --streaming
-  → 静默模式，无进度提示
+  → Silent mode, no progress indicator
 
-级别 2：-v
+Level 2: -v
   python main_sdk.py input.ass output.ass --streaming -v
-  → 显示进度点: .........
+  → Show progress dots: .........
 
-级别 3：-vvv ✨ 新功能
+Level 3: -vvv ✨ New feature
   python main_sdk.py input.ass output.ass --streaming -vvv
-  → 实时显示 LLM 的 JSON 输出
+  → Show real-time LLM JSON output
 
-实际输出示例：
+Actual Output Example:
 -----------
 
-使用 -vvv 时的输出：
+With -vvv:
 
   Processing chunk 1/5 (30 pairs)...
     LLM Output (real-time):
@@ -410,155 +410,155 @@ diff input.ass output.ass
     ----------------------------------------------------------
   ✅ Completed
 
-使用 -v 时的输出：
+With -v:
 
   Processing chunk 1/5 (30 pairs)...
     Streaming: .........................................
   ✅ Completed
 
-测试方法：
+Test Methods:
 -----------
-# 运行测试脚本查看三种模式的差异
+# Run test script to see differences across three modes
 ./venv/bin/python experiment/test_realtime_streaming.py
 
-# 或者用真实文件测试
+# Or test with real file
 python experiment/main_sdk.py test_input.ass output.ass --streaming -vvv --max-chunks 1
 
-主要优势：
+Key Advantages:
 -----------
-1. ✅ 实时监控 - 看到 LLM 正在生成什么
-2. ✅ 早期发现问题 - 立即看到 JSON 格式错误
-3. ✅ 质量检查 - 实时验证纠正质量
-4. ✅ 调试友好 - 清楚了解模型行为
-5. ✅ 灵活切换 - 通过参数轻松改变详细程度
+1. ✅ Real-time monitoring - See what LLM is generating
+2. ✅ Early issue detection - Immediately spot JSON format errors
+3. ✅ Quality checking - Real-time verification of correction quality
+4. ✅ Debug-friendly - Clear understanding of model behavior
+5. ✅ Flexible switching - Easy verbosity change via parameters
 
-使用建议：
+Usage Recommendations:
 -----------
-- 日常使用：-v（进度点，简洁）
-- 调试时：-vvv（实时输出，详细）
-- 生产环境：无参数（静默，干净的日志）
-- 测试新配置：-vvv + --max-chunks 1
+- Daily use: -v (progress dots, concise)
+- Debugging: -vvv (real-time output, detailed)
+- Production: no parameters (silent, clean logs)
+- Testing new config: -vvv + --max-chunks 1
 
-技术实现：
+Technical Implementation:
 -----------
-callback 函数根据配置决定输出内容：
+Callback function decides output content based on configuration:
 
   def streaming_progress_callback(chunk_text: str):
       if config.debug_prompts:
-          # -vvv: 打印实际 LLM 输出
+          # -vvv: Print actual LLM output
           print(chunk_text, end="", flush=True)
       elif config.verbose:
-          # -v: 打印进度点
+          # -v: Print progress dots
           print(".", end="", flush=True)
-      # 无参数: 静默
+      # No parameters: Silent
 
-YAML 配置：
+YAML Configuration:
 -----------
-也可以在 config.yaml 中永久设置：
+Can also permanently set in config.yaml:
 
   runtime:
-    debug_prompts: true   # -vvv 模式
-    verbose: true         # -v 模式
+    debug_prompts: true   # -vvv mode
+    verbose: true         # -v mode
 
-完成状态：
+Completion Status:
 -----------
-✅ 核心功能实现完成
-✅ 文档完整
-✅ 测试脚本可用
-✅ README 已更新
-✅ 向后兼容
-✅ 生产就绪
+✅ Core functionality implemented
+✅ Complete documentation
+✅ Test script available
+✅ README updated
+✅ Backward compatible
+✅ Production ready
 
 
 ========================================
-✅ YAML 配置支持流式输出 - 完成总结
+✅ YAML Configuration Streaming Output Support - Completion Summary
 ========================================
 
-问题：
+Issue:
 -----------
-用户发现 experiment/config.yaml 无法设置是否使用流式输出，
-只能通过 --streaming 命令行参数控制。
+User found that experiment/config.yaml cannot set whether to use streaming output,
+only controllable via --streaming command line parameter.
 
-解决方案：
+Solution:
 -----------
-在 YAML 配置中添加 use_streaming 选项，支持：
-1. YAML 文件设置默认值
-2. CLI 参数覆盖 YAML 设置
+Add use_streaming option in YAML configuration, supporting:
+1. YAML file sets default value
+2. CLI parameters override YAML settings
 
-修改的文件：
+Modified Files:
 -----------
 
 1. experiment/config.yaml
-   ✓ 添加 use_streaming: true 到 runtime 部分
-   ✓ 默认启用流式输出（推荐）
+   ✓ Added use_streaming: true to runtime section
+   ✓ Streaming output enabled by default (recommended)
 
 2. experiment/config_sdk.py
-   ✓ ConfigSDK 类添加 use_streaming: bool = True 属性
-   ✓ load_config_from_yaml() 读取 runtime.use_streaming
-   ✓ load_config_sdk() 支持 use_streaming 参数覆盖
+   ✓ ConfigSDK class added use_streaming: bool = True attribute
+   ✓ load_config_from_yaml() reads runtime.use_streaming
+   ✓ load_config_sdk() supports use_streaming parameter override
 
 3. experiment/main_sdk.py
-   ✓ 添加 --streaming 参数 (default=None)
-   ✓ 添加 --no-streaming 参数（显式禁用）
-   ✓ load_config_sdk() 传递 use_streaming 参数
-   ✓ process_subtitles() 使用 config.use_streaming
+   ✓ Added --streaming parameter (default=None)
+   ✓ Added --no-streaming parameter (explicitly disable)
+   ✓ load_config_sdk() passes use_streaming parameter
+   ✓ process_subtitles() uses config.use_streaming
 
 4. experiment/CONFIG_YAML.md
-   ✓ 更新 Runtime Options 部分说明
-   ✓ 添加 Example 5: Streaming Control
-   ✓ 说明 CLI 覆盖方法
+   ✓ Updated Runtime Options section description
+   ✓ Added Example 5: Streaming Control
+   ✓ Explained CLI override method
 
-新增文件：
+New Files:
 -----------
 
 1. experiment/test_streaming_config.py (2.1K)
-   ✓ 测试 YAML 配置加载
-   ✓ 测试 CLI 覆盖功能
-   ✓ 4 个测试全部通过 ✅
+   ✓ Test YAML configuration loading
+   ✓ Test CLI override functionality
+   ✓ 4 tests all passed ✅
 
-配置优先级：
+Configuration Priority:
 -----------
 
-1. YAML 配置（默认）:
+1. YAML configuration (default):
    config.yaml:
      runtime:
        use_streaming: true
 
-2. CLI 覆盖:
-   --streaming      → 强制启用
-   --no-streaming   → 强制禁用
-   不指定参数       → 使用 YAML 设置
+2. CLI override:
+   --streaming      → Force enable
+   --no-streaming   → Force disable
+   No parameter     → Use YAML setting
 
-3. 最终值: config.use_streaming
+3. Final value: config.use_streaming
 
-使用示例：
+Usage Examples:
 -----------
 
-方式 1：使用 YAML 默认值
-  # config.yaml 中设置
+Method 1: Use YAML default
+  # Set in config.yaml
   runtime:
     use_streaming: true
-  
-  # 直接运行，使用 YAML 设置
+
+  # Run directly, use YAML setting
   python main_sdk.py input.ass output.ass
 
-方式 2：CLI 临时覆盖
-  # 临时禁用流式输出
+Method 2: CLI temporary override
+  # Temporarily disable streaming
   python main_sdk.py input.ass output.ass --no-streaming
-  
-  # 临时启用流式输出
+
+  # Temporarily enable streaming
   python main_sdk.py input.ass output.ass --streaming -v
 
-方式 3：调试模式
+Method 3: Debug mode
   # config.yaml:
   runtime:
     use_streaming: true
     debug_prompts: true
-  
-  # 运行时看到实时 LLM 输出
+
+  # Run to see real-time LLM output
   python main_sdk.py input.ass output.ass
 
-测试结果：
+Test Results:
 -----------
 
 ./venv/bin/python experiment/test_streaming_config.py
@@ -570,128 +570,343 @@ Test 4: No override (use YAML default)   ✅ PASSED
 
 ✅ ALL TESTS PASSED
 
-优势：
+Advantages:
 -----------
 
-1. ✅ 便捷性 - 常用设置放 YAML，无需每次输入命令行参数
-2. ✅ 灵活性 - CLI 可以临时覆盖 YAML 设置
-3. ✅ 可见性 - config.yaml 中直接看到当前设置
-4. ✅ 一致性 - 与其他配置选项的处理方式一致
-5. ✅ 向后兼容 - --streaming 参数仍然有效
+1. ✅ Convenience - Common settings in YAML, no need to input CLI parameters every time
+2. ✅ Flexibility - CLI can temporarily override YAML settings
+3. ✅ Visibility - Current settings visible directly in config.yaml
+4. ✅ Consistency - Consistent handling with other configuration options
+5. ✅ Backward compatible - --streaming parameter still works
 
-推荐配置：
+Recommended Configuration:
 -----------
 
-对于大多数用户（推荐）:
+For most users (recommended):
   runtime:
-    use_streaming: true   # 启用流式，更好的体验
-    verbose: true         # 显示进度点
+    use_streaming: true   # Enable streaming, better experience
+    verbose: true         # Show progress dots
 
-对于调试:
+For debugging:
   runtime:
     use_streaming: true
-    debug_prompts: true   # 实时看到 LLM 输出
+    debug_prompts: true   # See real-time LLM output
 
-对于生产环境日志:
+For production logs:
   runtime:
-    use_streaming: false  # 完整响应，干净的日志
+    use_streaming: false  # Complete response, clean logs
     verbose: false
 
-完成状态：
+Completion Status:
 -----------
 
-✅ 核心功能实现完成
-✅ YAML 配置支持
-✅ CLI 覆盖支持
-✅ 测试通过
-✅ 文档更新
-✅ 向后兼容
-✅ 生产就绪
+✅ Core functionality implemented
+✅ YAML configuration support
+✅ CLI override support
+✅ Tests passed
+✅ Documentation updated
+✅ Backward compatible
+✅ Production ready
 
 
 ========================================
-✅ 模板式 Prompt 系统 (plan3.md) - 完成总结
+✅ Template-Based Prompt System (plan3.md) - Completion Summary
 ========================================
 
-功能概述：
+Feature Overview:
 -----------
-实现基于单一 markdown 模板文件 (`main_prompt.md`) 的系统提示生成策略。
-所有规则、示例和术语都在一个文件中定义，术语部分动态注入。
+Implement system prompt generation strategy based on single markdown template file (`main_prompt.md`).
+All rules, examples, and terminology defined in one file with dynamic terminology injection.
 
-修改的文件：
+Modified Files:
 -----------
 
 1. prompts.py
-   ✓ 新增 load_main_prompt_template(config) - 从配置加载模板
-   ✓ 新增 inject_memory_into_template() - 注入术语到模板
-   ✓ 新增辅助函数: _normalize_section_title(), _parse_template_glossary(),
+   ✓ New load_main_prompt_template(config) - Load template from config
+   ✓ New inject_memory_into_template() - Inject terminology into template
+   ✓ New helper functions: _normalize_section_title(), _parse_template_glossary(),
      _find_section_boundaries(), _merge_glossaries(), _build_terminology_section(),
      _renumber_sections()
-   ✓ 修改 build_system_prompt(global_memory, config=None) 支持新策略
-   ✓ 保留 build_system_prompt_legacy() 作为 fallback
+   ✓ Modified build_system_prompt(global_memory, config=None) to support new strategy
+   ✓ Preserved build_system_prompt_legacy() as fallback
 
 2. experiment/llm_client_sdk.py
-   ✓ refine_chunk_sdk() 传递 config 到 build_system_prompt()
-   ✓ refine_chunk_sdk_streaming() 传递 config 到 build_system_prompt()
+   ✓ refine_chunk_sdk() passes config to build_system_prompt()
+   ✓ refine_chunk_sdk_streaming() passes config to build_system_prompt()
 
 3. experiment/main_sdk.py
-   ✓ 移除旧的 split_user_prompt_and_glossary 和 set_user_instruction 调用
-   ✓ estimate_base_prompt_tokens() 传递 config 参数
+   ✓ Removed old split_user_prompt_and_glossary and set_user_instruction calls
+   ✓ estimate_base_prompt_tokens() passes config parameter
 
 4. experiment/config.yaml
-   ✓ user.prompt_path 从 "custom_main_prompt.md" 改为 "main_prompt.md"
+   ✓ user.prompt_path changed from "custom_main_prompt.md" to "main_prompt.md"
 
 5. experiment/CONFIG_YAML.md
-   ✓ 更新 User Customization 部分说明模板系统
+   ✓ Updated User Customization section describing template system
 
 6. experiment/README.md
-   ✓ 添加 Template-Based Prompt System 部分
+   ✓ Added Template-Based Prompt System section
 
-模板结构：
+Template Structure:
 -----------
-main_prompt.md 使用 markdown ### 标题划分章节：
+main_prompt.md uses markdown ### headers to divide sections:
 
   ### 1. English Subtitle Rules
   ### 2. Chinese Subtitle Rules
   ### 3. Context & Specific Handling
-  ### 4. User Terminology (Authoritative Glossary)  ← 动态注入点
+  ### 4. User Terminology (Authoritative Glossary)  ← Dynamic injection point
   ### 5. Input/Output Format & Constraint
   ### 6. Few-Shot Examples
 
-动态注入逻辑：
+Dynamic Injection Logic:
 -----------
-1. 加载模板文件
-2. 找到 "### X. User Terminology (Authoritative Glossary)" 章节
-3. 解析模板中已有的术语条目
-4. 与运行时 GlobalMemory.user_glossary 合并（运行时优先）
-5. 追加 GlobalMemory.glossary 作为 "Learned Terminology (Supplement)"
-6. 重新编号所有章节
+1. Load template file
+2. Find "### X. User Terminology (Authoritative Glossary)" section
+3. Parse existing terminology entries in template
+4. Merge with runtime GlobalMemory.user_glossary (runtime takes precedence)
+5. Append GlobalMemory.glossary as "Learned Terminology (Supplement)"
+6. Renumber all sections
 
-测试结果：
+Test Results:
 -----------
-JAG.S04E09.zh-cn.ass 前 30 条（3 个 chunk）：
-  ✓ 模板正确加载
-  ✓ 28 个术语条目正确显示
-  ✓ 术语学习正常工作 (Chris, Benny, Bryer, Rabb, Mattoni, Commander)
-  ✓ 章节自动编号 1-6
-  ✓ 总 token: 9,865 | 费用: $0.43 USD
+JAG.S04E09.zh-cn.ass first 30 entries (3 chunks):
+  ✓ Template loaded correctly
+  ✓ 28 terminology entries displayed correctly
+  ✓ Terminology learning works properly (Chris, Benny, Bryer, Rabb, Mattoni, Commander)
+  ✓ Sections auto-numbered 1-6
+  ✓ Total tokens: 9,865 | Cost: $0.43 USD
 
-优势：
+Advantages:
 -----------
-1. ✅ 单一数据源 - 所有规则在一个文件中维护
-2. ✅ 易于定制 - 修改 markdown 文件，无需改代码
-3. ✅ 动态术语 - 自动合并模板和运行时术语
-4. ✅ 向后兼容 - 无 config 时使用 legacy 逻辑
-5. ✅ 自动编号 - 章节编号自动调整
+1. ✅ Single source of truth - All rules maintained in one file
+2. ✅ Easy customization - Modify markdown file, no code changes needed
+3. ✅ Dynamic terminology - Automatically merge template and runtime terminology
+4. ✅ Backward compatible - Uses legacy logic when no config
+5. ✅ Auto-numbering - Section numbering adjusts automatically
 
-完成状态：
+Completion Status:
 -----------
-✅ 核心功能实现完成
-✅ prompts.py 新函数
-✅ SDK 调用适配
-✅ 配置更新
-✅ 文档更新
-✅ 测试通过
-✅ 生产就绪
+✅ Core functionality implemented
+✅ prompts.py new functions
+✅ SDK call adaptation
+✅ Configuration updated
+✅ Documentation updated
+✅ Tests passed
+✅ Production ready
 
-日期: 2025-12-01
+Date: 2025-12-01
+
+
+========================================
+✅ Per-Model API Credential Configuration - Completion Summary
+========================================
+
+Feature Overview:
+-----------
+Support independent API key and endpoint configuration for different models (main_model and terminology_model).
+Allow main model and terminology model to use different API providers, keys, or endpoints.
+
+Modified Files:
+-----------
+
+1. experiment/config_sdk.py
+   ✓ MainModelSettings added optional key_file and base_url fields
+   ✓ TerminologyModelSettings added optional key_file and base_url fields
+   ✓ load_config_from_yaml() reads per-model credential overrides
+
+2. experiment/llm_client_sdk.py
+   ✓ New _resolve_model_credentials() function to resolve model credentials
+   ✓ call_openai_api_sdk() uses credential resolver
+   ✓ call_openai_api_sdk_streaming() uses credential resolver
+   ✓ -vvv mode displays credential resolution info
+
+3. experiment/config.yaml
+   ✓ main_model and terminology_model added comment examples
+   ✓ Show how to override global API settings
+
+New Files:
+-----------
+
+1. experiment/CONFIG_YAML.md (merged content)
+   ✓ Complete user guide
+   ✓ Configuration examples and use cases
+   ✓ Technical implementation details
+   ✓ Troubleshooting guide
+
+2. experiment/test_per_model_config.py (6.2K)
+   ✓ 5 test cases
+   ✓ Global credential test
+   ✓ Model-specific override test
+   ✓ Different models different credentials test
+   ✓ Verbose output test
+   ✓ All passed ✅
+
+3. experiment/demo_per_model_config.py (6.8K)
+   ✓ Interactive demo script
+   ✓ 4 usage scenarios demonstration
+   ✓ Visualize credential resolution process
+
+Credential Resolution Logic:
+-----------
+
+Resolution Order:
+1. Start with global api.key_file and api.base_url
+2. If model has base_url override → use model's base_url
+3. If model has key_file override → load API key from model's file
+
+Path Resolution:
+- Relative paths resolved from experiment/ directory
+- Absolute paths supported
+- Clear error messages when loading fails
+
+Configuration Examples:
+-----------
+
+Example 1: Different endpoints
+  api:
+    key_file: "../key"
+    base_url: "https://api.openai.com/v1"
+
+  main_model:
+    name: "gpt-5-mini"
+    base_url: "https://my-proxy.example.com/v1"  # Use proxy
+
+  terminology_model:
+    name: "gpt-4o-mini"
+    # Use global settings
+
+Example 2: Different API keys (cost tracking)
+  main_model:
+    key_file: "../key-main"  # Main model separate billing
+
+  terminology_model:
+    key_file: "../key-terminology"  # Terminology model separate billing
+
+Example 3: Local server testing
+  main_model:
+    base_url: "https://api.openai.com/v1"  # Production endpoint
+
+  terminology_model:
+    base_url: "http://localhost:8000/v1"  # Local test server
+    key_file: "../test-key"
+
+Verbose Output (-vvv mode):
+-----------
+
+Run command:
+  python main_sdk.py input.ass output.ass -vvv
+
+Output example:
+  [Credential Resolution for gpt-5-mini]
+    API Key: Model-specific (../key-main) [sk-proj-AbC...]
+    Base URL: Model-specific → https://my-proxy.example.com/v1
+
+  Processing chunk 1/5 (30 pairs)...
+
+Displayed information:
+- Model name being used
+- API Key source (global vs model-specific)
+- Base URL source (global vs model-specific)
+- Actual endpoint being used
+
+Test Results:
+-----------
+
+./venv/bin/python experiment/test_per_model_config.py
+
+Test 1: Global credentials (no overrides)                    ✅ PASSED
+Test 2: Model-specific credential overrides                  ✅ PASSED
+Test 3: Different credentials for main vs terminology        ✅ PASSED
+Test 4: No model settings (fallback to global)              ✅ PASSED
+Test 5: Verbose credential resolution output (-vvv mode)     ✅ PASSED
+
+✅ ALL TESTS PASSED
+
+Use Cases:
+-----------
+
+1. Cost Tracking
+   - Different models use different API keys
+   - Track main model and terminology model costs separately
+   - Convenient for budget management and cost optimization
+
+2. Multi-Provider Deployment
+   - Main model uses OpenAI
+   - Terminology model uses local server or other provider
+   - Flexible architecture design
+
+3. Development Testing
+   - Production environment uses official endpoint
+   - Test environment uses local server
+   - Does not affect production configuration
+
+4. Load Balancing
+   - Distribute requests across multiple endpoints
+   - Avoid single point overload
+   - Improve system reliability
+
+Advantages:
+-----------
+
+1. ✅ Flexibility - Independent configuration per model
+2. ✅ Backward compatible - Existing configs work unchanged
+3. ✅ Partial override - Can override only base_url or key_file
+4. ✅ Debug-friendly - -vvv shows detailed resolution info
+5. ✅ Clear errors - Shows file path when loading fails
+6. ✅ Independent resolution - Each API call resolves credentials independently
+
+Technical Implementation:
+-----------
+
+Core function:
+  def _resolve_model_credentials(
+      config: ConfigSDK,
+      model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]],
+      verbose: bool = False
+  ) -> Tuple[str, str]:
+      # Returns (api_key, base_url)
+
+Integration points:
+- call_openai_api_sdk() - Standard API calls
+- call_openai_api_sdk_streaming() - Streaming API calls
+- Both share same credential resolution logic
+
+Verbose mode:
+- Shows credential info when config.debug_prompts = True
+- Triggered by -vvv parameter
+
+Documentation Updates:
+-----------
+
+1. experiment/README.md
+   ✓ Added "Per-Model API Credentials" section
+   ✓ Updated "Implemented Features" list
+   ✓ Added documentation links
+
+2. CHANGELOG.md
+   ✓ New [0.0.7] - 2025-12-07 version
+   ✓ Detailed Added/Changed/Technical Details sections
+   ✓ Configuration examples and usage methods
+
+3. experiment/CONFIG_YAML.md
+   ✓ Merged per-model credentials documentation
+   ✓ Complete usage guide
+   ✓ Multiple practical use cases
+
+Completion Status:
+-----------
+
+✅ Core functionality implemented
+✅ config_sdk.py updated
+✅ llm_client_sdk.py integrated
+✅ Credential resolution logic
+✅ Verbose output support
+✅ All 5 tests passed
+✅ Demo script complete
+✅ Complete documentation
+✅ README updated
+✅ CHANGELOG updated
+✅ Backward compatible
+✅ Production ready
+
+Date: 2025-12-07

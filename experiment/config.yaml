@@ -15,12 +15,18 @@ main_model:
   reasoning_effort: "low"  # none, low, medium, high
   temperature: 1.0
   #temperature: 0.4
+  # Optional per-model API credentials (overrides global api settings)
+  #key_file: "../key-2"  # Path to model-specific API key file
+  #base_url: "https://another.url/v1"  # Model-specific endpoint URL
 
 # Terminology extraction model settings (GPT-4o-mini for glossary extraction)
 terminology_model:
   name: "gpt-4o-mini"
   max_output_tokens: 1800
   temperature: 0.45
+  # Optional per-model API credentials (overrides global api settings)
+  #key_file: "../key-terminology"  # Path to model-specific API key file
+  #base_url: "https://another.url/v1"  # Model-specific endpoint URL
 
 # Token management
 tokens:

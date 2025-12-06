@@ -18,7 +18,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config_sdk import ConfigSDK, MainModelSettings, TerminologyModelSettings
+from config_sdk import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
 from pairs import SubtitlePair, pairs_to_json_list, pairs_from_json_list
 from memory import GlobalMemory, validate_memory_structure
 from prompts import (
@@ -35,6 +35,70 @@ from utils import extract_json_from_response, validate_json_structure
 class LLMAPIError(Exception):
     """Exception raised for LLM API errors."""
     pass
+
+
+def _resolve_model_credentials(
+    config: ConfigSDK,
+    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    verbose: bool = False
+) -> Tuple[str, str]:
+    """
+    Resolve API key and base URL for a specific model.
+
+    Args:
+        config: Global ConfigSDK object
+        model_settings: Optional model-specific settings
+        verbose: Whether to print credential resolution info
+
+    Returns:
+        Tuple of (api_key, base_url)
+    """
+    # Default to global config values
+    api_key = config.api_key
+    base_url = config.api_base_url
+
+    # Track what overrides were applied
+    key_override = False
+    url_override = False
+    model_name = model_settings.name if model_settings else "unknown"
+
+    # Override with model-specific settings if available
+    if model_settings:
+        # Check for model-specific base URL
+        if model_settings.base_url:
+            base_url = model_settings.base_url
+            url_override = True
+
+        # Check for model-specific API key file
+        if model_settings.key_file:
+            # Resolve key file path relative to experiment directory
+            key_file_path = model_settings.key_file
+            if not os.path.isabs(key_file_path):
+                # Relative to experiment directory
+                experiment_dir = os.path.dirname(os.path.abspath(__file__))
+                key_file_path = os.path.join(experiment_dir, key_file_path)
+
+            try:
+                api_key = load_api_key_from_file(key_file_path)
+                key_override = True
+            except Exception as e:
+                raise LLMAPIError(f"Failed to load model-specific API key from {key_file_path}: {str(e)}")
+
+    # Print credential info in verbose mode
+    if verbose:
+        print(f"\n  [Credential Resolution for {model_name}]")
+        if key_override:
+            print(f"    API Key: Model-specific ({model_settings.key_file}) [{api_key[:20]}...]")
+        else:
+            print(f"    API Key: Global (api.key_file) [{api_key[:20]}...]")
+
+        if url_override:
+            print(f"    Base URL: Model-specific → {base_url}")
+        else:
+            print(f"    Base URL: Global (api.base_url) → {base_url}")
+        print()
+
+    return api_key, base_url
 
 
 def call_openai_api_sdk(
@@ -67,15 +131,20 @@ def call_openai_api_sdk(
     Raises:
         LLMAPIError: If API call fails after retries
     """
-    # Initialize OpenAI client
-    client = OpenAI(
-        api_key=config.api_key,
-        base_url=config.api_base_url,
-        timeout=config.api_timeout
-    )
-
     # Determine model settings
     settings = model_settings or getattr(config, "main_model", None)
+
+    # Resolve credentials (may use model-specific overrides)
+    # Show credential info in debug mode (-vvv)
+    verbose_creds = getattr(config, "debug_prompts", False)
+    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+
+    # Initialize OpenAI client with resolved credentials
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=config.api_timeout
+    )
 
     target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
     target_output_tokens = max_output_tokens or (
@@ -389,15 +458,20 @@ def call_openai_api_sdk_streaming(
     Raises:
         LLMAPIError: If API call fails after retries
     """
-    # Initialize OpenAI client
-    client = OpenAI(
-        api_key=config.api_key,
-        base_url=config.api_base_url,
-        timeout=config.api_timeout
-    )
-
     # Determine model settings
     settings = model_settings or getattr(config, "main_model", None)
+
+    # Resolve credentials (may use model-specific overrides)
+    # Show credential info in debug mode (-vvv)
+    verbose_creds = getattr(config, "debug_prompts", False)
+    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+
+    # Initialize OpenAI client with resolved credentials
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=config.api_timeout
+    )
 
     target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
     target_output_tokens = max_output_tokens or (

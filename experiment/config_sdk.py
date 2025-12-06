@@ -82,6 +82,8 @@ class MainModelSettings:
     max_output_tokens: int = 12000
     reasoning_effort: str = "medium"
     temperature: float = 1.0
+    key_file: Optional[str] = None  # Optional per-model API key file override
+    base_url: Optional[str] = None  # Optional per-model base URL override
 
 
 @dataclass
@@ -91,6 +93,8 @@ class TerminologyModelSettings:
     name: str = "gpt-4o-mini"
     max_output_tokens: int = 1800
     temperature: float = 0.5
+    key_file: Optional[str] = None  # Optional per-model API key file override
+    base_url: Optional[str] = None  # Optional per-model base URL override
 
 
 @dataclass
@@ -190,12 +194,16 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         max_output_tokens=main_model_settings.get("max_output_tokens", 12000),
         reasoning_effort=main_model_settings.get("reasoning_effort", "medium"),
         temperature=main_model_settings.get("temperature", 1.0),
+        key_file=main_model_settings.get("key_file"),
+        base_url=main_model_settings.get("base_url"),
     )
 
     terminology_model = TerminologyModelSettings(
         name=terminology_model_settings.get("name", "gpt-4o-mini"),
         max_output_tokens=terminology_model_settings.get("max_output_tokens", 1800),
         temperature=terminology_model_settings.get("temperature", 0.5),
+        key_file=terminology_model_settings.get("key_file"),
+        base_url=terminology_model_settings.get("base_url"),
     )
 
     # Create config object

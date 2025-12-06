@@ -29,6 +29,7 @@ The main project uses `requests` library to make HTTP POST calls to OpenAI API. 
 - **README.md**: This file - project overview and quick start
 - **USAGE.md**: Complete usage guide for main_sdk.py (quick start + advanced usage)
 - **CONFIG_YAML.md**: YAML configuration guide (✨ NEW)
+- **PER_MODEL_CREDENTIALS.md**: Per-model API credential configuration guide (✨ NEW)
 - **STREAMING_API.md**: Technical documentation for streaming API
 - **REALTIME_STREAMING.md**: Real-time streaming output guide (✨ NEW)
 - **SUMMARY.md**: Project summary and completion report
@@ -72,6 +73,51 @@ Command line arguments override YAML settings:
 ```bash
 python main_sdk.py input.ass output.ass --model gpt-4o --dry-run -v
 ```
+
+### Per-Model API Credentials (✨ NEW)
+
+You can now configure different API keys and endpoints for different models. This is useful for:
+- **Cost tracking**: Separate billing for main vs terminology models
+- **Multi-provider**: Route different models to different providers
+- **Development/Testing**: Production endpoint for main model, local server for terminology
+- **Load balancing**: Distribute requests across multiple endpoints
+
+**Example configuration:**
+```yaml
+# config.yaml
+api:
+  key_file: "../key"
+  base_url: "https://api.openai.com/v1"
+
+main_model:
+  name: "gpt-5-mini"
+  max_output_tokens: 27000
+  reasoning_effort: "low"
+  temperature: 1.0
+  # Override with custom endpoint
+  key_file: "../key-main"  # Different API key
+  base_url: "https://my-proxy.example.com/v1"  # Different endpoint
+
+terminology_model:
+  name: "gpt-4o-mini"
+  max_output_tokens: 1800
+  temperature: 0.45
+  # Uses global api settings (no overrides)
+```
+
+**Verbose debugging (-vvv):**
+```bash
+python main_sdk.py input.ass output.ass -vvv
+```
+
+Output shows which credentials are being used:
+```
+  [Credential Resolution for gpt-5-mini]
+    API Key: Model-specific (../key-main) [sk-proj-AbC...]
+    Base URL: Model-specific → https://my-proxy.example.com/v1
+```
+
+See [PER_MODEL_CREDENTIALS.md](PER_MODEL_CREDENTIALS.md) for complete guide.
 
 ### Template-Based Prompt System (plan3.md)
 
@@ -352,6 +398,8 @@ Total: 3/3 tests passed
 ✅ **Automatic retry logic** - Exponential backoff for failed requests
 ✅ **Usage statistics** - Track token usage including reasoning tokens (GPT-5)
 ✅ **Callback support** - Real-time streaming feedback via callbacks
+✅ **Per-model credentials** - Configure different API keys/endpoints per model (NEW!)
+✅ **Verbose debugging** - `-vvv` mode shows credential resolution and system prompts
 
 ## Future Enhancements
 
