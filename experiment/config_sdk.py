@@ -114,6 +114,7 @@ class ConfigSDK:
     pairs_per_chunk: Optional[int] = None
     api_timeout: int = 280
     use_streaming: bool = True
+    incremental_output: bool = True
     verbose: bool = False
     very_verbose: bool = False
     debug_prompts: bool = False
@@ -128,15 +129,21 @@ class ConfigSDK:
     terminology_min_confidence: float = 0.6
     main_model: MainModelSettings = field(default_factory=MainModelSettings)
     terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
+    intermediate_format: str = "json"
 
     def __post_init__(self):
-        """Load API key from key file if not set."""
+        """Load API key from key file if not set and validate format."""
         if not self.api_key:
             try:
                 self.api_key = load_api_key_from_file()
                 print(f"Loaded API key from key file: {self.api_key[:20]}...")
             except Exception as e:
                 raise ValueError(f"Failed to load API key from key file: {str(e)}")
+
+        valid_formats = ["json", "xml-pair", "pseudo-toml"]
+        if self.intermediate_format.lower() not in valid_formats:
+            raise ValueError(f"Invalid intermediate format: {self.intermediate_format}. "
+                           f"Valid formats: {', '.join(valid_formats)}")
 
     @property
     def model_name(self) -> str:
@@ -171,6 +178,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
     glossary_settings = config_data.get("glossary", {})
     user_settings = config_data.get("user", {})
     runtime_settings = config_data.get("runtime", {})
+    format_settings = config_data.get("format", {})
 
     # Resolve key file path relative to YAML config file
     key_file_path = api_settings.get("key_file")
@@ -222,6 +230,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         terminology_min_confidence=glossary_settings.get("terminology_min_confidence", 0.6),
         user_prompt_path=user_settings.get("prompt_path", "custom_main_prompt.md"),
         use_streaming=runtime_settings.get("use_streaming", True),
+        incremental_output=runtime_settings.get("incremental_output", True),
         verbose=runtime_settings.get("verbose", False),
         very_verbose=runtime_settings.get("very_verbose", False),
         debug_prompts=runtime_settings.get("debug_prompts", False),
@@ -230,6 +239,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         max_chunks=runtime_settings.get("max_chunks"),
         main_model=main_model,
         terminology_model=terminology_model,
+        intermediate_format=format_settings.get("intermediate_format", "json"),
     )
 
     # Skip __post_init__ API key loading since we already loaded it
@@ -243,6 +253,7 @@ def load_config_sdk(
     model_name: Optional[str] = None,
     terminology_model: Optional[str] = None,
     use_streaming: Optional[bool] = None,
+    incremental_output: Optional[bool] = None,
     dry_run: bool = False,
     max_chunks: Optional[int] = None,
     memory_limit: Optional[int] = None,
@@ -253,6 +264,7 @@ def load_config_sdk(
     very_verbose: bool = False,
     debug_prompts: bool = False,
     stats_interval: Optional[float] = None,
+    intermediate_format: Optional[str] = None,
 ) -> ConfigSDK:
     """
     Load configuration from YAML file with optional overrides.
@@ -262,6 +274,7 @@ def load_config_sdk(
         model_name: Override for main refinement model name
         terminology_model: Override for terminology extraction model name
         use_streaming: Override for streaming API mode
+        incremental_output: Override for incremental output mode (write file after each chunk)
         dry_run: Enable dry run mode
         max_chunks: Override for maximum chunks to process
         memory_limit: Override for memory token limit
@@ -272,6 +285,7 @@ def load_config_sdk(
         very_verbose: Enable very verbose mode
         debug_prompts: Print system prompt for debugging
         stats_interval: Stats refresh interval in seconds
+        intermediate_format: Override for intermediate representation format (json, xml-pair, pseudo-toml)
 
     Returns:
         ConfigSDK object with specified settings
@@ -286,6 +300,8 @@ def load_config_sdk(
         config.terminology_model.name = terminology_model
     if use_streaming is not None:
         config.use_streaming = use_streaming
+    if incremental_output is not None:
+        config.incremental_output = incremental_output
     if dry_run:
         config.dry_run = dry_run
     if max_chunks is not None:
@@ -309,5 +325,7 @@ def load_config_sdk(
         config.verbose = True
     if stats_interval is not None:
         config.stats_interval = stats_interval
+    if intermediate_format is not None:
+        config.intermediate_format = intermediate_format
 
     return config

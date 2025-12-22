@@ -217,6 +217,7 @@ def process_subtitles(
         print(f"Output:    {output_path}")
         print(f"Model:     {config.main_model.name}")
         print(f"Mode:      {'Streaming' if use_streaming else 'Non-streaming'}")
+        print(f"Format:    {config.intermediate_format.upper()}")
         print(f"{'='*60}\n")
 
         # Step 1: Parse ASS file
@@ -323,6 +324,9 @@ def process_subtitles(
         print("\nStep 4: Processing chunks with LLM...")
         print("-" * 60)
 
+        # Track cumulative pairs processed for incremental output status
+        cumulative_pairs_processed = 0
+
         # Define streaming callback for progress indication
         def streaming_progress_callback(chunk_text: str):
             if config.debug_prompts:
@@ -402,12 +406,30 @@ def process_subtitles(
                 # Apply corrections back to global pairs list
                 apply_corrections_to_global_pairs(pairs, corrected_pairs)
 
+                # Get pair range for this chunk
+                chunk_first_id = corrected_pairs[0].id if corrected_pairs else 0
+                chunk_last_id = corrected_pairs[-1].id if corrected_pairs else 0
+
+                # Update cumulative count
+                cumulative_pairs_processed += len(corrected_pairs)
+
                 # Update global memory
                 global_memory = update_global_memory(global_memory, corrected_pairs, config)
 
                 # Save updated glossary to checkpoint file (if enabled)
                 if enable_checkpoint and checkpoint_path:
                     save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+
+                # Write incremental output if enabled
+                if config.incremental_output:
+                    try:
+                        updated_ass_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
+                        output_content = render_ass_file(header, updated_ass_lines)
+                        write_ass_file(output_path, output_content)
+                        # Always show incremental save status (not just in verbose mode)
+                        print(f"  [Incremental] ✓ Saved pairs {chunk_first_id}-{chunk_last_id} ({cumulative_pairs_processed}/{len(pairs)} total) to {output_path}")
+                    except Exception as e:
+                        print(f"  [Incremental] ✗ Failed to save progress: {e}")
 
                 # Check if memory needs compression
                 memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
@@ -499,7 +521,14 @@ Examples:
   # Resume with checkpoint (preserves learned terms across runs)
   python main_sdk.py input.ass output.ass --resume 680 --checkpoint
 
+  # Disable incremental output (write only at end)
+  python main_sdk.py input.ass output.ass --no-incremental-output
+
+  # Enable incremental output explicitly (default behavior)
+  python main_sdk.py input.ass output.ass --incremental-output
+
 Note: API key is automatically loaded from ../key file
+Note: Incremental output is enabled by default for data safety (write after each chunk)
         """
     )
 
@@ -580,6 +609,19 @@ Note: API key is automatically loaded from ../key file
         action="store_true",
         help="Enable glossary checkpoint system (save/load learned terminology to/from .glossary.yaml file)"
     )
+    parser.add_argument(
+        "--incremental-output",
+        action="store_true",
+        default=None,
+        dest="incremental_output",
+        help="Write output file after each chunk (default: from config.yaml, typically enabled for safety)"
+    )
+    parser.add_argument(
+        "--no-incremental-output",
+        action="store_false",
+        dest="incremental_output",
+        help="Write output file only once at the end (disables incremental updates)"
+    )
 
     args = parser.parse_args()
 
@@ -593,6 +635,7 @@ Note: API key is automatically loaded from ../key file
         config = load_config_sdk(
             model_name=args.model,
             use_streaming=args.streaming,
+            incremental_output=args.incremental_output,
             dry_run=args.dry_run,
             max_chunks=args.max_chunks,
             memory_limit=args.memory_limit,

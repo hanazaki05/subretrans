@@ -34,6 +34,9 @@ tokens:
   memory_token_limit: 4000
   chunk_token_soft_limit: 85000
 
+format:
+  intermediate_format: "xml-pair"
+
 # Chunking strategy
 chunking:
   pairs_per_chunk: null  # If set, use fixed pair count instead of token-based chunking
@@ -56,6 +59,7 @@ user:
 # Runtime options (can be overridden by CLI flags)
 runtime:
   use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
+  incremental_output: true  # Write output file after each chunk (recommended for safety)
   verbose: false  # Enable verbose output with detailed progress
   very_verbose: false  # Dump full API responses (requires verbose)
   debug_prompts: false  # Print system prompt/memory (requires very_verbose)

@@ -19,7 +19,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config_sdk import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
-from pairs import SubtitlePair, pairs_to_json_list, pairs_from_json_list
+from pairs import SubtitlePair
 from memory import GlobalMemory, validate_memory_structure
 from prompts import (
     build_system_prompt,
@@ -29,7 +29,8 @@ from prompts import (
     validate_response_format
 )
 from stats import UsageStats
-from utils import extract_json_from_response, validate_json_structure
+from utils import extract_json_from_response
+from serializers import serialize, deserialize, SerializationError
 
 
 class LLMAPIError(Exception):
@@ -243,6 +244,107 @@ def call_openai_api_sdk(
     raise LLMAPIError(f"Failed after {max_retries} attempts")
 
 
+def _strip_thinking_blocks(text: str) -> str:
+    """
+    Remove thinking blocks from LLM response.
+
+    Handles formats like:
+    <think>
+    **Examining the Task**
+    I'm currently focused on...
+    </think>
+
+    Args:
+        text: Raw text that may contain thinking blocks
+
+    Returns:
+        Text with thinking blocks removed
+    """
+    import re
+
+    # Remove <think>...</think> blocks (case-insensitive, multiline)
+    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    return cleaned.strip()
+
+
+def _extract_from_code_blocks(text: str) -> Optional[str]:
+    """
+    Extract content from markdown code blocks.
+
+    Handles formats like:
+    ```json
+    [{"id": 0, ...}]
+    ```
+
+    ```xml
+    <pair>...</pair>
+    ```
+
+    ```toml
+    [pair]
+    id = 0
+    ```
+
+    Also handles code blocks without language specifier:
+    ```
+    content here
+    ```
+
+    Args:
+        text: Raw text that may contain code blocks
+
+    Returns:
+        Extracted content or None if no code blocks found
+    """
+    import re
+
+    # Try to find content within code blocks (```...```)
+    # Pattern matches both with and without language specifier
+    code_block_pattern = r'```(?:\w+)?\s*\n(.*?)\n```'
+    matches = re.findall(code_block_pattern, text, re.DOTALL)
+
+    if matches:
+        # Return the first code block content
+        return matches[0].strip()
+
+    # No code blocks found
+    return None
+
+
+def _clean_llm_response(text: str) -> str:
+    """
+    Clean LLM response by removing extraneous content.
+
+    Processing order (CRITICAL):
+    1. Remove thinking blocks (<think>...</think>)
+    2. Extract from markdown code blocks (```...```)
+    3. Return cleaned text
+
+    This handles cases like:
+    <think>Analyzing the task...</think>
+    ```json
+    [{"id": 0, "eng": "Hello", "chinese": "你好"}]
+    ```
+
+    Args:
+        text: Raw LLM response text
+
+    Returns:
+        Cleaned text ready for deserialization
+    """
+    # Step 1: Remove thinking blocks FIRST
+    text = _strip_thinking_blocks(text)
+
+    # Step 2: Extract from code blocks if present
+    extracted = _extract_from_code_blocks(text)
+    if extracted is not None:
+        return extracted
+
+    # No code blocks, return as-is (already stripped of thinking blocks)
+    return text.strip()
+
+
 def refine_chunk_sdk(
     pairs_chunk: List[SubtitlePair],
     global_memory: GlobalMemory,
@@ -267,9 +369,9 @@ def refine_chunk_sdk(
     # Build system prompt with memory (using new template-based approach)
     system_content = build_system_prompt(global_memory, config)
 
-    # Convert pairs to JSON
-    pairs_json = json.dumps(pairs_to_json_list(pairs_chunk), ensure_ascii=False, indent=2)
-    user_content = build_user_prompt_for_chunk(pairs_json)
+    # Serialize pairs using configured format
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    user_content = build_user_prompt_for_chunk(pairs_serialized)
 
     # Prepare messages
     messages = [
@@ -291,35 +393,31 @@ def refine_chunk_sdk(
             model_settings=config.main_model
         )
 
-        # Try to extract and parse JSON from response
-        json_str = extract_json_from_response(response_text)
+        # Clean response (remove thinking blocks, extract from code blocks)
+        cleaned = _clean_llm_response(response_text)
 
-        if json_str is None:
-            # If extraction failed, try using the whole response
-            json_str = response_text.strip()
+        # For JSON format, additional validation
+        if config.intermediate_format.lower() == "json":
+            if not validate_response_format(cleaned):
+                try:
+                    preview = (response_text or "").rstrip()
+                except Exception:
+                    preview = "[Unavailable raw response]"
 
-        # Validate format before parsing
-        if not validate_response_format(json_str):
-            try:
-                preview = (response_text or "").rstrip()
-            except Exception:
-                preview = "[Unavailable raw response]"
+                print("\n  [Raw LLM response (invalid format)]:\n")
+                print(preview if preview else "[Empty response]")
+                print()
 
-            print("\n  [Raw LLM response (invalid JSON)]:\n")
-            print(preview if preview else "[Empty response]")
-            print()
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
 
-            raise LLMAPIError("Response is not in expected JSON format")
-
-        # Parse JSON
-        corrected_data = json.loads(json_str)
-
-        # Validate structure
-        if not validate_json_structure(corrected_data, ["id", "eng", "chinese"]):
-            raise LLMAPIError("Response JSON has invalid structure")
-
-        # Convert back to SubtitlePair objects
-        corrected_pairs = pairs_from_json_list(corrected_data)
+        # Deserialize using configured format
+        try:
+            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+        except SerializationError as e:
+            print(f"\n  [Deserialization error]: {str(e)}")
+            print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+            print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+            raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
@@ -327,8 +425,8 @@ def refine_chunk_sdk(
 
         return corrected_pairs, usage, response_text
 
-    except json.JSONDecodeError as e:
-        raise LLMAPIError(f"Failed to parse LLM response as JSON: {str(e)}\nResponse: {response_text[:500]}...")
+    except LLMAPIError:
+        raise
     except Exception as e:
         raise LLMAPIError(f"Error during chunk refinement: {str(e)}")
 
@@ -611,9 +709,9 @@ def refine_chunk_sdk_streaming(
     # Build system prompt with memory (using new template-based approach)
     system_content = build_system_prompt(global_memory, config)
 
-    # Convert pairs to JSON
-    pairs_json = json.dumps(pairs_to_json_list(pairs_chunk), ensure_ascii=False, indent=2)
-    user_content = build_user_prompt_for_chunk(pairs_json)
+    # Serialize pairs using configured format
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    user_content = build_user_prompt_for_chunk(pairs_serialized)
 
     # Prepare messages
     messages = [
@@ -636,35 +734,31 @@ def refine_chunk_sdk_streaming(
             chunk_callback=chunk_callback
         )
 
-        # Try to extract and parse JSON from response
-        json_str = extract_json_from_response(response_text)
+        # Clean response (remove thinking blocks, extract from code blocks)
+        cleaned = _clean_llm_response(response_text)
 
-        if json_str is None:
-            # If extraction failed, try using the whole response
-            json_str = response_text.strip()
+        # For JSON format, additional validation
+        if config.intermediate_format.lower() == "json":
+            if not validate_response_format(cleaned):
+                try:
+                    preview = (response_text or "").rstrip()
+                except Exception:
+                    preview = "[Unavailable raw response]"
 
-        # Validate format before parsing
-        if not validate_response_format(json_str):
-            try:
-                preview = (response_text or "").rstrip()
-            except Exception:
-                preview = "[Unavailable raw response]"
+                print("\n  [Raw LLM response (invalid format)]:\n")
+                print(preview if preview else "[Empty response]")
+                print()
 
-            print("\n  [Raw LLM response (invalid JSON)]:\n")
-            print(preview if preview else "[Empty response]")
-            print()
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
 
-            raise LLMAPIError("Response is not in expected JSON format")
-
-        # Parse JSON
-        corrected_data = json.loads(json_str)
-
-        # Validate structure
-        if not validate_json_structure(corrected_data, ["id", "eng", "chinese"]):
-            raise LLMAPIError("Response JSON has invalid structure")
-
-        # Convert back to SubtitlePair objects
-        corrected_pairs = pairs_from_json_list(corrected_data)
+        # Deserialize using configured format
+        try:
+            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+        except SerializationError as e:
+            print(f"\n  [Deserialization error]: {str(e)}")
+            print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+            print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+            raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
@@ -672,7 +766,7 @@ def refine_chunk_sdk_streaming(
 
         return corrected_pairs, usage, response_text
 
-    except json.JSONDecodeError as e:
-        raise LLMAPIError(f"Failed to parse LLM response as JSON: {str(e)}\nResponse: {response_text[:500]}...")
+    except LLMAPIError:
+        raise
     except Exception as e:
         raise LLMAPIError(f"Error during chunk refinement: {str(e)}")

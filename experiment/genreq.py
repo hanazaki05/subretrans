@@ -8,7 +8,6 @@ Useful for testing request timing with other tools or inspecting prompts.
 import argparse
 import sys
 import os
-import json
 from pathlib import Path
 
 # Add parent directory to path for imports
@@ -21,7 +20,7 @@ from chunker import chunk_pairs
 from memory import init_global_memory, estimate_memory_tokens
 from prompts import build_system_prompt, build_user_prompt_for_chunk, split_user_prompt_and_glossary, set_user_instruction
 from utils import estimate_tokens, estimate_pairs_tokens
-from pairs import pairs_to_json_list
+from serializers import serialize
 
 
 def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, config):
@@ -117,12 +116,12 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
         for i, chunk in enumerate(chunks):
             print(f"\nGenerating prompts for chunk {i+1}/{len(chunks)} ({len(chunk)} pairs)...")
 
-            # Build system prompt
-            system_prompt = build_system_prompt(global_memory)
+            # Build system prompt (with format-aware example conversion)
+            system_prompt = build_system_prompt(global_memory, config)
 
-            # Build user prompt
-            pairs_json = json.dumps(pairs_to_json_list(chunk), ensure_ascii=False, indent=2)
-            user_prompt = build_user_prompt_for_chunk(pairs_json)
+            # Build user prompt using configured intermediate format
+            pairs_serialized = serialize(chunk, config.intermediate_format)
+            user_prompt = build_user_prompt_for_chunk(pairs_serialized)
 
             # Estimate tokens
             system_tokens = estimate_tokens(system_prompt, config.main_model.name)
@@ -188,6 +187,7 @@ def write_markdown(chunks, prompts, output_path, config, input_filename, total_p
         f.write(f"- **Total pairs:** {total_pairs}\n")
         f.write(f"- **Pairs per chunk:** {config.pairs_per_chunk}\n")
         f.write(f"- **Total chunks:** {len(chunks)}\n")
+        f.write(f"- **Intermediate format:** {config.intermediate_format}\n")
         f.write(f"- **Model:** {config.main_model.name}\n")
         f.write(f"- **Max output tokens:** {config.main_model.max_output_tokens:,}\n")
         f.write(f"- **Temperature:** {config.main_model.temperature}\n")

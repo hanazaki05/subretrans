@@ -6,6 +6,7 @@ terminology extraction, plus utilities to inject user customization.
 
 import os
 import re
+import json
 from typing import TYPE_CHECKING, List, Dict, Tuple, Optional
 
 if TYPE_CHECKING:
@@ -494,6 +495,104 @@ def inject_memory_into_template(template: str, global_memory: 'GlobalMemory') ->
     return new_template
 
 
+def convert_examples_to_format(template: str, target_format: str) -> str:
+    """
+    Convert JSON examples in Few-Shot Examples section to target format.
+    Also updates the "Input/Output Format & Constraint" section to match the format.
+
+    Args:
+        template: Template text containing JSON examples
+        target_format: Target format (json, xml-pair, pseudo-toml)
+
+    Returns:
+        Template with examples and format constraints converted to target format
+    """
+    # Only convert if not JSON
+    if target_format.lower() == "json":
+        return template
+
+    # Import here to avoid circular dependency
+    try:
+        import sys
+        import os
+        # Add experiment directory to path
+        experiment_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiment")
+        if experiment_dir not in sys.path:
+            sys.path.insert(0, experiment_dir)
+
+        from serializers import convert_json_examples_to_format
+    except ImportError as e:
+        print(f"  Warning: Could not import serializers: {e}")
+        print("  Returning template with JSON examples unchanged")
+        return template
+
+    # Step 1: Update the "Input/Output Format & Constraint" section
+    format_constraint_pattern = r'(###\s*\d+\.\s*Input/Output Format & Constraint.*?)(- \*\*Input:\*\*.*?- \*\*STRICT ADHERENCE REQUIRED:\*\*.*?)(?=###|\Z)'
+    format_match = re.search(format_constraint_pattern, template, re.DOTALL | re.IGNORECASE)
+
+    if format_match:
+        header = format_match.group(1)
+
+        # Generate format-specific constraint text
+        if target_format.lower() == "xml-pair":
+            new_constraint = """- **Input:** Subtitle pairs in XML-pair format with `<pair>` tags containing `ID`, `eng`, and `chinese` fields.
+- **Output:** The same XML-pair format with corrections applied.
+- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the XML-pair format. No explanations, no markdown blocks (unless requested), no extra text.
+"""
+        elif target_format.lower() == "pseudo-toml":
+            new_constraint = """- **Input:** Subtitle pairs in pseudo-TOML format with `[pair]` sections containing `id`, `eng`, and `chinese` fields.
+- **Output:** The same pseudo-TOML format with corrections applied.
+- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the pseudo-TOML format. No explanations, no markdown blocks (unless requested), no extra text.
+"""
+        else:
+            new_constraint = format_match.group(2)  # Keep original if unknown format
+
+        # Replace in template
+        new_section = header + new_constraint
+        template = template[:format_match.start()] + new_section + template[format_match.end():]
+
+    # Step 2: Find Few-Shot Examples section
+    section_pattern = r'(###\s*\d+\.\s*Few-Shot Examples.*?)(Input:.*?Output:.*?)(?=###|\Z)'
+    match = re.search(section_pattern, template, re.DOTALL | re.IGNORECASE)
+
+    if not match:
+        print("  Warning: Few-Shot Examples section not found in template")
+        return template
+
+    header = match.group(1)
+    examples_block = match.group(2)
+
+    # Extract JSON arrays from examples
+    json_pattern = r'\[.*?\]'
+    json_matches = re.findall(json_pattern, examples_block, re.DOTALL)
+
+    if len(json_matches) < 2:
+        print("  Warning: Could not find Input/Output JSON examples")
+        return template
+
+    input_json = json_matches[0]
+    output_json = json_matches[1]
+
+    try:
+        # Convert examples to target format
+        input_converted = convert_json_examples_to_format(input_json, target_format)
+        output_converted = convert_json_examples_to_format(output_json, target_format)
+
+        # Rebuild examples section
+        new_examples_block = f"Input:\n{input_converted}\n\nOutput:\n{output_converted}\n"
+
+        # Replace in template
+        new_section = header + new_examples_block
+        new_template = template[:match.start()] + new_section + template[match.end():]
+
+        return new_template
+
+    except Exception as e:
+        print(f"  Warning: Failed to convert examples: {e}")
+        print("  Returning template with JSON examples unchanged")
+        return template
+
+
 def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
     """
     Build complete system prompt with memory injection.
@@ -514,7 +613,14 @@ def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
         if prompt_path:
             try:
                 template = load_main_prompt_template(config)
-                return inject_memory_into_template(template, global_memory)
+                template = inject_memory_into_template(template, global_memory)
+
+                # Convert examples to target format if specified
+                intermediate_format = getattr(config, "intermediate_format", "json")
+                if intermediate_format and intermediate_format.lower() != "json":
+                    template = convert_examples_to_format(template, intermediate_format)
+
+                return template
             except FileNotFoundError as e:
                 print(f"  Warning: {e}")
                 print("  Falling back to legacy prompt construction")

@@ -20,15 +20,21 @@ The main project uses `requests` library to make HTTP POST calls to OpenAI API. 
 - **llm_client_sdk.py**: LLM client implementation using OpenAI SDK (supports both streaming and non-streaming)
 - **main_sdk.py**: Complete subtitle refinement tool with streaming support
 
+### Core Modules (continued)
+- **serializers.py**: Intermediate representation serializers for JSON, XML-pair, and pseudo-TOML formats (✨ NEW)
+- **genreq.py**: Prompt generator for testing without API calls
+
 ### Test Scripts
 - **test_sdk.py**: Test script to verify the SDK implementation
 - **test_streaming.py**: Test script for streaming API with performance comparison
 - **test_yaml_config.py**: Test script for YAML configuration loading (✨ NEW)
+- **test_serializers.py**: Comprehensive tests for all three intermediate formats (✨ NEW)
 
 ### Documentation
 - **README.md**: This file - project overview and quick start
 - **USAGE.md**: Complete usage guide for main_sdk.py (quick start + advanced usage)
 - **CONFIG_YAML.md**: YAML configuration guide with per-model API credential configuration guide (✨ NEW)
+- **INTERMEDIATE_FORMATS.md**: Complete guide for intermediate representation formats (JSON/XML/TOML) (✨ NEW)
 - **STREAMING_API.md**: Technical documentation for streaming API
 - **REALTIME_STREAMING.md**: Real-time streaming output guide (✨ NEW)
 - **RESUME_MODE.md**: Resume mode documentation for restarting from specific pair index (✨ NEW)
@@ -134,6 +140,152 @@ This approach provides:
 - **Single source of truth** for all prompt rules
 - **Easy customization** without code changes
 - **Dynamic terminology injection** from GlobalMemory
+
+### Intermediate Representation Formats (✨ NEW)
+
+The system now supports **three intermediate formats** for subtitle pair communication between the application and LLM:
+
+1. **JSON** (default) - Standard JSON array format
+2. **XML-pair** - Custom XML-like format with `<pair>` tags
+3. **Pseudo-TOML** - TOML-inspired format with `[pair]` sections
+
+**Example configurations:**
+
+```yaml
+# config.yaml
+format:
+  intermediate_format: "json"  # Options: "json", "xml-pair", "pseudo-toml"
+```
+
+```bash
+# CLI override
+python main_sdk.py input.ass output.ass --intermediate-format xml-pair
+```
+
+**Format examples:**
+
+```json
+// JSON (default)
+[
+  {"id": 0, "eng": "Hello", "chinese": "你好"},
+  {"id": 1, "eng": "Goodbye", "chinese": "再见"}
+]
+```
+
+```xml
+<!-- XML-pair -->
+<pair>
+ID=0
+eng=Hello
+chinese=你好
+</pair>
+
+<pair>
+ID=1
+eng=Goodbye
+chinese=再见
+</pair>
+```
+
+```toml
+# Pseudo-TOML
+[pair]
+id = 0
+eng = Hello
+chinese = 你好
+
+[pair]
+id = 1
+eng = Goodbye
+chinese = 再见
+```
+
+**Key features:**
+- All formats preserve ASS formatting tags (`{\i1}`, `\N`, etc.)
+- Few-shot examples in `main_prompt.md` are auto-converted to match format
+- Full round-trip serialization/deserialization support
+- **Robust response post-processing**: Automatically handles LLM responses with thinking blocks (`<think>...</think>`) and markdown code blocks (` ```...``` `)
+- Comprehensive test coverage (`test_serializers.py`, `test_response_cleaning.py`)
+
+**Response Post-Processing:**
+
+The system handles common LLM response patterns:
+
+```markdown
+<think>Analyzing the task...</think>
+
+```json
+[
+  {"id": 0, "eng": "Hello", "chinese": "你好"}
+]
+```
+```
+
+Both the thinking block and code block wrapper are automatically removed before deserialization. This works for all three intermediate formats.
+
+See [INTERMEDIATE_FORMATS.md](INTERMEDIATE_FORMATS.md) for complete documentation.
+
+### Incremental Output (✨ NEW)
+
+**Default behavior:** The output file is now written after **each chunk** for data safety.
+
+If processing crashes or is interrupted:
+- **With incremental output** (default): All completed chunks are preserved
+- **Without incremental output**: All progress is lost
+
+**Configuration:**
+
+```yaml
+# config.yaml
+runtime:
+  incremental_output: true  # Default: true (write after each chunk)
+```
+
+**CLI overrides:**
+
+```bash
+# Disable incremental output (write only at end)
+python main_sdk.py input.ass output.ass --no-incremental-output
+
+# Enable incremental output explicitly (default behavior)
+python main_sdk.py input.ass output.ass --incremental-output
+```
+
+**When to disable:**
+- Processing a very small file (1-2 chunks)
+- Using fast SSD with minimal write overhead
+- Want to avoid partial output files during processing
+
+**When to keep enabled (recommended):**
+- Processing large subtitle files (many chunks)
+- Long-running processing sessions
+- Unstable network connection
+- Testing with `--max-chunks` or `--resume`
+
+**Status display:**
+
+When incremental output is enabled, you'll see the save status after each chunk:
+```
+Processing chunk 2/10 (45 pairs)...
+[Chunk 2/10] (20.0% complete)
+  Tokens used: 3,452 (prompt: 1,892, completion: 1,560)
+  Time: 18.23s
+  [Incremental] ✓ Saved pairs 45-89 (90/450 total) to output.ass
+```
+
+**Status format:**
+- `pairs 45-89`: The range of pair IDs processed in this chunk
+- `(90/450 total)`: Cumulative pairs processed / total pairs
+- Output file path
+
+**Status indicators:**
+- ✓ Success: File saved successfully
+- ✗ Failure: Shows error message if save failed (e.g., permission denied, disk full)
+
+This provides real-time feedback on:
+- **Which specific pairs** were just processed (e.g., pairs 45-89)
+- **Cumulative progress** (90 out of 450 pairs completed)
+- **Save status** (success or failure with error details)
 
 ## Usage
 
