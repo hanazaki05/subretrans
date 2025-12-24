@@ -36,21 +36,25 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 ### 4. User Terminology (Authoritative Glossary)
 - Admiral: 将军
 - Bud: 巴德
+- Brumby: 布伦比
 - CAG: 联队指挥官
 - Carolyn: 卡罗琳
 - Chegwidden: 切格维登
 - Commander: 少校
 - Commander Rabb: 拉布少校
 - Harm: 哈姆
+- Harmon: 哈蒙
 - Harriet: 哈丽特
 - Sims: 西姆斯
+- Harmon Rabb: 哈蒙·拉布
 - Harmon Rabb Jr: 小哈蒙·拉布
 - Latham: 莱瑟姆
 - Lieutenant Commander Harmon Rabb: 哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Junior: 小哈蒙·拉布少校
-- Lieutenant J.G. Bud Roberts: 中尉巴德·罗伯茨
-- Lieutenant Roberts: 罗伯特中尉
+- Lieutenant J.G. Bud Roberts: 巴德·JG·罗伯茨中尉
+- Lieutenant J.G. Roberts: JG·罗伯茨中尉
+- Lieutenant Roberts: 罗伯茨中尉
 - Mac: 麦可
 - MacKenzie: 麦肯齐
 - Major MacKenzie: 麦肯齐少校
