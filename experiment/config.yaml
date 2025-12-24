@@ -9,7 +9,7 @@ api:
 
 # Main refinement model settings (GPT-5.* for subtitle correction)
 main_model:
-  name: "gemini-2.5-pro-thinking-6500"
+  name: "gemini-2.5-pro-thinking-9000"
   #name: "gpt-4o"
   max_output_tokens: 27000
   reasoning_effort: "low"  # none, low, medium, high

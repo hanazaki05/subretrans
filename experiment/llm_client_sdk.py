@@ -312,6 +312,62 @@ def _extract_from_code_blocks(text: str) -> Optional[str]:
     return None
 
 
+def _extract_from_format_marker(text: str, format_type: str) -> Optional[str]:
+    """
+    Extract content starting from format-specific marker.
+    Used as fallback when normal deserialization fails.
+
+    IMPORTANT: This function expects text that has ALREADY been cleaned
+    by _clean_llm_response() (thinking blocks and code blocks removed).
+
+    Args:
+        text: Pre-cleaned text that may have leading commentary
+        format_type: One of "json", "xml-pair", "pseudo-toml"
+
+    Returns:
+        Extracted content or None if marker not found
+    """
+    if format_type.lower() == "xml-pair":
+        # Find first <pair> tag
+        idx = text.find("<pair>")
+        if idx != -1:
+            return text[idx:].strip()
+
+    elif format_type.lower() == "json":
+        # Leverage existing utils.extract_json_from_response()
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from utils import extract_json_from_response
+        return extract_json_from_response(text)
+
+    elif format_type.lower() == "pseudo-toml":
+        # Find first [pair] section header
+        idx = text.find("[pair]")
+        if idx != -1:
+            return text[idx:].strip()
+
+    return None
+
+
+def _detect_duplicate_pairs(pairs: List[SubtitlePair]) -> List[int]:
+    """
+    Detect duplicate pair IDs in the corrected response.
+
+    Args:
+        pairs: List of SubtitlePair objects
+
+    Returns:
+        List of duplicate IDs found
+    """
+    id_counts = {}
+    for pair in pairs:
+        id_counts[pair.id] = id_counts.get(pair.id, 0) + 1
+
+    duplicates = [id for id, count in id_counts.items() if count > 1]
+    return duplicates
+
+
 def _clean_llm_response(text: str) -> str:
     """
     Clean LLM response by removing extraneous content.
@@ -410,14 +466,53 @@ def refine_chunk_sdk(
 
                 raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
 
-        # Deserialize using configured format
+        # Deserialize using configured format (with fallback pattern extraction)
         try:
             corrected_pairs = deserialize(cleaned, config.intermediate_format)
         except SerializationError as e:
-            print(f"\n  [Deserialization error]: {str(e)}")
-            print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-            print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-            raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+            # Stage 2: Fallback - try pattern-based extraction
+            print(f"\n  [Deserialization failed, attempting pattern extraction...]")
+
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            if extracted is not None:
+                print(f"  [Pattern extraction successful, retrying deserialization...]")
+                try:
+                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    print(f"  [Recovery successful!]\n")
+                except SerializationError as e2:
+                    # Both attempts failed
+                    print(f"  [Recovery failed]: {str(e2)}")
+                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                    print(f"  [Extracted excerpt]: {extracted[:500]}...")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+            else:
+                # Pattern extraction found nothing
+                print(f"  [Pattern extraction found no markers]")
+                print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+                raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+
+        # Check for duplicate pairs
+        duplicates = _detect_duplicate_pairs(corrected_pairs)
+        if duplicates:
+            print(f"\n  [Warning]: Duplicate pair IDs detected: {duplicates}")
+            print(f"  [Action]: Keeping last occurrence, removing duplicates")
+
+            # Deduplicate: keep last occurrence of each ID
+            id_to_pair = {}
+            for pair in corrected_pairs:
+                id_to_pair[pair.id] = pair  # Last one wins
+
+            # Rebuild list maintaining original order of first appearance
+            seen_ids = set()
+            deduplicated = []
+            for pair in corrected_pairs:
+                if pair.id not in seen_ids:
+                    deduplicated.append(id_to_pair[pair.id])  # Use last occurrence
+                    seen_ids.add(pair.id)
+
+            corrected_pairs = deduplicated
+            print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
@@ -751,14 +846,53 @@ def refine_chunk_sdk_streaming(
 
                 raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
 
-        # Deserialize using configured format
+        # Deserialize using configured format (with fallback pattern extraction)
         try:
             corrected_pairs = deserialize(cleaned, config.intermediate_format)
         except SerializationError as e:
-            print(f"\n  [Deserialization error]: {str(e)}")
-            print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-            print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-            raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+            # Stage 2: Fallback - try pattern-based extraction
+            print(f"\n  [Deserialization failed, attempting pattern extraction...]")
+
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            if extracted is not None:
+                print(f"  [Pattern extraction successful, retrying deserialization...]")
+                try:
+                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    print(f"  [Recovery successful!]\n")
+                except SerializationError as e2:
+                    # Both attempts failed
+                    print(f"  [Recovery failed]: {str(e2)}")
+                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                    print(f"  [Extracted excerpt]: {extracted[:500]}...")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+            else:
+                # Pattern extraction found nothing
+                print(f"  [Pattern extraction found no markers]")
+                print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+                raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+
+        # Check for duplicate pairs
+        duplicates = _detect_duplicate_pairs(corrected_pairs)
+        if duplicates:
+            print(f"\n  [Warning]: Duplicate pair IDs detected: {duplicates}")
+            print(f"  [Action]: Keeping last occurrence, removing duplicates")
+
+            # Deduplicate: keep last occurrence of each ID
+            id_to_pair = {}
+            for pair in corrected_pairs:
+                id_to_pair[pair.id] = pair  # Last one wins
+
+            # Rebuild list maintaining original order of first appearance
+            seen_ids = set()
+            deduplicated = []
+            for pair in corrected_pairs:
+                if pair.id not in seen_ids:
+                    deduplicated.append(id_to_pair[pair.id])  # Use last occurrence
+                    seen_ids.add(pair.id)
+
+            corrected_pairs = deduplicated
+            print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):

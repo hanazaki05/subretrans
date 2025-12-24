@@ -18,8 +18,9 @@ experiment_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, experiment_dir)
 
 import re
-from typing import Optional
+from typing import Optional, List
 from serializers import deserialize
+from pairs import SubtitlePair
 
 
 # Copy the helper functions from llm_client_sdk.py for testing
@@ -353,6 +354,37 @@ chinese = 另一个测试
     return True
 
 
+def _extract_from_format_marker(text: str, format_type: str) -> Optional[str]:
+    """
+    Extract content starting from format-specific marker.
+    Used as fallback when normal deserialization fails.
+    """
+    if format_type.lower() == "xml-pair":
+        idx = text.find("<pair>")
+        if idx != -1:
+            return text[idx:].strip()
+    elif format_type.lower() == "json":
+        # Find first [ or {
+        for char in ['[', '{']:
+            idx = text.find(char)
+            if idx != -1:
+                return text[idx:].strip()
+    elif format_type.lower() == "pseudo-toml":
+        idx = text.find("[pair]")
+        if idx != -1:
+            return text[idx:].strip()
+    return None
+
+
+def _detect_duplicate_pairs(pairs: List[SubtitlePair]) -> List[int]:
+    """Detect duplicate pair IDs."""
+    id_counts = {}
+    for pair in pairs:
+        id_counts[pair.id] = id_counts.get(pair.id, 0) + 1
+    duplicates = [id for id, count in id_counts.items() if count > 1]
+    return duplicates
+
+
 def test_edge_cases():
     """Test edge cases and potential issues."""
     print("\n" + "=" * 60)
@@ -388,6 +420,102 @@ def test_edge_cases():
     return True
 
 
+def test_leading_commentary_extraction():
+    """Test pattern-based extraction for leading commentary."""
+    print("\n" + "=" * 60)
+    print("Test 8: Leading Commentary Extraction (Fallback)")
+    print("=" * 60)
+
+    # XML with leading commentary
+    response_xml = "I have reviewed and corrected the subtitles.\n<pair>\nID=0\neng=Hello\nchinese=你好\n</pair>"
+    cleaned = _clean_llm_response(response_xml)
+    extracted = _extract_from_format_marker(cleaned, "xml-pair")
+    assert extracted is not None
+    assert extracted.startswith("<pair>")
+    pairs = deserialize(extracted, "xml-pair")
+    assert len(pairs) == 1
+    assert pairs[0].eng == "Hello"
+    print("  ✓ XML with leading commentary")
+
+    # JSON with leading commentary
+    response_json = 'Here are the corrections:\n[{"id": 0, "eng": "Hello", "chinese": "你好"}]'
+    cleaned_json = _clean_llm_response(response_json)
+    extracted_json = _extract_from_format_marker(cleaned_json, "json")
+    assert extracted_json is not None
+    assert extracted_json.startswith("[")
+    pairs_json = deserialize(extracted_json, "json")
+    assert len(pairs_json) == 1
+    assert pairs_json[0].eng == "Hello"
+    print("  ✓ JSON with leading commentary")
+
+    # TOML with leading commentary
+    response_toml = "Analysis complete.\n[pair]\nid = 0\neng = Hello\nchinese = 你好"
+    cleaned_toml = _clean_llm_response(response_toml)
+    extracted_toml = _extract_from_format_marker(cleaned_toml, "pseudo-toml")
+    assert extracted_toml is not None
+    assert extracted_toml.startswith("[pair]")
+    pairs_toml = deserialize(extracted_toml, "pseudo-toml")
+    assert len(pairs_toml) == 1
+    assert pairs_toml[0].eng == "Hello"
+    print("  ✓ TOML with leading commentary")
+
+    print("\n✓ All leading commentary extraction tests passed!")
+    return True
+
+
+def test_duplicate_pair_detection():
+    """Test duplicate pair detection and deduplication."""
+    print("\n" + "=" * 60)
+    print("Test 9: Duplicate Pair Detection")
+    print("=" * 60)
+
+    # Create test pairs with duplicates
+    pairs = [
+        SubtitlePair(id=0, eng="First", chinese="第一"),
+        SubtitlePair(id=1, eng="Second", chinese="第二"),
+        SubtitlePair(id=0, eng="Duplicate", chinese="重复"),  # Duplicate ID
+        SubtitlePair(id=2, eng="Third", chinese="第三"),
+        SubtitlePair(id=1, eng="Another duplicate", chinese="另一个重复"),  # Another duplicate
+    ]
+
+    # Detect duplicates
+    duplicates = _detect_duplicate_pairs(pairs)
+    assert set(duplicates) == {0, 1}
+    print("  ✓ Duplicate detection works")
+
+    # Deduplicate (keep last occurrence)
+    id_to_pair = {}
+    for pair in pairs:
+        id_to_pair[pair.id] = pair  # Last one wins
+
+    seen_ids = set()
+    deduplicated = []
+    for pair in pairs:
+        if pair.id not in seen_ids:
+            deduplicated.append(id_to_pair[pair.id])  # Use last occurrence
+            seen_ids.add(pair.id)
+
+    assert len(deduplicated) == 3
+    assert deduplicated[0].id == 0
+    assert deduplicated[0].eng == "Duplicate"  # Last occurrence kept
+    assert deduplicated[1].id == 1
+    assert deduplicated[1].eng == "Another duplicate"  # Last occurrence kept
+    assert deduplicated[2].id == 2
+    print("  ✓ Deduplication keeps last occurrence")
+
+    # No duplicates case
+    pairs_no_dup = [
+        SubtitlePair(id=0, eng="First", chinese="第一"),
+        SubtitlePair(id=1, eng="Second", chinese="第二"),
+    ]
+    duplicates_none = _detect_duplicate_pairs(pairs_no_dup)
+    assert len(duplicates_none) == 0
+    print("  ✓ No false positives for unique pairs")
+
+    print("\n✓ All duplicate pair detection tests passed!")
+    return True
+
+
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -402,6 +530,8 @@ def main():
         test_full_pipeline_xml,
         test_full_pipeline_toml,
         test_edge_cases,
+        test_leading_commentary_extraction,
+        test_duplicate_pair_detection,
     ]
 
     results = []
@@ -436,6 +566,8 @@ def main():
         print("  • Markdown code block extraction (```...```)")
         print("  • Combined scenarios (thinking + code blocks)")
         print("  • All formats (JSON, XML-pair, pseudo-TOML)")
+        print("  • Leading commentary extraction (fallback recovery)")
+        print("  • Duplicate pair detection and deduplication")
         return 0
     else:
         print(f"\n✗ {total - passed} test(s) failed")
