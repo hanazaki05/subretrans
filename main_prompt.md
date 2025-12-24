@@ -77,22 +77,23 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 ### 6. Few-Shot Examples
 Input:
 [
-  {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
-  {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我需要走了。"},
-  {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
-  {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"},
-  {"id": 49, "eng": "Status on the Fry case?", "chinese": "Fry案的进展如何？"},
-  {"id": 58, "eng": "I persuaded seaman clay’s girlfriend", "chinese": "我说服了水兵Clay的女友"},
-  {"id": 77, "eng": "... lieutenant woodgate...", "chinese": "……中尉Woodgate……"}
+   {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
+   {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我需要走了。"},
+   {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
+   {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"},
+   {"id": 49, "eng": "Status on the sherman case?", "chinese": "Sherman案的进展如何？"},
+   {"id": 58, "eng": "I persuaded seaman morrison's girlfriend", "chinese": "我说服了水兵Morrison的女友"},
+   {"id": 77, "eng": "... lieutenant woodbury...", "chinese": "……中尉Woodbury……"}
 ]
 
 Output:
 [
-  {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
-  {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我得走了"},
-  {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
-  {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"},
-  {"id": 49, "eng": "Status on the Fry case?", "chinese": "弗莱案的进展如何？"},
-  {"id": 58, "eng": "I persuaded Seaman Clay's girlfriend.", "chinese": "我说服了克莱水兵的女友"},
-  {"id": 77, "eng": "... Lieutenant Woodgate...", "chinese": "...伍德盖特中尉..."}
+   {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
+   {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我得走了"},
+   {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
+   {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"},
+   {"id": 49, "eng": "Status on the Sherman case?", "chinese": "谢尔曼案的进展如何？"},
+   {"id": 58, "eng": "I persuaded Seaman Morrison's girlfriend.", "chinese": "我说服了莫里森水兵的女友"},
+   {"id": 77, "eng": "... Lieutenant Woodbury...", "chinese": "...伍德伯里中尉..."}
 ]
+
