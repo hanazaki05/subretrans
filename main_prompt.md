@@ -81,8 +81,8 @@ Input:
    {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我需要走了。"},
    {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
    {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"},
-   {"id": 49, "eng": "Status on the sherman case?", "chinese": "Sherman案的进展如何？"},
-   {"id": 58, "eng": "I persuaded seaman morrison's girlfriend", "chinese": "我说服了水兵Morrison的女友"},
+   {"id": 49, "eng": "Status on the sherman case?", "chinese": "sherman案的进展如"},
+   {"id": 58, "eng": "I persuaded seaman morrison's girlfriend", "chinese": "我说服了水兵 morrison的女友"},
    {"id": 77, "eng": "... lieutenant woodbury...", "chinese": "……中尉Woodbury……"}
 ]
 
@@ -93,7 +93,7 @@ Output:
    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
    {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"},
    {"id": 49, "eng": "Status on the Sherman case?", "chinese": "谢尔曼案的进展如何？"},
-   {"id": 58, "eng": "I persuaded Seaman Morrison's girlfriend.", "chinese": "我说服了莫里森水兵的女友"},
+   {"id": 58, "eng": "I persuaded Seaman Morrison's girlfriend.", "chinese": "我说服了水兵莫里森的女友"},
    {"id": 77, "eng": "... Lieutenant Woodbury...", "chinese": "...伍德伯里中尉..."}
 ]
 
