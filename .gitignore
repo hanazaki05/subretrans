@@ -219,6 +219,7 @@ test_*.ass
 JAG.*.ass
 IMPLEMENTATION_SUMMARY.md
 CLAUDE.md
+AGENT.md
 task.txt
 plan.md
 plan*.md
