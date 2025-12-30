@@ -5,7 +5,7 @@ Maintains terminology, style notes, and context across chunks.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 
 from config import Config
@@ -168,7 +168,7 @@ def _parse_terminology_entries(raw_data: Any, min_confidence: float) -> List[Ter
 def extract_terminology_from_chunk(
     pairs: List[SubtitlePair],
     config: Config,
-    user_glossary: List[Dict[str, str]] | None = None,
+    user_glossary: Optional[List[Dict[str, str]]] = None,
     max_retries: int = 2
 ) -> List[Dict[str, Any]]:
     """Extract terminology by calling the dedicated terminology LLM."""

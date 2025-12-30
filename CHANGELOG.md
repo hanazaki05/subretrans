@@ -48,6 +48,7 @@ All notable changes to this project will be documented in this file.
   - Examples handled: `eng>value`, `eng: value`, `eng = value`, `ID | 123`
 - New test files in `experiment/`:
   - `test_lock_logic_simple.py`: Verifies terminology lock mechanism with user glossary
+  - `test_per_block_update.py`: Verifies per-block update behavior (writes after each chunk) and YAML/CLI backward compatibility
   - `test_response_cleaning.py` updated: Tests for leading commentary extraction and duplicate detection
   - `test_serializers.py` updated: `test_xml_pair_malformed_separators()` for regex fallback (7 test cases)
 

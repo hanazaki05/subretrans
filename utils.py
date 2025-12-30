@@ -6,12 +6,15 @@ Provides token estimation, text processing helpers, and other utilities.
 
 import json
 from typing import List, Optional
-import tiktoken
+try:
+    import tiktoken  # type: ignore
+except Exception:  # pragma: no cover
+    tiktoken = None
 
 from pairs import SubtitlePair
 
 
-def get_encoding(model_name: str = "gpt-4") -> tiktoken.Encoding:
+def get_encoding(model_name: str = "gpt-4"):
     """
     Get tiktoken encoding for a specific model.
 
@@ -22,6 +25,8 @@ def get_encoding(model_name: str = "gpt-4") -> tiktoken.Encoding:
         tiktoken.Encoding object for token counting
     """
     try:
+        if tiktoken is None:
+            raise ImportError("tiktoken is not installed")
         # Try to get encoding for specific model
         return tiktoken.encoding_for_model(model_name)
     except KeyError:
