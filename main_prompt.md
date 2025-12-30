@@ -68,6 +68,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Naval Criminal Investigative Service: 海军刑事调查局
 - NCIS: 海军刑事调查局
 - Navy's Judge Advocate General Corps: 海军军法署
+- Yeoman: 事务员
 
 ### 5. Input/Output Format & Constraint
 - **Input:** A JSON array of subtitle pairs (`id`, `eng`, `chinese`).
@@ -89,9 +90,9 @@ Input:
 Output:
 [
    {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
-   {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上。{\i1} 我得走了"},
+   {"id": 2, "eng": "AJ is on the phone.{\i1} I need to go.", "chinese": "AJ在电话上，{\i1} 我得走了"},
    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
-   {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"},
+   {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼，我们走吧"},
    {"id": 49, "eng": "Status on the Sherman case?", "chinese": "谢尔曼案的进展如何？"},
    {"id": 58, "eng": "I persuaded Seaman Morrison's girlfriend.", "chinese": "我说服了水兵莫里森的女友"},
    {"id": 77, "eng": "... Lieutenant Woodbury...", "chinese": "...伍德伯里中尉..."}
