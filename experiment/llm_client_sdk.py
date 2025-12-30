@@ -20,7 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config_sdk import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
 from pairs import SubtitlePair
-from memory import GlobalMemory, validate_memory_structure
+from memory import (
+    GlobalMemory,
+    validate_memory_structure,
+    prune_learned_glossary_against_user_glossary,
+)
 from prompts import (
     build_system_prompt,
     build_user_prompt_for_chunk,
@@ -496,6 +500,11 @@ def refine_chunk_sdk(
     Raises:
         LLMAPIError: If refinement fails
     """
+    # Keep learned glossary clean before building the prompt
+    removed_count, _ = prune_learned_glossary_against_user_glossary(global_memory)
+    if removed_count and getattr(config, "verbose", False):
+        print(f"  Glossary prune: removed {removed_count} learned entr(y/ies) covered by user glossary (pre-request)")
+
     # Build system prompt with memory (using new template-based approach)
     system_content = build_system_prompt(global_memory, config)
 
@@ -885,6 +894,11 @@ def refine_chunk_sdk_streaming(
     Raises:
         LLMAPIError: If refinement fails
     """
+    # Keep learned glossary clean before building the prompt
+    removed_count, _ = prune_learned_glossary_against_user_glossary(global_memory)
+    if removed_count and getattr(config, "verbose", False):
+        print(f"  Glossary prune: removed {removed_count} learned entr(y/ies) covered by user glossary (pre-request)")
+
     # Build system prompt with memory (using new template-based approach)
     system_content = build_system_prompt(global_memory, config)
 

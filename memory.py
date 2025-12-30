@@ -5,8 +5,10 @@ Maintains terminology, style notes, and context across chunks.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import json
+import re
+import unicodedata
 
 from config import Config
 from pairs import SubtitlePair, pairs_to_json_list
@@ -104,6 +106,66 @@ VALID_TERMINOLOGY_TYPES = {
 }
 
 
+def _normalize_glossary_key(value: Any) -> str:
+    """
+    Normalize a glossary English term for stable matching across sources.
+
+    Handles:
+    - unicode normalization (NFKC)
+    - BOM / zero-width artifacts
+    - whitespace normalization
+    - case-insensitive matching
+    """
+    if not isinstance(value, str):
+        return ""
+    cleaned = unicodedata.normalize("NFKC", value)
+    cleaned = cleaned.replace("\ufeff", "")
+    cleaned = cleaned.replace("\u200b", "")
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.casefold()
+
+
+def prune_learned_glossary_against_user_glossary(
+    memory: "GlobalMemory",
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """
+    Remove learned glossary entries that are already defined in the user glossary.
+
+    This keeps prompts clean and prevents redundant/conflicting entries from older
+    checkpoints from being injected into the system prompt.
+
+    Returns:
+        (removed_count, removed_entries)
+    """
+    if not memory or not memory.glossary or not memory.user_glossary:
+        return 0, []
+
+    user_keys = {
+        _normalize_glossary_key(entry.get("eng", ""))
+        for entry in memory.user_glossary
+        if isinstance(entry, dict)
+    }
+    user_keys.discard("")
+    if not user_keys:
+        return 0, []
+
+    kept: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
+
+    for entry in memory.glossary:
+        if not isinstance(entry, dict):
+            continue
+        eng_key = _normalize_glossary_key(entry.get("eng", ""))
+        if eng_key and eng_key in user_keys:
+            removed.append(entry)
+            continue
+        kept.append(entry)
+
+    if removed:
+        memory.glossary = kept
+
+    return len(removed), removed
 
 
 def _coerce_evidence_ids(raw_ids: Any) -> List[int]:
@@ -258,6 +320,12 @@ def update_global_memory(
     Returns:
         Updated GlobalMemory object
     """
+    removed_count, removed_entries = prune_learned_glossary_against_user_glossary(memory)
+    if removed_count and getattr(config, "verbose", False):
+        examples = [e.get("eng", "") for e in removed_entries[:5] if isinstance(e, dict)]
+        examples_str = ", ".join([x for x in examples if x]) or "(unavailable)"
+        print(f"  Glossary prune: removed {removed_count} learned entr(y/ies) covered by user glossary (e.g., {examples_str})")
+
     # Extract new terminology from this chunk
     new_terms = extract_terminology_from_chunk(
         corrected_pairs,

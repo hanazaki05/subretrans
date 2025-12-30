@@ -14,6 +14,10 @@ All notable changes to this project will be documented in this file.
 - **Resume + per-block update safety** (experiment SDK):
   - Output writing is now atomic to avoid truncated/corrupted `.ass` files on interruption
   - Added ID alignment logic to prevent applying per-chunk “local IDs” (e.g., `0..N-1`) onto global pair IDs during `--resume`
+- **Duplicate glossary injection** (experiment SDK):
+  - Learned glossary entries that are already defined in the User-Defined Glossary are now pruned routinely
+  - Pruning happens before each LLM request, after each memory update, and after loading glossary checkpoints
+  - When `--checkpoint` is enabled, pruned entries are removed from the `.glossary.yaml` checkpoint as well
 
 ### Added
 - **Enhanced intermediate format robustness** (experiment SDK):
@@ -48,6 +52,7 @@ All notable changes to this project will be documented in this file.
   - Examples handled: `eng>value`, `eng: value`, `eng = value`, `ID | 123`
 - New test files in `experiment/`:
   - `test_lock_logic_simple.py`: Verifies terminology lock mechanism with user glossary
+  - `test_glossary_prune.py`: Verifies learned glossary pruning against user glossary (Unicode/whitespace/case-normalized)
   - `test_per_block_update.py`: Verifies per-block update behavior (writes after each chunk) and YAML/CLI backward compatibility
   - `test_response_cleaning.py` updated: Tests for leading commentary extraction and duplicate detection
   - `test_serializers.py` updated: `test_xml_pair_malformed_separators()` for regex fallback (7 test cases)

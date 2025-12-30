@@ -38,7 +38,8 @@ from memory import (
     GlobalMemory,
     init_global_memory,
     update_global_memory,
-    estimate_memory_tokens
+    estimate_memory_tokens,
+    prune_learned_glossary_against_user_glossary
 )
 from stats import (
     init_usage_stats,
@@ -295,6 +296,19 @@ def process_subtitles(
         # directly in build_system_prompt() and injects terminology from GlobalMemory.
         # User glossary from template is parsed and merged at prompt build time.
         global_memory = init_global_memory()
+        checkpoint_path = None
+
+        def prune_learned_glossary(reason: str) -> int:
+            removed_count, removed_entries = prune_learned_glossary_against_user_glossary(global_memory)
+            if not removed_count:
+                return 0
+
+            if config.verbose or config.debug_prompts:
+                examples = [e.get("eng", "") for e in removed_entries[:5] if isinstance(e, dict)]
+                examples_str = ", ".join([x for x in examples if x]) or "(unavailable)"
+                print(f"  [Glossary prune] Removed {removed_count} learned entr(y/ies) covered by user glossary ({reason}); e.g., {examples_str}")
+
+            return removed_count
 
         # Load template glossary and populate user_glossary for lock mechanism
         from prompts import load_main_prompt_template, _parse_template_glossary, _find_section_boundaries
@@ -313,13 +327,14 @@ def process_subtitles(
                 print(f"  Warning: Failed to load template glossary: {e}")
 
         # Load glossary checkpoint if enabled
-        checkpoint_path = None
         if enable_checkpoint:
             checkpoint_path = get_checkpoint_path(input_path)
             checkpoint_glossary = load_glossary_checkpoint(checkpoint_path)
             if checkpoint_glossary:
                 print(f"  [CHECKPOINT] Loaded {len(checkpoint_glossary)} glossary entries from: {os.path.basename(checkpoint_path)}")
                 global_memory.glossary = checkpoint_glossary
+                if prune_learned_glossary("after loading checkpoint"):
+                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
             else:
                 print(f"  [CHECKPOINT] No existing checkpoint found, will create: {os.path.basename(checkpoint_path)}")
 
@@ -368,6 +383,11 @@ def process_subtitles(
 
                 # Determine if this is the first chunk
                 is_first_chunk = (i == 0)
+
+                # Always prune learned glossary entries covered by the user glossary
+                # BEFORE building prompts / printing terminology.
+                if prune_learned_glossary("before LLM request") and enable_checkpoint and checkpoint_path:
+                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
 
                 # In -vvv mode, show terminology before processing
                 # First chunk: show user-defined + learned
@@ -442,7 +462,8 @@ def process_subtitles(
                 # Update global memory
                 global_memory = update_global_memory(global_memory, corrected_pairs, config)
 
-                # Save updated glossary to checkpoint file (if enabled)
+                # Ensure we don't keep redundant learned entries and persist memory each chunk (if enabled)
+                prune_learned_glossary("after memory update")
                 if enable_checkpoint and checkpoint_path:
                     save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
 
