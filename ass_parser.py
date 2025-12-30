@@ -8,6 +8,8 @@ building subtitle pairs, and generating output .ass files.
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import re
+import os
+import tempfile
 
 from pairs import SubtitlePair
 
@@ -266,5 +268,24 @@ def write_ass_file(file_path: str, content: str) -> None:
         file_path: Output file path
         content: Complete ASS file content
     """
-    with open(file_path, "w", encoding="utf-8-sig") as f:
-        f.write(content)
+    # Atomic write to avoid corrupting output on crashes/interruption:
+    # write to a temp file in the same directory, then replace.
+    output_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+    base_name = os.path.basename(file_path)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{base_name}.tmp.", dir=output_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                # Some filesystems may not support fsync; atomic replace still prevents truncation.
+                pass
+        os.replace(tmp_path, file_path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass

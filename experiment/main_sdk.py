@@ -251,6 +251,7 @@ def process_subtitles(
             print(f"  Skipping first {resume_index} pairs, processing remaining {len(pairs) - resume_index} pairs")
 
             # Load existing output file if it exists to preserve earlier pairs
+            preserved_pairs = None
             if os.path.exists(output_path):
                 print(f"  Loading existing output file: {output_path}")
                 try:
@@ -258,12 +259,18 @@ def process_subtitles(
                     existing_pairs = build_pairs_from_ass_lines(existing_ass_lines)
 
                     # Copy corrected pairs from existing file (before resume_index)
+                    preserved_pairs = 0
                     for i in range(min(resume_index, len(existing_pairs))):
                         if i < len(pairs) and existing_pairs[i].id == pairs[i].id:
                             pairs[i].eng = existing_pairs[i].eng
                             pairs[i].chinese = existing_pairs[i].chinese
+                            preserved_pairs += 1
 
-                    print(f"  Preserved {resume_index} pairs from existing output")
+                    if preserved_pairs == resume_index:
+                        print(f"  Preserved {preserved_pairs} pairs from existing output")
+                    else:
+                        print(f"  Warning: Preserved {preserved_pairs}/{resume_index} pairs from existing output (pair alignment mismatch)")
+                        print("  Warning: Continuing may overwrite earlier output content; consider verifying input/output match.")
                 except Exception as e:
                     print(f"  Warning: Could not load existing output file: {e}")
                     print(f"  Continuing without preserving earlier pairs...")
@@ -275,6 +282,7 @@ def process_subtitles(
             print(f"  Processing pairs {resume_index} to {len(pairs)-1} ({len(pairs_to_process)} pairs)")
         else:
             pairs_to_process = pairs
+            preserved_pairs = None
 
         # Apply dry-run limit if enabled
         if config.dry_run:
@@ -341,7 +349,9 @@ def process_subtitles(
         print("-" * 60)
 
         # Track cumulative pairs processed for incremental output status
-        cumulative_pairs_processed = 0
+        cumulative_pairs_processed = resume_index or 0
+        if preserved_pairs is not None:
+            cumulative_pairs_processed = preserved_pairs
 
         # Define streaming callback for progress indication
         def streaming_progress_callback(chunk_text: str):

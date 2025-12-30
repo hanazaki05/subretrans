@@ -368,6 +368,80 @@ def _detect_duplicate_pairs(pairs: List[SubtitlePair]) -> List[int]:
     return duplicates
 
 
+def _align_corrected_pair_ids(
+    *,
+    expected_pairs: List[SubtitlePair],
+    corrected_pairs: List[SubtitlePair]
+) -> Tuple[List[SubtitlePair], bool]:
+    """
+    Ensure corrected pair IDs refer to the same items as the input chunk.
+
+    Some models occasionally renumber IDs per-chunk (e.g., 0..N-1) instead of
+    preserving the original global IDs. This is particularly dangerous when
+    resuming mid-file because applying corrections by ID can overwrite earlier
+    pairs in the output.
+
+    Strategy:
+    - If all returned IDs are already within the expected ID set: accept.
+    - Else, if returned IDs look like local indices (0-based or 1-based),
+      remap them to the expected IDs by position.
+    - Otherwise: raise to prevent corrupting output.
+
+    Returns:
+        (corrected_pairs, remapped) where `remapped` is True if IDs were changed.
+    """
+    if not expected_pairs or not corrected_pairs:
+        return corrected_pairs, False
+
+    expected_ids = [p.id for p in expected_pairs]
+    expected_id_set = set(expected_ids)
+
+    returned_ids = [p.id for p in corrected_pairs]
+    returned_id_set = set(returned_ids)
+
+    # Fast path: IDs already reference the expected chunk.
+    if returned_id_set.issubset(expected_id_set):
+        return corrected_pairs, False
+
+    n_expected = len(expected_ids)
+
+    def remap_zero_based() -> bool:
+        if not all(0 <= idx < n_expected for idx in returned_id_set):
+            return False
+        for pair in corrected_pairs:
+            pair.id = expected_ids[pair.id]
+        return True
+
+    def remap_one_based() -> bool:
+        if not all(1 <= idx <= n_expected for idx in returned_id_set):
+            return False
+        for pair in corrected_pairs:
+            pair.id = expected_ids[pair.id - 1]
+        return True
+
+    remapped = remap_zero_based() or remap_one_based()
+    if remapped:
+        # Sanity check: remapped IDs must now reference the expected chunk.
+        post_ids = {p.id for p in corrected_pairs}
+        if not post_ids.issubset(expected_id_set):
+            raise LLMAPIError(
+                "Internal error: remapped corrected pair IDs still do not match expected IDs"
+            )
+        return corrected_pairs, True
+
+    # No safe remapping found: abort to avoid corrupting output.
+    expected_min = min(expected_id_set) if expected_id_set else None
+    expected_max = max(expected_id_set) if expected_id_set else None
+    returned_min = min(returned_id_set) if returned_id_set else None
+    returned_max = max(returned_id_set) if returned_id_set else None
+
+    raise LLMAPIError(
+        "Corrected pair IDs do not match expected chunk IDs "
+        f"(expected IDs ~{expected_min}-{expected_max}, got ~{returned_min}-{returned_max}). "
+        "This usually means the model renumbered IDs; refusing to apply to avoid corrupting output."
+    )
+
+
 def _clean_llm_response(text: str) -> str:
     """
     Clean LLM response by removing extraneous content.
@@ -513,6 +587,16 @@ def refine_chunk_sdk(
 
             corrected_pairs = deduplicated
             print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
+
+        # Align IDs to expected chunk IDs (handles per-chunk renumbering)
+        corrected_pairs, remapped = _align_corrected_pair_ids(
+            expected_pairs=pairs_chunk,
+            corrected_pairs=corrected_pairs
+        )
+        if remapped:
+            expected_first = pairs_chunk[0].id if pairs_chunk else "?"
+            expected_last = pairs_chunk[-1].id if pairs_chunk else "?"
+            print(f"  [Warning]: Model returned local IDs; remapped to expected IDs {expected_first}-{expected_last}")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
@@ -893,6 +977,16 @@ def refine_chunk_sdk_streaming(
 
             corrected_pairs = deduplicated
             print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
+
+        # Align IDs to expected chunk IDs (handles per-chunk renumbering)
+        corrected_pairs, remapped = _align_corrected_pair_ids(
+            expected_pairs=pairs_chunk,
+            corrected_pairs=corrected_pairs
+        )
+        if remapped:
+            expected_first = pairs_chunk[0].id if pairs_chunk else "?"
+            expected_last = pairs_chunk[-1].id if pairs_chunk else "?"
+            print(f"  [Warning]: Model returned local IDs; remapped to expected IDs {expected_first}-{expected_last}")
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
