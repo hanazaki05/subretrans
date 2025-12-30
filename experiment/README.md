@@ -225,30 +225,30 @@ Both the thinking block and code block wrapper are automatically removed before 
 
 See [INTERMEDIATE_FORMATS.md](INTERMEDIATE_FORMATS.md) for complete documentation.
 
-### Incremental Output (✨ NEW)
+### Per-block Update (✨ NEW)
 
-**Default behavior:** The output file is now written after **each chunk** for data safety.
+**Default behavior:** The output file is now updated after **each chunk/block** for data safety.
 
 If processing crashes or is interrupted:
-- **With incremental output** (default): All completed chunks are preserved
-- **Without incremental output**: All progress is lost
+- **With per-block update** (default): All completed chunks are preserved
+- **Without per-block update**: All progress is lost
 
 **Configuration:**
 
 ```yaml
 # config.yaml
 runtime:
-  incremental_output: true  # Default: true (write after each chunk)
+  per_block_update: true  # Default: true (update after each chunk/block)
 ```
 
 **CLI overrides:**
 
 ```bash
-# Disable incremental output (write only at end)
-python main_sdk.py input.ass output.ass --no-incremental-output
+# Disable per-block update (write only at end)
+python main_sdk.py input.ass output.ass --no-per-block-update
 
-# Enable incremental output explicitly (default behavior)
-python main_sdk.py input.ass output.ass --incremental-output
+# Enable per-block update explicitly (default behavior)
+python main_sdk.py input.ass output.ass --per-block-update
 ```
 
 **When to disable:**
@@ -264,13 +264,13 @@ python main_sdk.py input.ass output.ass --incremental-output
 
 **Status display:**
 
-When incremental output is enabled, you'll see the save status after each chunk:
+When per-block update is enabled, you'll see the save status after each chunk:
 ```
 Processing chunk 2/10 (45 pairs)...
 [Chunk 2/10] (20.0% complete)
   Tokens used: 3,452 (prompt: 1,892, completion: 1,560)
   Time: 18.23s
-  [Incremental] ✓ Saved pairs 45-89 (90/450 total) to output.ass
+  [Per-block] ✓ Updated pairs 45-89 (90/450 total) in output.ass
 ```
 
 **Status format:**

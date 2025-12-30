@@ -348,7 +348,7 @@ def process_subtitles(
         print("\nStep 4: Processing chunks with LLM...")
         print("-" * 60)
 
-        # Track cumulative pairs processed for incremental output status
+        # Track cumulative pairs processed for per-block update status
         cumulative_pairs_processed = resume_index or 0
         if preserved_pairs is not None:
             cumulative_pairs_processed = preserved_pairs
@@ -446,16 +446,16 @@ def process_subtitles(
                 if enable_checkpoint and checkpoint_path:
                     save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
 
-                # Write incremental output if enabled
-                if config.incremental_output:
+                # Write per-block updates if enabled
+                if config.per_block_update:
                     try:
                         updated_ass_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
                         output_content = render_ass_file(header, updated_ass_lines)
                         write_ass_file(output_path, output_content)
-                        # Always show incremental save status (not just in verbose mode)
-                        print(f"  [Incremental] ✓ Saved pairs {chunk_first_id}-{chunk_last_id} ({cumulative_pairs_processed}/{len(pairs)} total) to {output_path}")
+                        # Always show save status (not just in verbose mode)
+                        print(f"  [Per-block] ✓ Updated pairs {chunk_first_id}-{chunk_last_id} ({cumulative_pairs_processed}/{len(pairs)} total) in {output_path}")
                     except Exception as e:
-                        print(f"  [Incremental] ✗ Failed to save progress: {e}")
+                        print(f"  [Per-block] ✗ Failed to save progress: {e}")
 
                 # Check if memory needs compression
                 memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
@@ -547,14 +547,14 @@ Examples:
   # Resume with checkpoint (preserves learned terms across runs)
   python main_sdk.py input.ass output.ass --resume 680 --checkpoint
 
-  # Disable incremental output (write only at end)
-  python main_sdk.py input.ass output.ass --no-incremental-output
+  # Disable per-block update (write only at end)
+  python main_sdk.py input.ass output.ass --no-per-block-update
 
-  # Enable incremental output explicitly (default behavior)
-  python main_sdk.py input.ass output.ass --incremental-output
+  # Enable per-block update explicitly (default behavior)
+  python main_sdk.py input.ass output.ass --per-block-update
 
 Note: API key is automatically loaded from ../key file
-Note: Incremental output is enabled by default for data safety (write after each chunk)
+Note: Per-block update is enabled by default for data safety (write after each chunk)
         """
     )
 
@@ -636,17 +636,34 @@ Note: Incremental output is enabled by default for data safety (write after each
         help="Enable glossary checkpoint system (save/load learned terminology to/from .glossary.yaml file)"
     )
     parser.add_argument(
+        "--per-block-update",
+        action="store_true",
+        default=None,
+        dest="per_block_update",
+        help="Update output file after each chunk/block (default: from config.yaml, typically enabled for safety)"
+    )
+    parser.add_argument(
+        "--no-per-block-update",
+        action="store_false",
+        default=None,
+        dest="per_block_update",
+        help="Write output file only once at the end (disables per-block updates)"
+    )
+
+    # Backward-compatible flags (deprecated)
+    parser.add_argument(
         "--incremental-output",
         action="store_true",
         default=None,
-        dest="incremental_output",
-        help="Write output file after each chunk (default: from config.yaml, typically enabled for safety)"
+        dest="per_block_update",
+        help="DEPRECATED: use --per-block-update"
     )
     parser.add_argument(
         "--no-incremental-output",
         action="store_false",
-        dest="incremental_output",
-        help="Write output file only once at the end (disables incremental updates)"
+        default=None,
+        dest="per_block_update",
+        help="DEPRECATED: use --no-per-block-update"
     )
 
     args = parser.parse_args()
@@ -661,7 +678,7 @@ Note: Incremental output is enabled by default for data safety (write after each
         config = load_config_sdk(
             model_name=args.model,
             use_streaming=args.streaming,
-            incremental_output=args.incremental_output,
+            per_block_update=args.per_block_update,
             dry_run=args.dry_run,
             max_chunks=args.max_chunks,
             memory_limit=args.memory_limit,

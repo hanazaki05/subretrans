@@ -59,7 +59,7 @@ user:
 # Runtime options (can be overridden by CLI flags)
 runtime:
   use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
-  incremental_output: true  # Write output file after each chunk (recommended for safety)
+  per_block_update: true  # Update output file after each chunk/block (recommended for safety)
   verbose: false  # Enable verbose output with detailed progress
   very_verbose: false  # Dump full API responses (requires verbose)
   debug_prompts: false  # Print system prompt/memory (requires very_verbose)

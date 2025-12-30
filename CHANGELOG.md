@@ -11,6 +11,9 @@ All notable changes to this project will be documented in this file.
   - Fix: Template glossary is now parsed and loaded into `GlobalMemory.user_glossary` at initialization
   - Result: User-defined translations now correctly prevent conflicting LLM-extracted terms
   - Example: Template entry "Mac: 麦可" now properly blocks LLM extraction of "Mac: 麦" (conflict detected)
+- **Resume + per-block update safety** (experiment SDK):
+  - Output writing is now atomic to avoid truncated/corrupted `.ass` files on interruption
+  - Added ID alignment logic to prevent applying per-chunk “local IDs” (e.g., `0..N-1`) onto global pair IDs during `--resume`
 
 ### Added
 - **Enhanced intermediate format robustness** (experiment SDK):
@@ -54,6 +57,10 @@ All notable changes to this project will be documented in this file.
   - Parses `### 4. User Terminology` section from `main_prompt.md` at startup
   - Populates `GlobalMemory.user_glossary` with parsed entries for lock mechanism
   - Verbose mode shows count of loaded user glossary entries
+- `experiment/main_sdk.py` / `experiment/config_sdk.py` / `experiment/config.yaml`:
+  - Renamed `incremental_output` → `per_block_update`
+  - CLI flags renamed to `--per-block-update` / `--no-per-block-update`
+  - Deprecated compatibility flags `--incremental-output` / `--no-incremental-output` are still accepted
 - `experiment/llm_client_sdk.py`:
   - Updated `refine_chunk_sdk()` and `refine_chunk_sdk_streaming()` with fallback parsing
   - Added try-catch around deserialization with pattern extraction recovery

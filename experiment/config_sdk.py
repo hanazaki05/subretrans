@@ -114,7 +114,7 @@ class ConfigSDK:
     pairs_per_chunk: Optional[int] = None
     api_timeout: int = 280
     use_streaming: bool = True
-    incremental_output: bool = True
+    per_block_update: bool = True
     verbose: bool = False
     very_verbose: bool = False
     debug_prompts: bool = False
@@ -130,6 +130,19 @@ class ConfigSDK:
     main_model: MainModelSettings = field(default_factory=MainModelSettings)
     terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
     intermediate_format: str = "json"
+
+    @property
+    def incremental_output(self) -> bool:
+        """
+        Backward-compatible alias for `per_block_update`.
+
+        Deprecated: use `per_block_update`.
+        """
+        return self.per_block_update
+
+    @incremental_output.setter
+    def incremental_output(self, value: bool) -> None:
+        self.per_block_update = bool(value)
 
     def __post_init__(self):
         """Load API key from key file if not set and validate format."""
@@ -215,6 +228,11 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
     )
 
     # Create config object
+    per_block_update = runtime_settings.get("per_block_update")
+    if per_block_update is None:
+        # Backward compatibility
+        per_block_update = runtime_settings.get("incremental_output", True)
+
     config = ConfigSDK(
         api_key=api_key,
         api_base_url=api_settings.get("base_url", "https://api.openai.com/v1"),
@@ -230,7 +248,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         terminology_min_confidence=glossary_settings.get("terminology_min_confidence", 0.6),
         user_prompt_path=user_settings.get("prompt_path", "custom_main_prompt.md"),
         use_streaming=runtime_settings.get("use_streaming", True),
-        incremental_output=runtime_settings.get("incremental_output", True),
+        per_block_update=per_block_update,
         verbose=runtime_settings.get("verbose", False),
         very_verbose=runtime_settings.get("very_verbose", False),
         debug_prompts=runtime_settings.get("debug_prompts", False),
@@ -253,6 +271,7 @@ def load_config_sdk(
     model_name: Optional[str] = None,
     terminology_model: Optional[str] = None,
     use_streaming: Optional[bool] = None,
+    per_block_update: Optional[bool] = None,
     incremental_output: Optional[bool] = None,
     dry_run: bool = False,
     max_chunks: Optional[int] = None,
@@ -274,7 +293,8 @@ def load_config_sdk(
         model_name: Override for main refinement model name
         terminology_model: Override for terminology extraction model name
         use_streaming: Override for streaming API mode
-        incremental_output: Override for incremental output mode (write file after each chunk)
+        per_block_update: Override for per-block update mode (write file after each chunk/block)
+        incremental_output: Deprecated alias for per_block_update
         dry_run: Enable dry run mode
         max_chunks: Override for maximum chunks to process
         memory_limit: Override for memory token limit
@@ -300,8 +320,11 @@ def load_config_sdk(
         config.terminology_model.name = terminology_model
     if use_streaming is not None:
         config.use_streaming = use_streaming
-    if incremental_output is not None:
-        config.incremental_output = incremental_output
+    if per_block_update is not None:
+        config.per_block_update = per_block_update
+    elif incremental_output is not None:
+        # Backward compatibility
+        config.per_block_update = incremental_output
     if dry_run:
         config.dry_run = dry_run
     if max_chunks is not None:

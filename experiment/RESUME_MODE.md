@@ -92,6 +92,27 @@ Processing pairs 500 to 999 (500 pairs)
 ✅ **Error Recovery**: Continue from where you left off after errors
 ✅ **Flexible**: Works with all other options (--pairs-per-chunk, --streaming, -vvv, etc.)
 ✅ **Glossary Checkpoint**: Learned terminology is automatically saved and restored across runs
+✅ **Per-block Update (Recommended)**: Updates output after each chunk/block for crash-safe resume
+
+## Per-block Update (Recommended)
+
+For long files, keep **per-block update** enabled so the output file is updated after each chunk/block. This makes `--resume` much safer if the run is interrupted.
+
+### CLI
+
+```bash
+# Default: enabled (from config.yaml)
+
+# Disable (write only at end)
+python main_sdk.py input.ass output.ass --no-per-block-update
+
+# Enable explicitly
+python main_sdk.py input.ass output.ass --per-block-update
+```
+
+### Backward compatibility
+
+The old flags `--incremental-output` / `--no-incremental-output` are still accepted, but deprecated.
 
 ## Glossary Checkpoint System
 
