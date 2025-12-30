@@ -109,6 +109,42 @@ def serialize_xml_pair(pairs: List[SubtitlePair]) -> str:
     return "\n".join(lines).rstrip()  # Remove trailing empty line
 
 
+def _parse_field_assignment(line: str, expected_field: str) -> tuple:
+    """
+    Parse a field assignment line with two-stage strategy.
+
+    Stage 1: Strict parsing with '=' separator
+    Stage 2: Regex fallback for alternate separators and whitespace
+
+    Args:
+        line: Line to parse (e.g., "eng=value" or "eng>value")
+        expected_field: Expected field name (e.g., "eng", "chinese", "ID")
+
+    Returns:
+        Tuple of (value, used_fallback, separator) where:
+        - value: Extracted value string, or None if parsing fails
+        - used_fallback: True if Stage 2 was used, False if Stage 1 succeeded
+        - separator: The separator character used (only when fallback is True), None otherwise
+    """
+    # Stage 1: Strict parsing with '=' separator
+    if "=" in line:
+        key, value = line.split("=", 1)
+        if key == expected_field:
+            return (value, False, None)  # Strict match successful, no fallback used
+
+    # Stage 2: Regex-based fallback
+    # Match: field_name + optional_whitespace + separator + optional_whitespace + value
+    # Supported separators: =, >, :, |
+    pattern = rf'^({re.escape(expected_field)})\s*([=>:|])\s*(.*)$'
+    match = re.match(pattern, line.strip())
+
+    if match:
+        _, separator, value = match.groups()
+        return (value.strip(), True, separator)  # Fallback used, return separator for logging
+
+    return (None, False, None)  # Both stages failed
+
+
 def deserialize_xml_pair(text: str) -> List[SubtitlePair]:
     """
     Deserialize XML-pair format to subtitle pairs.
@@ -141,21 +177,23 @@ def deserialize_xml_pair(text: str) -> List[SubtitlePair]:
         i += 1
         pair_data = {}
 
-        # Read ID, eng, chinese
+        # Read ID, eng, chinese with two-stage parsing
         for field in ["ID", "eng", "chinese"]:
             if i >= len(lines):
                 raise SerializationError(f"Unexpected end of input while reading {field}")
 
             line = lines[i].strip()
 
-            # Parse field=value
-            if "=" not in line:
+            # Parse field assignment using two-stage strategy
+            value, used_fallback, separator = _parse_field_assignment(line, field)
+
+            if value is None:
                 raise SerializationError(f"Expected '{field}=...' at line {i+1}, got: {line}")
 
-            key, value = line.split("=", 1)
-
-            if key != field:
-                raise SerializationError(f"Expected field '{field}' at line {i+1}, got: {key}")
+            # Log warning if non-standard separator was used
+            if used_fallback and separator != "=":
+                import sys
+                print(f"  [Warning]: Non-standard separator '{separator}' for field '{field}' at line {i+1}, auto-corrected", file=sys.stderr)
 
             pair_data[field.lower() if field != "ID" else "id"] = value
             i += 1

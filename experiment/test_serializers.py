@@ -316,6 +316,109 @@ def test_format_examples_conversion():
         return False
 
 
+def test_xml_pair_malformed_separators():
+    """Test XML-pair deserialization with alternate separators and whitespace."""
+    print("\n" + "=" * 60)
+    print("Test 7: XML-Pair Malformed Separators (Fallback)")
+    print("=" * 60)
+
+    # Test 1: eng> instead of eng=
+    print("\n  Testing alternate separator '>'...")
+    xml_with_arrow = """<pair>
+ID=0
+eng>Hello
+chinese=你好
+</pair>"""
+
+    pairs = deserialize_xml_pair(xml_with_arrow)
+    assert len(pairs) == 1, f"Expected 1 pair, got {len(pairs)}"
+    assert pairs[0].id == 0, f"Expected ID 0, got {pairs[0].id}"
+    assert pairs[0].eng == "Hello", f"Expected 'Hello', got '{pairs[0].eng}'"
+    assert pairs[0].chinese == "你好", f"Expected '你好', got '{pairs[0].chinese}'"
+    print("  ✓ eng> separator works")
+
+    # Test 2: Whitespace variations
+    print("\n  Testing whitespace around separators...")
+    xml_with_spaces = """<pair>
+ID = 1
+eng = World
+chinese = 世界
+</pair>"""
+
+    pairs2 = deserialize_xml_pair(xml_with_spaces)
+    assert len(pairs2) == 1
+    assert pairs2[0].id == 1
+    assert pairs2[0].eng == "World"
+    assert pairs2[0].chinese == "世界"
+    print("  ✓ Whitespace around '=' works")
+
+    # Test 3: Mixed separators (reproducing actual error from log)
+    print("\n  Testing mixed separators...")
+    xml_mixed = """<pair>
+ID:2
+eng>this is the finest 688 crew in the fleet.
+chinese=这是舰队中最好的688船员
+</pair>
+
+<pair>
+ID=3
+eng>have to be off-limits.
+chinese=必须成为禁区
+</pair>"""
+
+    pairs3 = deserialize_xml_pair(xml_mixed)
+    assert len(pairs3) == 2
+    assert pairs3[0].id == 2
+    assert pairs3[0].eng == "this is the finest 688 crew in the fleet."
+    assert pairs3[1].id == 3
+    assert pairs3[1].eng == "have to be off-limits."
+    print("  ✓ Mixed separators work")
+
+    # Test 4: Colon separator
+    print("\n  Testing colon separator...")
+    xml_colon = """<pair>
+ID: 4
+eng: Test
+chinese: 测试
+</pair>"""
+
+    pairs4 = deserialize_xml_pair(xml_colon)
+    assert len(pairs4) == 1
+    assert pairs4[0].id == 4
+    assert pairs4[0].eng == "Test"
+    print("  ✓ Colon separator works")
+
+    # Test 5: Pipe separator
+    print("\n  Testing pipe separator...")
+    xml_pipe = """<pair>
+ID|5
+eng|Another test
+chinese|另一个测试
+</pair>"""
+
+    pairs5 = deserialize_xml_pair(xml_pipe)
+    assert len(pairs5) == 1
+    assert pairs5[0].id == 5
+    assert pairs5[0].eng == "Another test"
+    print("  ✓ Pipe separator works")
+
+    # Test 6: Strict format still works
+    print("\n  Testing strict format (should use Stage 1)...")
+    xml_strict = """<pair>
+ID=6
+eng=Strict format
+chinese=严格格式
+</pair>"""
+
+    pairs6 = deserialize_xml_pair(xml_strict)
+    assert len(pairs6) == 1
+    assert pairs6[0].eng == "Strict format"
+    print("  ✓ Strict format still works (Stage 1)")
+
+    print("\n✓ All XML-pair malformed separator tests passed!")
+    return True
+
+
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -329,6 +432,7 @@ def main():
         test_edge_cases,
         test_error_handling,
         test_format_examples_conversion,
+        test_xml_pair_malformed_separators,
     ]
 
     results = []
