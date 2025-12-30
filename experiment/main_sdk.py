@@ -288,6 +288,22 @@ def process_subtitles(
         # User glossary from template is parsed and merged at prompt build time.
         global_memory = init_global_memory()
 
+        # Load template glossary and populate user_glossary for lock mechanism
+        from prompts import load_main_prompt_template, _parse_template_glossary, _find_section_boundaries
+        try:
+            template = load_main_prompt_template(config)
+            TARGET_SECTION = "User Terminology (Authoritative Glossary)"
+            section_start, section_end, _ = _find_section_boundaries(template, TARGET_SECTION)
+            if section_start is not None:
+                section_content = template[section_start:section_end]
+                template_glossary = _parse_template_glossary(section_content)
+                global_memory.user_glossary = template_glossary
+                if config.verbose:
+                    print(f"  Loaded {len(template_glossary)} user glossary entries from template")
+        except Exception as e:
+            if config.verbose:
+                print(f"  Warning: Failed to load template glossary: {e}")
+
         # Load glossary checkpoint if enabled
         checkpoint_path = None
         if enable_checkpoint:

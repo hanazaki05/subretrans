@@ -2,6 +2,194 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.9] - 2025-12-30
+
+### Fixed
+- **Terminology lock mechanism bug** (experiment SDK):
+  - User glossary entries from `main_prompt.md` template were not being enforced during terminology extraction
+  - Bug: `GlobalMemory.user_glossary` was initialized as empty, so lock checks always failed
+  - Fix: Template glossary is now parsed and loaded into `GlobalMemory.user_glossary` at initialization
+  - Result: User-defined translations now correctly prevent conflicting LLM-extracted terms
+  - Example: Template entry "Mac: 麦可" now properly blocks LLM extraction of "Mac: 麦" (conflict detected)
+
+### Added
+- **Enhanced intermediate format robustness** (experiment SDK):
+  - All three intermediate formats now have comprehensive error recovery mechanisms
+  - Formats: JSON (default), XML-pair, pseudo-TOML - see `experiment/INTERMEDIATE_FORMATS.md`
+  - Configure via `config.intermediate_format` in `config.yaml` or `--format` CLI flag
+  - Format-specific enhancements:
+    - **XML-pair**: Two-stage parsing handles malformed separators (`eng>value` → `eng=value`)
+    - **JSON**: Pattern extraction finds first `[` or `{` marker
+    - **Pseudo-TOML**: Pattern extraction finds first `[pair]` header
+  - All formats support fallback parsing, duplicate detection, and commentary stripping
+- **Fallback LLM output parser** (experiment SDK):
+  - Pattern-based extraction as recovery mechanism when normal deserialization fails
+  - Two-stage parsing: (1) Try direct deserialization, (2) Fall back to pattern extraction if failed
+  - Handles LLM responses with extra commentary before format data (e.g., "I have reviewed..." before `<pair>`)
+  - New function: `_extract_from_format_marker(text, format_type)` in `llm_client_sdk.py`
+  - Supports all formats: XML-pair (`<pair>`), JSON (`[` or `{`), pseudo-TOML (`[pair]`)
+  - Detailed logging shows when fallback is used and whether recovery succeeded
+- **Duplicate pair detection and deduplication** (experiment SDK):
+  - Detects when LLM returns same pair ID multiple times in a response
+  - New function: `_detect_duplicate_pairs(pairs)` in `llm_client_sdk.py`
+  - Deduplication strategy: Keep **last occurrence** (assumes LLM refined/corrected the duplicate)
+  - Maintains original order of first appearance for consistency
+  - Warning messages show which IDs were duplicated and how many unique pairs retained
+- **Two-stage XML-pair parsing with regex fallback** (experiment SDK):
+  - Handles malformed field separators from LLM (e.g., `eng>value` instead of `eng=value`)
+  - Stage 1: Strict parsing with `=` separator (maintains current behavior)
+  - Stage 2: Regex-based fallback for alternate separators (`>`, `:`, `|`) and whitespace variations
+  - New function: `_parse_field_assignment(line, expected_field)` in `serializers.py`
+  - Pattern: `r'^({field})\s*([=>:|])\s*(.*)$'` (flexible separator + whitespace)
+  - Warning logged when non-standard separator is auto-corrected
+  - Examples handled: `eng>value`, `eng: value`, `eng = value`, `ID | 123`
+- New test files in `experiment/`:
+  - `test_lock_logic_simple.py`: Verifies terminology lock mechanism with user glossary
+  - `test_response_cleaning.py` updated: Tests for leading commentary extraction and duplicate detection
+  - `test_serializers.py` updated: `test_xml_pair_malformed_separators()` for regex fallback (7 test cases)
+
+### Changed
+- `experiment/main_sdk.py`:
+  - Added template glossary loading after `init_global_memory()` (lines 291-305)
+  - Parses `### 4. User Terminology` section from `main_prompt.md` at startup
+  - Populates `GlobalMemory.user_glossary` with parsed entries for lock mechanism
+  - Verbose mode shows count of loaded user glossary entries
+- `experiment/llm_client_sdk.py`:
+  - Updated `refine_chunk_sdk()` and `refine_chunk_sdk_streaming()` with fallback parsing
+  - Added try-catch around deserialization with pattern extraction recovery
+  - Added duplicate detection and deduplication after successful deserialization
+  - Changed deduplication strategy from "keep first" to "keep last" occurrence
+- `experiment/serializers.py`:
+  - Updated `deserialize_xml_pair()` to use two-stage field parsing
+  - Added `_parse_field_assignment()` helper for flexible separator matching
+  - Warning messages when Stage 2 fallback is used
+- `experiment/test_serializers.py`:
+  - Added comprehensive test for malformed separators (7 test cases)
+  - Tests cover: `>`, `:`, `|` separators, whitespace variations, mixed formats, strict format
+- `experiment/test_response_cleaning.py`:
+  - Added `test_leading_commentary_extraction()` (3 test cases: XML, JSON, TOML)
+  - Added `test_duplicate_pair_detection()` (3 test cases: detection, deduplication, no false positives)
+  - Added helper functions: `_extract_from_format_marker()`, `_detect_duplicate_pairs()`
+
+### Technical Details
+
+**Terminology Lock Fix:**
+- Root cause: Template glossary was only used for prompt generation, never stored in `GlobalMemory.user_glossary`
+- Lock mechanism in `memory.py:268-299` builds `user_map` from `user_glossary` (was empty)
+- Fix flow:
+  1. Load template from `config.user_prompt_path` at initialization
+  2. Find "User Terminology (Authoritative Glossary)" section
+  3. Parse entries using `_parse_template_glossary()` (pattern: `r"^\s*-\s+(.+?):\s*(.+?)\s*$"`)
+  4. Populate `GlobalMemory.user_glossary` with parsed entries
+  5. Lock mechanism now detects conflicts using case-insensitive comparison (`.casefold()`)
+- Backward compatible: Falls back gracefully if template loading fails
+
+**Intermediate Format Support:**
+- Three formats available (configured via `config.intermediate_format`):
+  1. **JSON** (default): Standard JSON array `[{"id": 0, "eng": "...", "chinese": "..."}]`
+  2. **XML-pair**: Custom format with `<pair>ID=0\neng=...\nchinese=...\n</pair>`
+  3. **Pseudo-TOML**: TOML-like `[pair]\nid = 0\neng = ...\nchinese = ...`
+- All formats preserve ASS formatting tags (e.g., `{\i1}`, `\N`)
+- Each format has specialized error recovery:
+  - **XML-pair**: Handles wrong separators (`>`, `:`, `|`) and whitespace variations
+  - **JSON**: Extracts from first `[` or `{` if commentary present
+  - **Pseudo-TOML**: Extracts from first `[pair]` section header
+- See `experiment/INTERMEDIATE_FORMATS.md` for complete format specifications
+
+**Fallback Parser:**
+- Activation: Only when normal deserialization raises `SerializationError`
+- Pattern detection:
+  - XML-pair: Find first `<pair>` tag → extract from there
+  - JSON: Find first `[` or `{` → extract from there
+  - Pseudo-TOML: Find first `[pair]` → extract from there
+- Recovery flow:
+  1. Clean response (remove `<think>` blocks, extract from code blocks)
+  2. Try deserialization → `SerializationError`
+  3. Call `_extract_from_format_marker()` to find format markers
+  4. Retry deserialization with extracted content
+  5. If both fail: Show excerpts and raise `LLMAPIError`
+- Error handling: Detailed logging shows cleaned response, extracted content, and error messages
+- Works uniformly across all three intermediate formats
+
+**Two-Stage XML Parsing:**
+- Stage 1 (Strict): Check for `=` separator, split on first `=`, validate field name
+- Stage 2 (Regex): Match `field + optional_ws + separator + optional_ws + value`
+- Supported separators: `=`, `>`, `:`, `|`
+- Whitespace handled: `eng=value`, `eng = value`, `eng= value`, `eng =value`
+- Return format: `(value, used_fallback, separator)` tuple
+- Warning example: `[Warning]: Non-standard separator '>' for field 'eng' at line 399, auto-corrected`
+
+**Duplicate Deduplication:**
+- Detection: Build `id_counts` dict, find IDs with count > 1
+- Strategy: Keep **last** occurrence (changed from "keep first")
+  - Rationale: LLM might have refined/corrected the duplicate
+- Implementation:
+  1. Build `id_to_pair` dict (last value wins)
+  2. Iterate original list, use `seen_ids` to track first appearance
+  3. For each first appearance, append `id_to_pair[pair.id]` (gets last occurrence)
+  4. Result: Original order preserved, last occurrence used
+- Warning format: `[Warning]: Duplicate pair IDs detected: [5, 12]`
+
+### Examples
+
+**Terminology Lock (Before/After):**
+```
+# Before fix (bug)
+Terminology merge: 11 candidate(s), added 9, user-locked 0 (conflicts 0, duplicates 0)
+# "Mac" was added despite template having "Mac: 麦可" (conflict not detected)
+
+# After fix
+Loaded 35 user glossary entries from template
+...
+[Glossary lock] Skip learned term 'Mac' -> '麦' (conflicts with user '麦可')
+Terminology merge: 11 candidate(s), added 8, user-locked 1 (conflicts 1, duplicates 0)
+```
+
+**Fallback Parser (LLM added commentary):**
+```
+# LLM response
+I have reviewed and corrected the subtitles.
+<pair>
+ID=0
+eng=Hello
+chinese=你好
+</pair>
+
+# Log output
+[Deserialization failed, attempting pattern extraction...]
+[Pattern extraction successful, retrying deserialization...]
+[Recovery successful!]
+```
+
+**Two-Stage XML Parsing (malformed separator):**
+```
+# LLM output
+<pair>
+ID=107
+eng>this is the finest 688 crew in the fleet.
+chinese=这是舰队中最优秀的 688 艇员
+</pair>
+
+# Log output
+[Warning]: Non-standard separator '>' for field 'eng' at line 3, auto-corrected
+```
+
+**Duplicate Detection:**
+```
+# LLM returned pair ID=5 twice
+[Warning]: Duplicate pair IDs detected: [5, 12]
+[Action]: Keeping last occurrence, removing duplicates
+[Result]: 103 unique pairs retained
+```
+
+### Backward Compatibility
+- ✅ All changes are backward compatible
+- ✅ Fallback parser only activates on deserialization failures
+- ✅ Two-stage XML parsing maintains strict behavior for well-formed input
+- ✅ Template glossary loading falls back gracefully on errors
+- ✅ Existing tests continue to pass
+- ✅ No changes to external APIs or file formats
+
 ## [0.0.8] - 2025-12-07
 
 ### Added
