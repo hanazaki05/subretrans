@@ -1,0 +1,133 @@
+[Script Info]
+Title: Bilingual Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: Yes
+PlayResX: 1920
+PlayResY: 1080
+Collisions: Normal
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: English3,Calibri,54,&H00F8FFF4,&H000000FF,&H00703A22,&H19000000,0,0,0,0,100,100,0,0,1,2.3,0.8,2,30,30,24,1
+Style: Chinese3,Microsoft YaHei,69,&H00F8FFF4,&H0000FFFF,&H00703A22,&H19000000,0,0,0,0,100,100,0,0,1,2.5,0.8,2,30,30,77,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,0:00:02.56,0:00:04.00,Chinese3,NTP,0000,0000,0000,,今晚，在军法署...
+Dialogue: -1,0:00:02.56,0:00:04.00,English3,NTP,0000,0000,0000,,  Tonight, on JAG...
+Dialogue: 1,0:00:09.31,0:00:11.57,Chinese3,NTP,0000,0000,0000,,晚上好，我是诺曼·德拉波特
+Dialogue: -1,0:00:09.31,0:00:11.57,English3,NTP,0000,0000,0000,,Good evening, I'm Norman Delaporte.
+Dialogue: 1,0:00:11.66,0:00:13.23,Chinese3,NTP,0000,0000,0000,,您将看到的报告
+Dialogue: -1,0:00:11.66,0:00:13.23,English3,NTP,0000,0000,0000,,The report you are about to see
+Dialogue: 1,0:00:13.31,0:00:16.14,Chinese3,NTP,0000,0000,0000,,包含有关战争和死亡的详细描述
+Dialogue: -1,0:00:13.31,0:00:16.14,English3,NTP,0000,0000,0000,,contains graphic descriptions of war and death.
+Dialogue: 1,0:00:16.23,0:00:18.67,Chinese3,NTP,0000,0000,0000,,涉及到关于战争罪行的突发新闻
+Dialogue: -1,0:00:16.23,0:00:18.67,English3,NTP,0000,0000,0000,,It involves a breaking story about war crimes
+Dialogue: 1,0:00:18.75,0:00:22.06,Chinese3,NTP,0000,0000,0000,,由美国海军陆战队在沙漠风暴行动期间犯下
+Dialogue: -1,0:00:18.75,0:00:22.06,English3,NTP,0000,0000,0000,,committed by American marines during Operation Desert Storm
+Dialogue: 1,0:00:22.15,0:00:24.93,Chinese3,NTP,0000,0000,0000,,在科威特的埃尔巴卡尔基地
+Dialogue: -1,0:00:22.15,0:00:24.93,English3,NTP,0000,0000,0000,,here in Kuwait at the El Bakkar compound.
+Dialogue: 1,0:00:25.02,0:00:29.85,Chinese3,NTP,0000,0000,0000,,指控很严重；影响很大
+Dialogue: -1,0:00:25.02,0:00:29.85,English3,NTP,0000,0000,0000,,The accusations are serious; The repercussions, great.
+Dialogue: 1,0:00:31.20,0:00:33.55,Chinese3,NTP,0000,0000,0000,,您正在观看的录像是由一支海军陆战队侦察小组拍摄的
+Dialogue: -1,0:00:31.20,0:00:33.55,English3,NTP,0000,0000,0000,,The footage you are watching was shot by a marine force
+Dialogue: 1,0:00:33.64,0:00:36.29,Chinese3,NTP,0000,0000,0000,,他们在沙漠风暴地面战开始前一天被派往敌后
+Dialogue: -1,0:00:33.64,0:00:36.29,English3,NTP,0000,0000,0000,,recon team sent behind enemy lines the day before
+Dialogue: 1,0:00:36.38,0:00:39.25,Chinese3,NTP,0000,0000,0000,,该小组由克莱德·莫里森中士领导
+Dialogue: -1,0:00:36.38,0:00:39.25,English3,NTP,0000,0000,0000,,the ground-war phase of Desert Storm began.
+Dialogue: 1,0:00:39.34,0:00:42.34,Chinese3,NTP,0000,0000,0000,,消灭三名美国人
+Dialogue: -1,0:00:39.34,0:00:42.34,English3,NTP,0000,0000,0000,,The team was led by Sergeant Clyde Morrison.
+Dialogue: 1,0:00:42.43,0:00:46.08,Chinese3,NTP,0000,0000,0000,,战争罪行是由当时的二等中尉弗兰科·切法鲁发现的
+Dialogue: -1,0:00:42.43,0:00:46.08,English3,NTP,0000,0000,0000,,To eliminate three Americans.
+Dialogue: 1,0:00:46.17,0:00:47.69,Chinese3,NTP,0000,0000,0000,,两天前，我在弗吉尼亚北部的家中采访了弗兰科·切法鲁，
+Dialogue: -1,0:00:46.17,0:00:47.69,English3,NTP,0000,0000,0000,,The war crime was discovered
+Dialogue: 1,0:00:47.78,0:00:50.44,Chinese3,NTP,0000,0000,0000,,现在是一名海军陆战队上尉
+Dialogue: -1,0:00:47.78,0:00:50.44,English3,NTP,0000,0000,0000,,by then-second-Lieutenant Franco Cefalu.
+Dialogue: 1,0:00:50.52,0:00:53.31,Chinese3,NTP,0000,0000,0000,,我的部队在侦察部队突袭两天后占领了埃尔巴卡尔
+Dialogue: -1,0:00:50.52,0:00:53.31,English3,NTP,0000,0000,0000,,Two days ago, I interviewed Franco Cefalu,
+Dialogue: 1,0:00:53.40,0:00:56.75,Chinese3,NTP,0000,0000,0000,,你在五号建筑里发现了什么？
+Dialogue: -1,0:00:53.40,0:00:56.75,English3,NTP,0000,0000,0000,,now a marine captain, at his home in northern Virginia.
+Dialogue: 1,0:00:56.83,0:01:00.75,Chinese3,NTP,0000,0000,0000,,三名死去的美国人，
+Dialogue: -1,0:00:56.83,0:01:00.75,English3,NTP,0000,0000,0000,,My unit overran El Bakkar two days after the Force Recon raid.
+Dialogue: 1,0:01:00.84,0:01:02.93,Chinese3,NTP,0000,0000,0000,,与萨达姆·侯赛因合作的化学工程师
+Dialogue: -1,0:01:00.84,0:01:02.93,English3,NTP,0000,0000,0000,,  And what did you find in building five?
+Dialogue: 1,0:01:03.01,0:01:05.02,Chinese3,NTP,0000,0000,0000,,参与他的制造大规模杀伤性武器的计划
+Dialogue: -1,0:01:03.01,0:01:05.02,English3,NTP,0000,0000,0000,,  Three dead Americans,
+Dialogue: 1,0:01:05.10,0:01:07.06,Chinese3,NTP,0000,0000,0000,,这三个人是怎么死的？
+Dialogue: -1,0:01:05.10,0:01:07.06,English3,NTP,0000,0000,0000,,chemical engineers working with Saddam Hussein
+Dialogue: 1,0:01:07.15,0:01:10.15,Chinese3,NTP,0000,0000,0000,,死于沙林毒气的影响
+Dialogue: -1,0:01:07.15,0:01:10.15,English3,NTP,0000,0000,0000,,on his program to develop weapons of mass destruction.
+Dialogue: 1,0:01:10.24,0:01:12.28,Chinese3,NTP,0000,0000,0000,,那晚拍摄的视频
+Dialogue: -1,0:01:10.24,0:01:12.28,English3,NTP,0000,0000,0000,,  How did these three men die?
+Dialogue: 1,0:01:12.37,0:01:13.85,Chinese3,NTP,0000,0000,0000,,显示侦察部队包围了五号建筑
+Dialogue: -1,0:01:12.37,0:01:13.85,English3,NTP,0000,0000,0000,,From the effects of sarin gas.
+Dialogue: 1,0:01:14.55,0:01:16.29,Chinese3,NTP,0000,0000,0000,,遭到激烈抵抗，海军陆战队向建筑物发射了
+Dialogue: -1,0:01:14.55,0:01:16.29,English3,NTP,0000,0000,0000,,  Video footage shot that night
+Dialogue: 1,0:01:16.38,0:01:19.55,Chinese3,NTP,0000,0000,0000,,后来被证明是沙林毒气的罐子
+Dialogue: -1,0:01:16.38,0:01:19.55,English3,NTP,0000,0000,0000,,shows the Force Recon team surrounding building five.
+Dialogue: 1,0:01:19.64,0:01:22.34,Chinese3,NTP,0000,0000,0000,,录像在莫里森中士的命令下停止了
+Dialogue: -1,0:01:19.64,0:01:22.34,English3,NTP,0000,0000,0000,,Encountering fierce resistance, the marines fired canisters
+Dialogue: 1,0:01:22.43,0:01:25.69,Chinese3,NTP,0000,0000,0000,,停止！停下！停下来，离开这里！
+Dialogue: -1,0:01:22.43,0:01:25.69,English3,NTP,0000,0000,0000,,of what later proved to be sarin gas into the building.
+Dialogue: 1,0:01:26.60,0:01:27.87,Chinese3,NTP,0000,0000,0000,,机密情报文件显示
+Dialogue: -1,0:01:26.60,0:01:27.87,English3,NTP,0000,0000,0000,,That's when the taping stopped
+Dialogue: 1,0:01:27.95,0:01:29.43,Chinese3,NTP,0000,0000,0000,,美国军方知道这些工程师在埃尔巴卡尔的存在
+Dialogue: -1,0:01:27.95,0:01:29.43,English3,NTP,0000,0000,0000,,at Sergeant Morrison's order.
+Dialogue: 1,0:01:29.52,0:01:30.91,Chinese3,NTP,0000,0000,0000,,五角大楼的一位高层消息人士证实，这些人
+Dialogue: -1,0:01:29.52,0:01:30.91,English3,NTP,0000,0000,0000,,Stop! Stop it! Stop it and get out of here!
+Dialogue: 1,0:01:31.00,0:01:32.74,Chinese3,NTP,0000,0000,0000,,对我们的战争努力构成了严重威胁
+Dialogue: -1,0:01:31.00,0:01:32.74,English3,NTP,0000,0000,0000,,Classified intelligence documents indicate
+Dialogue: 1,0:01:32.83,0:01:34.83,Chinese3,NTP,0000,0000,0000,,海军陆战队有四人伤亡
+Dialogue: -1,0:01:32.83,0:01:34.83,English3,NTP,0000,0000,0000,,that the American military knew of the presence
+Dialogue: 1,0:01:34.92,0:01:37.00,Chinese3,NTP,0000,0000,0000,,幸存者被直升机空运出去
+Dialogue: -1,0:01:34.92,0:01:37.00,English3,NTP,0000,0000,0000,,of these engineers at El Bakkar.
+Dialogue: 1,0:01:37.09,0:01:40.01,Chinese3,NTP,0000,0000,0000,,理查德·福特中士是机组长和炮手
+Dialogue: -1,0:01:37.09,0:01:40.01,English3,NTP,0000,0000,0000,,A source high up in the Pentagon confirmed that these men
+Dialogue: 1,0:01:40.10,0:01:42.40,Chinese3,NTP,0000,0000,0000,,中士，你撤离的海军陆战队员
+Dialogue: -1,0:01:40.10,0:01:42.40,English3,NTP,0000,0000,0000,,posed a serious threat to our war effort.
+Dialogue: 1,0:01:43.23,0:01:45.49,Chinese3,NTP,0000,0000,0000,,从埃尔巴卡尔带走了沙林毒气吗？
+Dialogue: -1,0:01:43.23,0:01:45.49,English3,NTP,0000,0000,0000,,The marines suffered four casualties.
+Dialogue: 1,0:01:45.58,0:01:47.89,Chinese3,NTP,0000,0000,0000,,是的，先生，莫里森中士带走了，先生
+Dialogue: -1,0:01:45.58,0:01:47.89,English3,NTP,0000,0000,0000,,The survivors were airlifted out by helicopter.
+Dialogue: 1,0:01:47.97,0:01:50.80,Chinese3,NTP,0000,0000,0000,,你怎么知道的？
+Dialogue: -1,0:01:47.97,0:01:50.80,English3,NTP,0000,0000,0000,,Sergeant Richard Ford was crew chief and gunner.
+Dialogue: 1,0:01:50.89,0:01:53.37,Chinese3,NTP,0000,0000,0000,,他把它放在他的子弹带里，先生
+Dialogue: -1,0:01:50.89,0:01:53.37,English3,NTP,0000,0000,0000,,  Sergeant, did the marines you evacuated
+Dialogue: 1,0:01:53.46,0:01:55.63,Chinese3,NTP,0000,0000,0000,,我们将在一分钟后回来，带来五角大楼的反应
+Dialogue: -1,0:01:53.46,0:01:55.63,English3,NTP,0000,0000,0000,,from El Bakkar carry sarin gas?
+Dialogue: 1,0:01:55.72,0:01:58.42,Chinese3,NTP,0000,0000,0000,,Yes, sir, Sergeant Morrison did, sir.
+Dialogue: -1,0:01:55.72,0:01:58.42,English3,NTP,0000,0000,0000,,Yes, sir, Sergeant Morrison did, sir.
+Dialogue: 1,0:01:58.50,0:01:59.98,Chinese3,NTP,0000,0000,0000,,  And how do you know that?
+Dialogue: -1,0:01:58.50,0:01:59.98,English3,NTP,0000,0000,0000,,  And how do you know that?
+Dialogue: 1,0:02:00.07,0:02:01.77,Chinese3,NTP,0000,0000,0000,,He had it in his bandolier, sir.
+Dialogue: -1,0:02:00.07,0:02:01.77,English3,NTP,0000,0000,0000,,He had it in his bandolier, sir.
+Dialogue: 1,0:02:01.86,0:02:04.90,Chinese3,NTP,0000,0000,0000,,We'll be back in a minute with reaction from the Pentagon.
+Dialogue: -1,0:02:01.86,0:02:04.90,English3,NTP,0000,0000,0000,,We'll be back in a minute with reaction from the Pentagon.
+Dialogue: 1,0:02:04.99,0:02:06.56,Chinese3,NTP,0000,0000,0000,,这些指控很严重...
+Dialogue: -1,0:02:04.99,0:02:06.56,English3,NTP,0000,0000,0000,,The charges are serious...
+Dialogue: 1,0:02:06.64,0:02:09.91,Chinese3,NTP,0000,0000,0000,,美国人使用化学武器杀死其他美国人
+Dialogue: -1,0:02:06.64,0:02:09.91,English3,NTP,0000,0000,0000,,Americans using chemical weapons to kill other Americans.
+Dialogue: 1,0:03:08.57,0:03:10.79,Chinese3,NTP,0000,0000,0000,,好吧，我会考虑行政解雇
+Dialogue: -1,0:03:08.57,0:03:10.79,English3,NTP,0000,0000,0000,,Well, I'll consider an administrative discharge.
+Dialogue: 1,0:03:10.88,0:03:12.19,Chinese3,NTP,0000,0000,0000,,今天你最多能得到三年
+Dialogue: -1,0:03:10.88,0:03:12.19,English3,NTP,0000,0000,0000,,Three's the best you're going to get today.
+Dialogue: 1,0:03:12.27,0:03:14.01,Chinese3,NTP,0000,0000,0000,,-几个月？ -几年
+Dialogue: -1,0:03:12.27,0:03:14.01,English3,NTP,0000,0000,0000,,-Months? -Years.
+Dialogue: 1,0:03:14.10,0:03:15.41,Chinese3,NTP,0000,0000,0000,,你一定是在开玩笑
+Dialogue: -1,0:03:14.10,0:03:15.41,English3,NTP,0000,0000,0000,,You've got to be kidding.
+Dialogue: 1,0:03:15.49,0:03:16.67,Chinese3,NTP,0000,0000,0000,,哈姆，埃尔斯沃斯下士偷了一辆推土机
+Dialogue: -1,0:03:15.49,0:03:16.67,English3,NTP,0000,0000,0000,,Harm, Petty Officer Ellsworth stole
+Dialogue: 1,0:03:16.76,0:03:18.11,Chinese3,NTP,0000,0000,0000,,从一个保密设施里
+Dialogue: -1,0:03:16.76,0:03:18.11,English3,NTP,0000,0000,0000,,a bulldozer from a secured facility
+Dialogue: 1,0:03:18.19,0:03:19.32,Chinese3,NTP,0000,0000,0000,,并摧毁了他当地国会议员的竞选总部
+Dialogue: -1,0:03:18.19,0:03:19.32,English3,NTP,0000,0000,0000,,and destroyed the campaign headquarters
+Dialogue: 1,0:03:19.41,0:03:20.63,Chinese3,NTP,0000,0000,0000,,这是一种看法
+Dialogue: -1,0:03:19.41,0:03:20.63,English3,NTP,0000,0000,0000,,of his local congressman.
+Dialogue: 1,0:03:20.72,0:03:21.98,Chinese3,NTP,0000,0000,0000,,我没有时间争论
+Dialogue: -1,0:03:20.72,0:03:21.98,English3,NTP,0000,0000,0000,,That's one way of looking at it.
+Dialogue: 1,0:03:22.07,0:03:23.89,Chinese3,NTP,0000,0000,0000,,我得去接那个澳大利亚交流军官
+Dialogue: -1,0:03:22.07,0:03:23.89,English3,NTP,0000,0000,0000,,I don't have time to argue.
+Dialogue: 1,0:03:23.98,0:03:25.03,Chinese3,NTP,0000,0000,0000,,布朗比少校
+Dialogue: -1,0:03:23.98,0:03:25.03,English3,NTP,0000,0000,0000,,I've got to go pick up that Australian exchange officer
+Dialogue: 1,0:03:25.11,0:03:26.38,Chinese3,NTP,0000,0000,0000,,-让巴德去！ -我听说布朗比很帅

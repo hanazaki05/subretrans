@@ -19,6 +19,9 @@ A Python tool for refining bilingual (currently English-Chinese) ASS subtitles u
 
 ## Quick Start
 
+<details>
+<summary>(no longer suggested as it's the old version) - Click to expand</summary>
+
 ```bash
 # 1. Create virtual environment
 python3 -m venv venv
@@ -30,12 +33,35 @@ pip install -r requirements.txt
 # 3. Set API key (or edit config.py)
 export OPENAI_API_KEY="your-api-key-here"
 
-# 4. Process subtitles
-python main.py input.ass output.ass
+# 4. Process subtitles (not suggested)
+python main.py example_input.ass output.ass
 
-# 5. Test with sample (first 10 pairs)
-python main.py input.ass output.ass --dry-run
+# 5. Test with sample (first 10 pairs)(not suggested)
+python main.py example_input.ass output.ass --dry-run
 ```
+
+</details>
+
+We recommended to use the excutable file in `/experiment` directory:
+```bash
+# 1. Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. (IMPORTANT) Set you key in a file, and set its path in ./experiment/config.yaml
+echo "YOUR_KEY" > key
+
+# 4. Process subtitles (not suggested)
+python ./experiment/main_sdk.py example_input.ass output.ass \
+--streaming --pairs-per-chunk 105  \
+--checkpoint --per-block-update -vvv
+```
+
+### Current limit:
+The ASS subtitle pairs are detected accorading to `example_input.ass` file, so you need to follow this format.
 
 ## Installation
 
