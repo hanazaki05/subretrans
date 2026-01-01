@@ -498,7 +498,10 @@ def inject_memory_into_template(template: str, global_memory: 'GlobalMemory') ->
 def convert_examples_to_format(template: str, target_format: str) -> str:
     """
     Convert JSON examples in Few-Shot Examples section to target format.
-    Also updates the "Input/Output Format & Constraint" section to match the format.
+    Also updates format-specific text throughout the template:
+    - Line 2: "JSON input" → "{format} input"
+    - Section 5: "Input/Output Format & Constraint" descriptions
+    - Section 6: Few-Shot Examples
 
     Args:
         template: Template text containing JSON examples
@@ -525,6 +528,21 @@ def convert_examples_to_format(template: str, target_format: str) -> str:
         print(f"  Warning: Could not import serializers: {e}")
         print("  Returning template with JSON examples unchanged")
         return template
+
+    # Step 0: Update the opening line that mentions "JSON input"
+    format_name_map = {
+        "xml-pair": "XML-pair input",
+        "pseudo-toml": "pseudo-TOML input"
+    }
+    format_description = format_name_map.get(target_format.lower(), "JSON input")
+
+    # Replace "JSON input" with the appropriate format name
+    template = re.sub(
+        r'based on the provided JSON input\.',
+        f'based on the provided {format_description}.',
+        template,
+        count=1
+    )
 
     # Step 1: Update the "Input/Output Format & Constraint" section
     format_constraint_pattern = r'(###\s*\d+\.\s*Input/Output Format & Constraint.*?)(- \*\*Input:\*\*.*?- \*\*STRICT ADHERENCE REQUIRED:\*\*.*?)(?=###|\Z)'
