@@ -21,12 +21,12 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
    - **PRIORITY 1 (Glossary):** Strictly follow the "User Terminology" list below.
    - **PRIORITY 2 (Acronyms):** Keep initial-based nicknames (e.g., "AJ", "DJ", "CC") in English.
    - **PRIORITY 3 (Standard):** Transliterate other personal names into standard Mandarin (e.g., Chris -> 克里斯, Fry -> 弗莱).
-   - **Rank Handling:** Format Ranks typically as [Name] + [Rank] in Chinese (e.g., Lieutenant Roberts -> 罗伯特中尉).
-5. **Specific treatment for "Sir":**
-   - **Courtroom Context (Highest Priority):** Translate as **"法官阁下"** when addressing the Judge/Presiding Officer during legal proceedings, regardless of their military rank.
-   - **Military Context:** Translate as **"长官"** when addressing a superior officer in operational/chain-of-command settings (e.g., office, bridge, investigation).
-   - **Civilian Context:** Translate as **"先生"** for civilian speakers or polite, non-military addresses.
-   - **Ambiguity Rule:** If a character is a superior officer but currently acting as a judge, prioritize the activity (e.g., sitting at the bench $\rightarrow$ **"法官阁下"**).
+   - **Rank Handling:** Format Ranks typically as [Name] + [Rank] in Chinese (e.g., Lieutenant Roberts -> 罗伯茨中尉).
+5. **Specific treatment for "Sir" / "Ma'am" (Honorifics):**
+   - **Courtroom Context (Highest Priority):** Translate as **"法官阁下"** when addressing the Judge/Presiding Officer during legal proceedings, regardless of gender or their military rank.
+   - **Military Context:** Translate both as **"长官"** when addressing a superior officer in chain-of-command settings (e.g., addressing Mac or Harm).
+   - **Civilian Context:** Distinguish by gender: translate "Sir" as **"先生"** and "Ma'am" as **"女士"**.
+   - **Ambiguity Rule:** If a character is a superior officer but currently acting as a judge, prioritize the activity (e.g., sitting at the bench is **"法官阁下"**, not "长官").
 
 ### 3. Context & Specific Handling (JAG TV Show)
 - **Military Ranks:** Interpret "Commander, Captain, Major, Admiral" as **U.S. Navy or Marine Corps ranks** in Chinese.
