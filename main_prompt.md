@@ -38,6 +38,8 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Brumby: 布伦比
 - Bud: 巴德
 - Bud Roberts: 巴德·罗伯特
+- Bud J Roberts: 小巴德·罗伯特
+- Bud Roberts Jr: 小巴德·罗伯特
 - CAG: 联队指挥官
 - Carolyn: 卡罗琳
 - Chegwidden: 切格维登
@@ -51,28 +53,25 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Harmon Rabb Jr: 小哈蒙·拉布
 - Harriet: 哈丽特
 - Imes: 艾姆斯
-- Bud Roberts: 巴德·罗伯特
-- Bud J Roberts: 小巴德·罗伯特
-- Bud Roberts Jr: 小巴德·罗伯特
 - JAG: 军法署
 - Judge Advocate General: 军法署
 - Latham: 莱瑟姆
+- Lieutenant Bud Roberts: 巴德·罗伯特上尉
 - Lieutenant Commander Harmon Rabb: 哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Junior: 小哈蒙·拉布少校
-- Lieutenant Bud Roberts: 巴德·罗伯特上尉
-- Lieutenant Roberts: 罗伯特上尉
 - Lieutenant J. Bud Roberts: 小巴德·罗伯特上尉
 - Lieutenant J. Roberts: 小罗伯特上尉
 - Lieutenant J.G. Sims: 西姆斯中尉
+- Lieutenant Roberts: 罗伯特上尉
 - Lieutenant Sims: 西姆斯中尉
 - Mac: 麦可
 - MacKenzie: 麦肯齐
 - Major MacKenzie: 麦肯齐少校
 - Mattoni: 马托尼
 - Naval Criminal Investigative Service: 海军刑事调查局
-- NCIS: 海军刑事调查局
 - Navy's Judge Advocate General Corps: 海军军法署
+- NCIS: 海军刑事调查局
 - Rabb: 拉布
 - Sarah: 莎拉
 - Sims: 西姆斯
