@@ -174,8 +174,9 @@ def call_openai_api_sdk(
             "max_completion_tokens": target_output_tokens
         }
 
-        # Add reasoning effort for GPT-5 models
-        if target_reasoning and str(target_model).lower().startswith("gpt-5"):
+        # Add reasoning effort for GPT-5 and Gemini-3 models
+        model_lower = str(target_model).lower()
+        if target_reasoning and (model_lower.startswith("gpt-5") or model_lower.startswith("gemini-3")):
             api_params["reasoning_effort"] = target_reasoning
 
         # Add temperature if specified
@@ -784,8 +785,9 @@ def call_openai_api_sdk_streaming(
             "stream_options": {"include_usage": True}  # Request usage stats in final chunk
         }
 
-        # Add reasoning effort for GPT-5 models
-        if target_reasoning and str(target_model).lower().startswith("gpt-5"):
+        # Add reasoning effort for GPT-5 and Gemini-3 models
+        model_lower = str(target_model).lower()
+        if target_reasoning and (model_lower.startswith("gpt-5") or model_lower.startswith("gemini-3")):
             api_params["reasoning_effort"] = target_reasoning
 
         # Add temperature if specified

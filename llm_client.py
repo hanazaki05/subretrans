@@ -88,7 +88,8 @@ def call_openai_api(
             "max_completion_tokens": target_output_tokens
         }
 
-        if target_reasoning and str(target_model).lower().startswith("gpt-5"):
+        model_lower = str(target_model).lower()
+        if target_reasoning and (model_lower.startswith("gpt-5") or model_lower.startswith("gemini-3")):
             payload["reasoning_effort"] = target_reasoning
         if target_temperature is not None:
             payload["temperature"] = target_temperature
