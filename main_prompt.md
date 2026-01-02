@@ -11,7 +11,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 4. **Formatting:** Preserve ALL ASS formatting tags (e.g., {\i1}, {\b1}, \N) exactly as they appear. If tags like `<i>`, `{\i1}` and `{\i0}` appear, keep them in English but **ignore/remove** them in Chinese.
 
 ### 2. Chinese Subtitle Rules
-1. **Translation Quality:** Ensure accuracy, natural flow, and maintain consistency with context/character voices. Use conversational language (avoid overly formal).
+1. **Translation Quality:** Ensure accuracy, fluency, natural flow, and maintain consistency with context/character voices. Use conversational language (avoid overly formal).
 2. **Formatting:** Preserve all ASS formatting tags exactly as they appear.
 3. **Punctuation:**
    - **Remove periods or commas** at the end of sentences.
@@ -21,7 +21,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
    - **PRIORITY 1 (Glossary):** Strictly follow the "User Terminology" list below.
    - **PRIORITY 2 (Acronyms):** Keep initial-based nicknames (e.g., "AJ", "DJ", "CC") in English.
    - **PRIORITY 3 (Standard):** Transliterate other personal names into standard Mandarin (e.g., Chris -> 克里斯, Fry -> 弗莱).
-   - **Rank Handling:** Format Ranks typically as [Name] + [Rank] in Chinese (e.g., Lieutenant Roberts -> 罗伯茨中尉).
+   - **Rank Handling:** Format Ranks typically as [Name] + [Rank] in Chinese (e.g., Lieutenant Carlisle -> 卡莱尔中尉).
 5. **Specific treatment for "Sir" / "Ma'am" (Honorifics):**
    - **Courtroom Context (Highest Priority):** Translate as **"法官阁下"** when addressing the Judge/Presiding Officer during legal proceedings, regardless of gender or their military rank.
    - **Military Context:** Translate both as **"长官"** when addressing a superior officer in chain-of-command settings (e.g., addressing Mac or Harm).
@@ -35,40 +35,53 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 
 ### 4. User Terminology (Authoritative Glossary)
 - Admiral: 将军
-- Bud: 巴德
 - Brumby: 布伦比
+- Bud: 巴德
+- Bud Roberts: 巴德·罗伯特
 - CAG: 联队指挥官
 - Carolyn: 卡罗琳
 - Chegwidden: 切格维登
 - Commander: 少校
+- Commander Harmon Rabb: 哈蒙·拉布少校
 - Commander Rabb: 拉布少校
+- Coulter: 考尔特
 - Harm: 哈姆
 - Harmon: 哈蒙
-- Harriet: 哈丽特
-- Sims: 西姆斯
 - Harmon Rabb: 哈蒙·拉布
 - Harmon Rabb Jr: 小哈蒙·拉布
+- Harriet: 哈丽特
+- Imes: 艾姆斯
+- Bud Roberts: 巴德·罗伯特
+- Bud J Roberts: 小巴德·罗伯特
+- Bud Roberts Jr: 小巴德·罗伯特
+- JAG: 军法署
+- Judge Advocate General: 军法署
 - Latham: 莱瑟姆
 - Lieutenant Commander Harmon Rabb: 哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Jr: 小哈蒙·拉布少校
 - Lieutenant Commander Harmon Rabb, Junior: 小哈蒙·拉布少校
-- Lieutenant J.G. Bud Roberts: 巴德·JG·罗伯茨中尉
-- Lieutenant J.G. Roberts: JG·罗伯茨中尉
-- Lieutenant Roberts: 罗伯茨中尉
+- Lieutenant Bud Roberts: 巴德·罗伯特上尉
+- Lieutenant Roberts: 罗伯特上尉
+- Lieutenant J. Bud Roberts: 小巴德·罗伯特上尉
+- Lieutenant J. Roberts: 小罗伯特上尉
+- Lieutenant J.G. Sims: 西姆斯中尉
+- Lieutenant Sims: 西姆斯中尉
 - Mac: 麦可
 - MacKenzie: 麦肯齐
 - Major MacKenzie: 麦肯齐少校
-- Rabb: 拉布
-- Tiner: 泰纳
-- Webb: 韦布
-- XO: 大副
-- Zulu time: 格林尼治时间
-- JAG: 军法署
-- Judge Advocate General: 军法署
+- Mattoni: 马托尼
 - Naval Criminal Investigative Service: 海军刑事调查局
 - NCIS: 海军刑事调查局
 - Navy's Judge Advocate General Corps: 海军军法署
+- Rabb: 拉布
+- Sarah: 莎拉
+- Sims: 西姆斯
+- Tiner: 泰纳
+- Webb: 韦伯
+- XO: 大副
 - Yeoman: 事务员
+- Zulu time: 格林尼治时间
+
 
 ### 5. Input/Output Format & Constraint
 - **Input:** A JSON array of subtitle pairs (`id`, `eng`, `chinese`).
