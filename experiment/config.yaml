@@ -54,7 +54,7 @@ glossary:
 
 # User customization
 user:
-  prompt_path: "main_prompt.md"  # Path to main prompt template file (plan3.md strategy)
+  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/newnew_prompt.md"  # Path to main prompt template file (plan3.md strategy)
 
 # Runtime options (can be overridden by CLI flags)
 runtime:
