@@ -569,39 +569,44 @@ def convert_examples_to_format(template: str, target_format: str) -> str:
         new_section = header + new_constraint
         template = template[:format_match.start()] + new_section + template[format_match.end():]
 
-    # Step 2: Find Few-Shot Examples section
-    section_pattern = r'(###\s*\d+\.\s*Few-Shot Examples.*?)(Input:.*?Output:.*?)(?=###|\Z)'
-    match = re.search(section_pattern, template, re.DOTALL | re.IGNORECASE)
+    # Step 2: Find Few-Shot Examples section and convert ALL example blocks
+    # Pattern to find the entire Few-Shot Examples section (from header to end or next ### section)
+    section_pattern = r'(###\s*\d+\.\s*Few-Shot Examples[^\n]*\n)(.*?)(?=###|\Z)'
+    section_match = re.search(section_pattern, template, re.DOTALL | re.IGNORECASE)
 
-    if not match:
+    if not section_match:
         print("  Warning: Few-Shot Examples section not found in template")
         return template
 
-    header = match.group(1)
-    examples_block = match.group(2)
+    section_header = section_match.group(1)
+    section_content = section_match.group(2)
 
-    # Extract JSON arrays from examples
-    json_pattern = r'\[.*?\]'
-    json_matches = re.findall(json_pattern, examples_block, re.DOTALL)
+    # Find all JSON arrays in the section and convert them
+    # Pattern matches JSON arrays: [ ... ]
+    json_array_pattern = r'\[[\s\S]*?\n\]'
 
-    if len(json_matches) < 2:
-        print("  Warning: Could not find Input/Output JSON examples")
-        return template
-
-    input_json = json_matches[0]
-    output_json = json_matches[1]
+    def convert_json_array(match):
+        """Convert a single JSON array match to target format."""
+        json_text = match.group(0)
+        try:
+            converted = convert_json_examples_to_format(json_text, target_format)
+            return converted
+        except Exception as e:
+            print(f"  Warning: Failed to convert JSON array: {e}")
+            return json_text  # Return original on failure
 
     try:
-        # Convert examples to target format
-        input_converted = convert_json_examples_to_format(input_json, target_format)
-        output_converted = convert_json_examples_to_format(output_json, target_format)
+        # Replace all JSON arrays in the section content
+        converted_content = re.sub(json_array_pattern, convert_json_array, section_content)
 
-        # Rebuild examples section
-        new_examples_block = f"Input:\n{input_converted}\n\nOutput:\n{output_converted}\n"
+        # Also update "Input:" label references if needed (for clarity in non-JSON formats)
+        # Keep the Input:/Output: labels as they are format-agnostic
+
+        # Rebuild the section
+        new_section = section_header + converted_content
 
         # Replace in template
-        new_section = header + new_examples_block
-        new_template = template[:match.start()] + new_section + template[match.end():]
+        new_template = template[:section_match.start()] + new_section + template[section_match.end():]
 
         return new_template
 
