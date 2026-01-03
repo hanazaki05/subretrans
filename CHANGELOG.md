@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.10] - 2026-01-03
+
+### Fixed
+- **XML-pair recovery now supports partial salvage** (experiment SDK):
+  - When both strict deserialization and marker-extraction fallback fail, valid `<pair>...</pair>` blocks are salvaged and malformed blocks are skipped
+  - Prevents losing an entire chunk due to a single malformed pair line (e.g., missing `eng=` line)
+- **Per-block update now reports missing pairs** (experiment SDK):
+  - When a chunk returns fewer corrected pairs than requested, the missing pair IDs are printed
+  - Per-block progress counts attempted pairs (chunk size) instead of only returned pairs
+
+### Changed
+- `experiment/config.yaml`: updated prompt template location (temporary)
+- `prompts.py`: improved prompt template conversion/matching to target intermediate format (examples + descriptions)
+- `experiment/llm_client_sdk.py` / `llm_client.py`: added support for Gemini-3 thinking budget setting
+- `main_prompt.md`: updated/sorted terminology sections (including post JAG 4x19 changes)
+- `README.md` / `example-input.ass`: refreshed quick start instructions and added an example input file
+
 ## [0.0.9] - 2025-12-30
 
 ### Fixed

@@ -34,7 +34,7 @@ from prompts import (
 )
 from stats import UsageStats
 from utils import extract_json_from_response
-from serializers import serialize, deserialize, SerializationError
+from serializers import serialize, deserialize, deserialize_best_effort, SerializationError
 
 
 class LLMAPIError(Exception):
@@ -564,17 +564,32 @@ def refine_chunk_sdk(
                     corrected_pairs = deserialize(extracted, config.intermediate_format)
                     print(f"  [Recovery successful!]\n")
                 except SerializationError as e2:
-                    # Both attempts failed
-                    print(f"  [Recovery failed]: {str(e2)}")
-                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-                    print(f"  [Extracted excerpt]: {extracted[:500]}...")
-                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                    # Stage 3: Best-effort recovery - salvage valid pairs and skip malformed ones
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    if recovered_pairs:
+                        skipped = len(recovery_errors)
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                        corrected_pairs = recovered_pairs
+                    else:
+                        # All recovery attempts failed
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                        print(f"  [Extracted excerpt]: {extracted[:500]}...")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
             else:
                 # Pattern extraction found nothing
-                print(f"  [Pattern extraction found no markers]")
-                print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-                print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-                raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                if recovered_pairs:
+                    skipped = len(recovery_errors)
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                    corrected_pairs = recovered_pairs
+                else:
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                    print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
 
         # Check for duplicate pairs
         duplicates = _detect_duplicate_pairs(corrected_pairs)
@@ -599,10 +614,20 @@ def refine_chunk_sdk(
             print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
 
         # Align IDs to expected chunk IDs (handles per-chunk renumbering)
-        corrected_pairs, remapped = _align_corrected_pair_ids(
-            expected_pairs=pairs_chunk,
-            corrected_pairs=corrected_pairs
-        )
+        try:
+            corrected_pairs, remapped = _align_corrected_pair_ids(
+                expected_pairs=pairs_chunk,
+                corrected_pairs=corrected_pairs
+            )
+        except LLMAPIError:
+            # Best-effort fallback: drop pairs that do not reference the expected chunk IDs.
+            expected_id_set = {p.id for p in pairs_chunk}
+            filtered = [p for p in corrected_pairs if p.id in expected_id_set]
+            if not filtered:
+                raise
+            corrected_pairs = filtered
+            remapped = False
+            print("  [Warning]: Dropped corrected pairs with unexpected IDs (best-effort salvage)")
         if remapped:
             expected_first = pairs_chunk[0].id if pairs_chunk else "?"
             expected_last = pairs_chunk[-1].id if pairs_chunk else "?"
@@ -610,7 +635,14 @@ def refine_chunk_sdk(
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
+            expected_ids = [p.id for p in pairs_chunk]
+            returned_ids = {p.id for p in corrected_pairs}
+            missing_ids = [pid for pid in expected_ids if pid not in returned_ids]
             print(f"  Warning: Expected {len(pairs_chunk)} pairs, got {len(corrected_pairs)}")
+            if missing_ids:
+                preview = ", ".join(str(i) for i in missing_ids[:20])
+                suffix = "..." if len(missing_ids) > 20 else ""
+                print(f"  [Warning]: Missing pair IDs: {preview}{suffix}")
 
         return corrected_pairs, usage, response_text
 
@@ -960,17 +992,32 @@ def refine_chunk_sdk_streaming(
                     corrected_pairs = deserialize(extracted, config.intermediate_format)
                     print(f"  [Recovery successful!]\n")
                 except SerializationError as e2:
-                    # Both attempts failed
-                    print(f"  [Recovery failed]: {str(e2)}")
-                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-                    print(f"  [Extracted excerpt]: {extracted[:500]}...")
-                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                    # Stage 3: Best-effort recovery - salvage valid pairs and skip malformed ones
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    if recovered_pairs:
+                        skipped = len(recovery_errors)
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                        corrected_pairs = recovered_pairs
+                    else:
+                        # All recovery attempts failed
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                        print(f"  [Extracted excerpt]: {extracted[:500]}...")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
             else:
                 # Pattern extraction found nothing
-                print(f"  [Pattern extraction found no markers]")
-                print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
-                print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-                raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                if recovered_pairs:
+                    skipped = len(recovery_errors)
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                    corrected_pairs = recovered_pairs
+                else:
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                    print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
 
         # Check for duplicate pairs
         duplicates = _detect_duplicate_pairs(corrected_pairs)
@@ -995,10 +1042,20 @@ def refine_chunk_sdk_streaming(
             print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
 
         # Align IDs to expected chunk IDs (handles per-chunk renumbering)
-        corrected_pairs, remapped = _align_corrected_pair_ids(
-            expected_pairs=pairs_chunk,
-            corrected_pairs=corrected_pairs
-        )
+        try:
+            corrected_pairs, remapped = _align_corrected_pair_ids(
+                expected_pairs=pairs_chunk,
+                corrected_pairs=corrected_pairs
+            )
+        except LLMAPIError:
+            # Best-effort fallback: drop pairs that do not reference the expected chunk IDs.
+            expected_id_set = {p.id for p in pairs_chunk}
+            filtered = [p for p in corrected_pairs if p.id in expected_id_set]
+            if not filtered:
+                raise
+            corrected_pairs = filtered
+            remapped = False
+            print("  [Warning]: Dropped corrected pairs with unexpected IDs (best-effort salvage)")
         if remapped:
             expected_first = pairs_chunk[0].id if pairs_chunk else "?"
             expected_last = pairs_chunk[-1].id if pairs_chunk else "?"
@@ -1006,7 +1063,14 @@ def refine_chunk_sdk_streaming(
 
         # Verify we got the same number of pairs back
         if len(corrected_pairs) != len(pairs_chunk):
+            expected_ids = [p.id for p in pairs_chunk]
+            returned_ids = {p.id for p in corrected_pairs}
+            missing_ids = [pid for pid in expected_ids if pid not in returned_ids]
             print(f"  Warning: Expected {len(pairs_chunk)} pairs, got {len(corrected_pairs)}")
+            if missing_ids:
+                preview = ", ".join(str(i) for i in missing_ids[:20])
+                suffix = "..." if len(missing_ids) > 20 else ""
+                print(f"  [Warning]: Missing pair IDs: {preview}{suffix}")
 
         return corrected_pairs, usage, response_text
 

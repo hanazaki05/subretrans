@@ -11,7 +11,7 @@ All formats preserve ASS formatting tags and handle special characters.
 
 import json
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from pairs import SubtitlePair
 
 
@@ -223,6 +223,60 @@ def deserialize_xml_pair(text: str) -> List[SubtitlePair]:
     return pairs
 
 
+def _extract_xml_pair_field_value(block_text: str, field: str) -> str:
+    """
+    Extract a field value from within a <pair>...</pair> block.
+
+    This is a best-effort extractor designed to tolerate cases where:
+    - Fields are out of order
+    - Multiple fields appear on the same line (e.g., "ID=10 eng=...")
+    - Non-standard separators are used (>, :, |)
+    """
+    # Capture everything after `field<sep>` until the next field marker or end of block.
+    # Use a word boundary to avoid matching inside normal text.
+    pattern = rf"(?is)\b{re.escape(field)}\s*[=>:|]\s*(.*?)(?=\b(?:ID|eng|chinese)\s*[=>:|]|$)"
+    match = re.search(pattern, block_text)
+    if not match:
+        raise SerializationError(f"Missing field '{field}'")
+    return match.group(1).strip()
+
+
+def deserialize_xml_pair_best_effort(text: str) -> Tuple[List[SubtitlePair], List[str]]:
+    """
+    Best-effort XML-pair deserialization that skips malformed <pair> blocks.
+
+    Returns:
+        (pairs, errors) where errors are human-readable skip reasons.
+    """
+    pairs: List[SubtitlePair] = []
+    errors: List[str] = []
+
+    # Find all <pair>...</pair> blocks, preserving order.
+    block_pattern = re.compile(r"(?is)<pair>\s*(.*?)\s*</pair>")
+    matches = list(block_pattern.finditer(text or ""))
+    if not matches:
+        return pairs, ["No <pair>...</pair> blocks found"]
+
+    for idx, match in enumerate(matches, start=1):
+        block = match.group(1)
+        try:
+            raw_id = _extract_xml_pair_field_value(block, "ID")
+            id_match = re.match(r"\s*(\d+)", raw_id)
+            if not id_match:
+                raise SerializationError(f"Invalid ID value: {raw_id}")
+            pair_id = int(id_match.group(1))
+
+            eng = _extract_xml_pair_field_value(block, "eng")
+            chinese = _extract_xml_pair_field_value(block, "chinese")
+
+            pairs.append(SubtitlePair(id=pair_id, eng=eng, chinese=chinese))
+        except Exception as e:
+            errors.append(f"pair#{idx}: {str(e)}")
+            continue
+
+    return pairs, errors
+
+
 # ============================================================================
 # Pseudo-TOML Format
 # ============================================================================
@@ -257,6 +311,20 @@ def serialize_pseudo_toml(pairs: List[SubtitlePair]) -> str:
         lines.append("")  # Empty line between pairs
 
     return "\n".join(lines).rstrip()  # Remove trailing empty line
+
+
+def deserialize_best_effort(text: str, format_type: str) -> Tuple[List[SubtitlePair], List[str]]:
+    """
+    Best-effort deserialization entrypoint.
+
+    For strict parsing, use `deserialize()`. This function is intended as a
+    last-resort recovery mechanism when strict deserialization fails.
+    """
+    fmt = (format_type or "").lower()
+    if fmt == "xml-pair":
+        return deserialize_xml_pair_best_effort(text)
+
+    return ([], [f"Best-effort deserialization not implemented for format: {format_type}"])
 
 
 def deserialize_pseudo_toml(text: str) -> List[SubtitlePair]:

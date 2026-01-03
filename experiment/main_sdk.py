@@ -449,15 +449,24 @@ def process_subtitles(
                         print(response_text.rstrip() if response_text else "[Empty response]")
                         print()
 
+                # Report missing pairs (best-effort recovery may return partial results)
+                expected_ids = [p.id for p in chunk]
+                returned_id_set = {p.id for p in corrected_pairs}
+                missing_ids = [pid for pid in expected_ids if pid not in returned_id_set]
+                if missing_ids:
+                    preview = ", ".join(str(i) for i in missing_ids[:20])
+                    suffix = "..." if len(missing_ids) > 20 else ""
+                    print(f"  [Partial]: Missing {len(missing_ids)}/{len(chunk)} pair(s): {preview}{suffix}")
+
                 # Apply corrections back to global pairs list
                 apply_corrections_to_global_pairs(pairs, corrected_pairs)
 
                 # Get pair range for this chunk
-                chunk_first_id = corrected_pairs[0].id if corrected_pairs else 0
-                chunk_last_id = corrected_pairs[-1].id if corrected_pairs else 0
+                chunk_first_id = chunk[0].id if chunk else 0
+                chunk_last_id = chunk[-1].id if chunk else 0
 
                 # Update cumulative count
-                cumulative_pairs_processed += len(corrected_pairs)
+                cumulative_pairs_processed += len(chunk)
 
                 # Update global memory
                 global_memory = update_global_memory(global_memory, corrected_pairs, config)
@@ -474,7 +483,8 @@ def process_subtitles(
                         output_content = render_ass_file(header, updated_ass_lines)
                         write_ass_file(output_path, output_content)
                         # Always show save status (not just in verbose mode)
-                        print(f"  [Per-block] ✓ Updated pairs {chunk_first_id}-{chunk_last_id} ({cumulative_pairs_processed}/{len(pairs)} total) in {output_path}")
+                        missing_note = f", {len(missing_ids)} missing" if missing_ids else ""
+                        print(f"  [Per-block] ✓ Updated pairs {chunk_first_id}-{chunk_last_id}{missing_note} ({cumulative_pairs_processed}/{len(pairs)} total) in {output_path}")
                     except Exception as e:
                         print(f"  [Per-block] ✗ Failed to save progress: {e}")
 

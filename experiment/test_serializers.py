@@ -21,6 +21,7 @@ from serializers import (
     serialize_xml_pair, deserialize_xml_pair,
     serialize_pseudo_toml, deserialize_pseudo_toml,
     serialize, deserialize,
+    deserialize_best_effort,
     SerializationError
 )
 
@@ -419,6 +420,48 @@ chinese=严格格式
     return True
 
 
+def test_xml_pair_best_effort_partial_salvage():
+    """Test best-effort XML-pair deserialization salvages valid blocks."""
+    print("\n" + "=" * 60)
+    print("Test 8: XML-Pair Best-Effort Partial Salvage")
+    print("=" * 60)
+
+    xml = """<pair>
+ID=1
+eng=Hello
+chinese=你好
+</pair>
+
+<pair>
+ID=2semg=From the time of ancient Romans until today,
+chinese=从古罗马时代至今
+</pair>
+
+<pair>
+ID=3
+eng=Goodbye
+chinese=再见
+</pair>"""
+
+    # Strict parser should fail due to the malformed middle block.
+    try:
+        deserialize_xml_pair(xml)
+        print("  ✗ Strict XML-pair deserializer should have failed")
+        return False
+    except SerializationError:
+        print("  ✓ Strict deserializer fails as expected")
+
+    pairs, errors = deserialize_best_effort(xml, "xml-pair")
+    ids = [p.id for p in pairs]
+
+    assert ids == [1, 3], f"Expected salvaged IDs [1, 3], got {ids}"
+    assert errors, "Expected at least one skip reason"
+    print(f"  ✓ Best-effort salvaged {len(pairs)} pair(s), skipped {len(errors)} malformed block(s)")
+
+    print("\n✓ Best-effort salvage test passed!")
+    return True
+
+
 def main():
     """Run all tests."""
     print("\n" + "=" * 60)
@@ -433,6 +476,7 @@ def main():
         test_error_handling,
         test_format_examples_conversion,
         test_xml_pair_malformed_separators,
+        test_xml_pair_best_effort_partial_salvage,
     ]
 
     results = []
