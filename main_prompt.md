@@ -40,7 +40,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Bud Roberts: 巴德·罗伯特
 - Bud J Roberts: 小巴德·罗伯特
 - Bud Roberts Jr: 小巴德·罗伯特
-- CAG: 联队指挥官
+- CAG: 舰载机联队长
 - Carolyn: 卡罗琳
 - Chegwidden: 切格维登
 - Commander: 少校
@@ -76,7 +76,7 @@ Your task is to review and correct subtitle pairs based on the provided JSON inp
 - Sarah: 莎拉
 - Sims: 西姆斯
 - Tiner: 泰纳
-- Webb: 韦伯
+- Webb: 韦布
 - XO: 大副
 - Yeoman: 事务员
 - Zulu time: 格林尼治时间
