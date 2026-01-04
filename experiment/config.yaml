@@ -9,11 +9,11 @@ api:
 
 # Main refinement model settings (GPT-5.* for subtitle correction)
 main_model:
-  name: "gemini-2.5-pro-thinking-9000"
+  name: "gemini-3-pro-preview"
   #name: "gpt-4o"
   max_output_tokens: 27000
-  reasoning_effort: "low"  # none, low, medium, high
-  temperature: 0.7
+  reasoning_effort: "high"  # none, low, medium, high
+  temperature: 0.6
   #temperature: 0.4
   # Optional per-model API credentials (overrides global api settings)
   key_file: "../key-yunwu"  # Path to model-specific API key file
@@ -54,7 +54,7 @@ glossary:
 
 # User customization
 user:
-  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/newnew_prompt.md"  # Path to main prompt template file (plan3.md strategy)
+  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/prompt_s5.md"  # Path to main prompt template file (plan3.md strategy)
 
 # Runtime options (can be overridden by CLI flags)
 runtime:
