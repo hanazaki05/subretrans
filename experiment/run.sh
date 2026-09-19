@@ -7,14 +7,14 @@
 #   ./run.sh genreq input.ass --pairs-per-chunk 120     # Run genreq.py
 #
 # Examples:
-#   ./run.sh ~/files/input.ass ~/files/output.ass --streaming -v
+#   ./run.sh ~/files/input.ass ~/files/output.ass --stream -v
 #   ./run.sh input.ass output.ass --dry-run
 #   ./run.sh genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
 #   cd /tmp && /path/to/experiment/run.sh input.ass output.ass
 #
 # Works with symlinks:
 #   ln -s /path/to/experiment/run.sh ~/bin/subretrans
-#   subretrans input.ass output.ass --streaming -v
+#   subretrans input.ass output.ass --stream -v
 #   subretrans genreq input.ass --pairs-per-chunk 120
 #
 

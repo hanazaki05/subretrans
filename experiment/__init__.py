@@ -13,6 +13,8 @@ from .llm_client_sdk import (
     test_api_connection_sdk,
     call_openai_api_sdk_streaming,
     refine_chunk_sdk_streaming,
+    call_openai_api_response,
+    refine_chunk_sdk_response,
     LLMAPIError
 )
 
@@ -27,5 +29,7 @@ __all__ = [
     "test_api_connection_sdk",
     "call_openai_api_sdk_streaming",
     "refine_chunk_sdk_streaming",
+    "call_openai_api_response",
+    "refine_chunk_sdk_response",
     "LLMAPIError"
 ]

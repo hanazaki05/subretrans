@@ -13,6 +13,9 @@ import tempfile
 
 from pairs import SubtitlePair
 
+ENGLISH_STYLE_NAMES = {"e3"}
+CHINESE_STYLE_NAMES = {"c3"}
+
 
 @dataclass
 class AssLine:
@@ -89,6 +92,16 @@ def parse_dialogue_line(line: str, line_id: int) -> Optional[AssLine]:
     )
 
 
+def is_english_style(style: str) -> bool:
+    style_lower = style.strip().lower()
+    return "english" in style_lower or style_lower in ENGLISH_STYLE_NAMES
+
+
+def is_chinese_style(style: str) -> bool:
+    style_lower = style.strip().lower()
+    return "chinese" in style_lower or style_lower in CHINESE_STYLE_NAMES
+
+
 def parse_ass_file(file_path: str) -> Tuple[str, List[AssLine]]:
     """
     Parse an ASS subtitle file into header and dialogue lines.
@@ -138,7 +151,7 @@ def build_pairs_from_ass_lines(ass_lines: List[AssLine]) -> List[SubtitlePair]:
 
     Matches lines based on:
     - Same start/end timestamps
-    - One line with "English" in style name, another with "Chinese" in style name
+    - One line with an English style, another with a Chinese style
 
     Args:
         ass_lines: List of parsed AssLine objects
@@ -165,10 +178,9 @@ def build_pairs_from_ass_lines(ass_lines: List[AssLine]) -> List[SubtitlePair]:
 
         # Find English and Chinese lines in this group
         for line in group_lines:
-            style_lower = line.style.lower()
-            if "english" in style_lower:
+            if is_english_style(line.style):
                 eng_line = line
-            elif "chinese" in style_lower:
+            elif is_chinese_style(line.style):
                 chinese_line = line
 
         # Create pair if we have at least English (Chinese can be empty for some cases)

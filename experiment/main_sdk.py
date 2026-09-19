@@ -20,6 +20,7 @@ from config_sdk import load_config_sdk
 from llm_client_sdk import (
     refine_chunk_sdk,
     refine_chunk_sdk_streaming,
+    refine_chunk_sdk_response,
     compress_memory_sdk,
     test_api_connection_sdk,
     LLMAPIError
@@ -192,7 +193,8 @@ def process_subtitles(
     input_path: str,
     output_path: str,
     config,
-    use_streaming: bool = False,
+    api_mode: str = "chat-completion",
+    use_stream: bool = False,
     resume_index: Optional[int] = None,
     enable_checkpoint: bool = False
 ) -> bool:
@@ -203,7 +205,8 @@ def process_subtitles(
         input_path: Path to input .ass file
         output_path: Path to output .ass file
         config: ConfigSDK object
-        use_streaming: Whether to use streaming API
+        api_mode: API format - 'chat-completion' or 'response'
+        use_stream: Whether to use stream mode (chat-completion only; response always streams)
         resume_index: Optional pair index to resume from (skips pairs before this index)
         enable_checkpoint: Whether to enable glossary checkpoint system (default: False)
 
@@ -211,13 +214,19 @@ def process_subtitles(
         True if successful, False otherwise
     """
     try:
+        # Build mode display string
+        if api_mode == "response":
+            mode_str = "openai response stream"
+        else:
+            mode_str = f"openai chat-completion {'stream' if use_stream else 'non-stream'}"
+
         print(f"\n{'='*60}")
         print(f"SUBTITLE REFINEMENT TOOL (OpenAI SDK)")
         print(f"{'='*60}")
         print(f"Input:     {input_path}")
         print(f"Output:    {output_path}")
         print(f"Model:     {config.main_model.name}")
-        print(f"Mode:      {'Streaming' if use_streaming else 'Non-streaming'}")
+        print(f"Mode:      {mode_str}")
         print(f"Format:    {config.intermediate_format.upper()}")
         print(f"{'='*60}\n")
 
@@ -398,16 +407,37 @@ def process_subtitles(
                 # Start timing
                 start_time = time.time()
 
-                # Choose streaming or non-streaming based on flag
-                if use_streaming:
+                # Choose API mode and stream mode
+                if api_mode == "response":
+                    # Response API: always streams
+                    if config.debug_prompts:
+                        print("\n  LLM Output (real-time):")
+                        print("  " + "-" * 58)
+                        print("  ", end="", flush=True)
+                    elif config.verbose:
+                        print("  Stream: ", end="", flush=True)
+
+                    corrected_pairs, usage, response_text = refine_chunk_sdk_response(
+                        chunk,
+                        global_memory,
+                        config,
+                        chunk_callback=streaming_progress_callback,
+                        print_system_prompt=is_first_chunk
+                    )
+
+                    if config.debug_prompts or config.verbose:
+                        print()  # New line after stream output
+                        if config.debug_prompts:
+                            print("  " + "-" * 58)
+                elif use_stream:
                     if config.debug_prompts:
                         # In debug mode, show header for real-time LLM output
                         print("\n  LLM Output (real-time):")
                         print("  " + "-" * 58)
                         print("  ", end="", flush=True)
                     elif config.verbose:
-                        # In verbose mode, just show "Streaming: " prefix
-                        print("  Streaming: ", end="", flush=True)
+                        # In verbose mode, just show "Stream: " prefix
+                        print("  Stream: ", end="", flush=True)
 
                     corrected_pairs, usage, response_text = refine_chunk_sdk_streaming(
                         chunk,
@@ -418,7 +448,7 @@ def process_subtitles(
                     )
 
                     if config.debug_prompts or config.verbose:
-                        print()  # New line after streaming output
+                        print()  # New line after stream output
                         if config.debug_prompts:
                             print("  " + "-" * 58)
                 else:
@@ -442,9 +472,9 @@ def process_subtitles(
                     print(f"  Time: {format_time(elapsed_time)}")
                     print()  # Add blank line for spacing
                     print_verbose_preview(response_text, usage.reasoning_tokens)
-                    # Only show full response in non-streaming mode
-                    # (in streaming mode, content was already shown in real-time)
-                    if config.very_verbose and not use_streaming:
+                    # Only show full response in non-stream mode
+                    # (in stream mode, content was already shown in real-time)
+                    if config.very_verbose and not use_stream and api_mode != "response":
                         print("\n  Full API response:\n")
                         print(response_text.rstrip() if response_text else "[Empty response]")
                         print()
@@ -551,17 +581,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage (non-streaming)
+  # Basic usage (non-stream)
   python main_sdk.py input.ass output.ass
 
-  # Use streaming API for real-time feedback
-  python main_sdk.py input.ass output.ass --streaming
+  # Use stream mode for real-time feedback
+  python main_sdk.py input.ass output.ass --stream
 
-  # Dry run with streaming
-  python main_sdk.py input.ass output.ass --streaming --dry-run
+  # Dry run with stream
+  python main_sdk.py input.ass output.ass --stream --dry-run
 
-  # Verbose streaming mode
-  python main_sdk.py input.ass output.ass --streaming -v
+  # Verbose stream mode
+  python main_sdk.py input.ass output.ass --stream -v
+
+  # Use OpenAI Response API (always streams)
+  python main_sdk.py input.ass output.ass --api-mode response
 
   # Fixed pairs per chunk
   python main_sdk.py input.ass output.ass --pairs-per-chunk 50
@@ -573,7 +606,7 @@ Examples:
   python main_sdk.py input.ass output.ass --resume 680 --pairs-per-chunk 75
 
   # Enable checkpoint system to save/load learned terminology
-  python main_sdk.py input.ass output.ass --checkpoint --streaming
+  python main_sdk.py input.ass output.ass --checkpoint --stream
 
   # Resume with checkpoint (preserves learned terms across runs)
   python main_sdk.py input.ass output.ass --resume 680 --checkpoint
@@ -598,16 +631,38 @@ Note: Per-block update is enabled by default for data safety (write after each c
         help="Output .ass subtitle file"
     )
     parser.add_argument(
+        "--api-mode",
+        choices=["chat-completion", "response"],
+        default=None,
+        dest="api_mode",
+        help="API format: 'chat-completion' (default) or 'response' (OpenAI Responses API, always streams)"
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        default=None,
+        dest="stream",
+        help="Use stream mode for real-time token generation (default: from config.yaml)"
+    )
+    parser.add_argument(
+        "--no-stream",
+        action="store_false",
+        dest="stream",
+        help="Disable stream mode"
+    )
+    # Deprecated aliases for backward compatibility
+    parser.add_argument(
         "--streaming",
         action="store_true",
         default=None,
-        help="Use streaming API for real-time token generation (default: from config.yaml)"
+        dest="stream",
+        help=argparse.SUPPRESS  # hidden deprecated alias
     )
     parser.add_argument(
         "--no-streaming",
         action="store_false",
-        dest="streaming",
-        help="Disable streaming API"
+        dest="stream",
+        help=argparse.SUPPRESS  # hidden deprecated alias
     )
     parser.add_argument(
         "--model",
@@ -708,7 +763,8 @@ Note: Per-block update is enabled by default for data safety (write after each c
     try:
         config = load_config_sdk(
             model_name=args.model,
-            use_streaming=args.streaming,
+            api_mode=args.api_mode,
+            use_stream=args.stream,
             per_block_update=args.per_block_update,
             dry_run=args.dry_run,
             max_chunks=args.max_chunks,
@@ -734,12 +790,13 @@ Note: Per-block update is enabled by default for data safety (write after each c
             print("✗ API connection failed!")
             return 1
 
-    # Process subtitles (use_streaming from config, which may be overridden by CLI)
+    # Process subtitles
     success = process_subtitles(
         args.input,
         args.output,
         config,
-        use_streaming=config.use_streaming,
+        api_mode=config.api_mode,
+        use_stream=config.use_stream,
         resume_index=args.resume,
         enable_checkpoint=args.checkpoint
     )

@@ -113,7 +113,8 @@ class ConfigSDK:
     chunk_token_soft_limit: int = 60000
     pairs_per_chunk: Optional[int] = None
     api_timeout: int = 280
-    use_streaming: bool = True
+    api_mode: str = "chat-completion"  # "chat-completion" or "response"
+    use_stream: bool = True
     per_block_update: bool = True
     verbose: bool = False
     very_verbose: bool = False
@@ -144,6 +145,15 @@ class ConfigSDK:
     def incremental_output(self, value: bool) -> None:
         self.per_block_update = bool(value)
 
+    @property
+    def use_streaming(self) -> bool:
+        """Backward-compatible alias for `use_stream`."""
+        return self.use_stream
+
+    @use_streaming.setter
+    def use_streaming(self, value: bool) -> None:
+        self.use_stream = bool(value)
+
     def __post_init__(self):
         """Load API key from key file if not set and validate format."""
         if not self.api_key:
@@ -157,6 +167,11 @@ class ConfigSDK:
         if self.intermediate_format.lower() not in valid_formats:
             raise ValueError(f"Invalid intermediate format: {self.intermediate_format}. "
                            f"Valid formats: {', '.join(valid_formats)}")
+
+        valid_api_modes = ["chat-completion", "response"]
+        if self.api_mode.lower() not in valid_api_modes:
+            raise ValueError(f"Invalid api_mode: {self.api_mode}. "
+                           f"Valid modes: {', '.join(valid_api_modes)}")
 
     @property
     def model_name(self) -> str:
@@ -247,7 +262,8 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         glossary_policy=glossary_settings.get("policy", "lock"),
         terminology_min_confidence=glossary_settings.get("terminology_min_confidence", 0.6),
         user_prompt_path=user_settings.get("prompt_path", "custom_main_prompt.md"),
-        use_streaming=runtime_settings.get("use_streaming", True),
+        api_mode=runtime_settings.get("api_mode", "chat-completion"),
+        use_stream=runtime_settings.get("use_stream", runtime_settings.get("use_streaming", True)),
         per_block_update=per_block_update,
         verbose=runtime_settings.get("verbose", False),
         very_verbose=runtime_settings.get("very_verbose", False),
@@ -270,7 +286,9 @@ def load_config_sdk(
     yaml_file_path: str = None,
     model_name: Optional[str] = None,
     terminology_model: Optional[str] = None,
-    use_streaming: Optional[bool] = None,
+    api_mode: Optional[str] = None,
+    use_stream: Optional[bool] = None,
+    use_streaming: Optional[bool] = None,  # deprecated alias for use_stream
     per_block_update: Optional[bool] = None,
     incremental_output: Optional[bool] = None,
     dry_run: bool = False,
@@ -292,7 +310,9 @@ def load_config_sdk(
         yaml_file_path: Path to YAML config file (defaults to config.yaml in this directory)
         model_name: Override for main refinement model name
         terminology_model: Override for terminology extraction model name
-        use_streaming: Override for streaming API mode
+        api_mode: Override for API mode (chat-completion or response)
+        use_stream: Override for stream mode (chat-completion only)
+        use_streaming: Deprecated alias for use_stream
         per_block_update: Override for per-block update mode (write file after each chunk/block)
         incremental_output: Deprecated alias for per_block_update
         dry_run: Enable dry run mode
@@ -318,8 +338,12 @@ def load_config_sdk(
         config.main_model.name = model_name
     if terminology_model:
         config.terminology_model.name = terminology_model
-    if use_streaming is not None:
-        config.use_streaming = use_streaming
+    if api_mode is not None:
+        config.api_mode = api_mode
+    if use_stream is not None:
+        config.use_stream = use_stream
+    elif use_streaming is not None:
+        config.use_stream = use_streaming
     if per_block_update is not None:
         config.per_block_update = per_block_update
     elif incremental_output is not None:

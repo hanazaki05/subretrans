@@ -651,7 +651,6 @@ def refine_chunk_sdk(
     except Exception as e:
         raise LLMAPIError(f"Error during chunk refinement: {str(e)}")
 
-
 def compress_memory_sdk(
     global_memory: GlobalMemory,
     config: ConfigSDK,
@@ -1062,6 +1061,356 @@ def refine_chunk_sdk_streaming(
             print(f"  [Warning]: Model returned local IDs; remapped to expected IDs {expected_first}-{expected_last}")
 
         # Verify we got the same number of pairs back
+        if len(corrected_pairs) != len(pairs_chunk):
+            expected_ids = [p.id for p in pairs_chunk]
+            returned_ids = {p.id for p in corrected_pairs}
+            missing_ids = [pid for pid in expected_ids if pid not in returned_ids]
+            print(f"  Warning: Expected {len(pairs_chunk)} pairs, got {len(corrected_pairs)}")
+            if missing_ids:
+                preview = ", ".join(str(i) for i in missing_ids[:20])
+                suffix = "..." if len(missing_ids) > 20 else ""
+                print(f"  [Warning]: Missing pair IDs: {preview}{suffix}")
+
+        return corrected_pairs, usage, response_text
+
+    except LLMAPIError:
+        raise
+    except Exception as e:
+        raise LLMAPIError(f"Error during chunk refinement: {str(e)}")
+
+
+# ============================================================================
+# OPENAI RESPONSES API FUNCTIONS
+# ============================================================================
+
+
+def call_openai_api_response(
+    messages: List[dict],
+    config: ConfigSDK,
+    max_retries: int = 3,
+    *,
+    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    model_name: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+    reasoning_effort: Optional[str] = None,
+    temperature: Optional[float] = None,
+    chunk_callback: Optional[Callable[[str], None]] = None
+) -> Tuple[str, UsageStats]:
+    """
+    Call OpenAI Responses API with streaming (always stream=True).
+
+    The Responses API uses `instructions` for the system prompt and `input`
+    for the user message, instead of the messages array.
+
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'
+                  (will be converted to Responses API format)
+        config: ConfigSDK object
+        max_retries: Maximum number of retry attempts
+        model_settings: Optional model settings block
+        model_name: Optional explicit model override
+        max_output_tokens: Override completion token limit
+        reasoning_effort: Override reasoning effort hint
+        temperature: Override sampling temperature
+        chunk_callback: Optional callback function called for each chunk of text
+
+    Returns:
+        Tuple of (response_text, usage_stats)
+
+    Raises:
+        LLMAPIError: If API call fails after retries
+    """
+    # Determine model settings
+    settings = model_settings or getattr(config, "main_model", None)
+
+    # Resolve credentials
+    verbose_creds = getattr(config, "debug_prompts", False)
+    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+
+    # Initialize OpenAI client
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        timeout=config.api_timeout
+    )
+
+    target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
+    target_output_tokens = max_output_tokens or (
+        settings.max_output_tokens if settings else getattr(config, "max_output_tokens", None)
+    )
+    default_reasoning = getattr(settings, "reasoning_effort", None)
+    target_reasoning = reasoning_effort if reasoning_effort is not None else default_reasoning
+    target_temperature = temperature if temperature is not None else getattr(settings, "temperature", None)
+
+    if not target_model:
+        raise LLMAPIError("Model name is not configured")
+
+    if target_output_tokens is None:
+        raise LLMAPIError("max_output_tokens must be specified for the selected model")
+
+    # Convert messages to Responses API format:
+    # system messages → instructions, user/assistant messages → input
+    instructions = None
+    input_messages = []
+    for msg in messages:
+        if msg["role"] == "system":
+            instructions = msg["content"]
+        else:
+            input_messages.append(msg)
+
+    attempt = 0
+    while attempt < max_retries:
+        # Build API call parameters for Responses API
+        api_params = {
+            "model": target_model,
+            "input": input_messages,
+            "max_output_tokens": target_output_tokens,
+            "stream": True,  # Response API: always stream
+        }
+
+        if instructions:
+            api_params["instructions"] = instructions
+
+        # Add reasoning effort for compatible models
+        model_lower = str(target_model).lower()
+        if target_reasoning and (model_lower.startswith("gpt-5") or model_lower.startswith("gemini-3")):
+            api_params["reasoning"] = {"effort": target_reasoning}
+
+        # Add temperature if specified
+        if target_temperature is not None:
+            api_params["temperature"] = target_temperature
+
+        try:
+            # Call OpenAI Responses API with streaming
+            stream = client.responses.create(**api_params)
+
+            # Accumulate response text
+            full_response = ""
+            usage_dict = {}
+
+            # Process stream events
+            for event in stream:
+                # Handle text delta events
+                if event.type == "response.output_text.delta":
+                    chunk_text = event.delta
+                    full_response += chunk_text
+                    if chunk_callback:
+                        chunk_callback(chunk_text)
+
+                # Handle completion event with usage
+                elif event.type == "response.completed":
+                    resp = event.response
+                    if hasattr(resp, "usage") and resp.usage:
+                        usage_data = resp.usage
+                        usage_dict = {
+                            "prompt_tokens": getattr(usage_data, "input_tokens", 0),
+                            "completion_tokens": getattr(usage_data, "output_tokens", 0),
+                            "total_tokens": getattr(usage_data, "total_tokens",
+                                                    getattr(usage_data, "input_tokens", 0) +
+                                                    getattr(usage_data, "output_tokens", 0))
+                        }
+
+                        # Extract reasoning tokens if available
+                        if hasattr(usage_data, "output_tokens_details") and usage_data.output_tokens_details:
+                            details = usage_data.output_tokens_details
+                            if hasattr(details, "reasoning_tokens") and details.reasoning_tokens:
+                                usage_dict["completion_tokens_details"] = {
+                                    "reasoning_tokens": details.reasoning_tokens
+                                }
+
+            # Create usage stats
+            if usage_dict:
+                usage = UsageStats.from_api_response(usage_dict)
+            else:
+                usage = UsageStats()
+
+            if not full_response:
+                raise LLMAPIError("No content received from Responses API")
+
+            return full_response, usage
+
+        except Exception as e:
+            error_msg = str(e)
+
+            # Check if this is a timeout error
+            if "timeout" in error_msg.lower():
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"  Request timeout. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    attempt += 1
+                    continue
+                raise LLMAPIError(f"API request timed out after {max_retries} attempts")
+
+            # Check if this is a server error (500+)
+            if "status_code" in error_msg or "500" in error_msg or "503" in error_msg:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"  Server error. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    attempt += 1
+                    continue
+
+            # For other errors, raise immediately
+            raise LLMAPIError(f"Responses API request failed: {error_msg}")
+
+        attempt += 1
+
+    raise LLMAPIError(f"Failed after {max_retries} attempts")
+
+
+def refine_chunk_sdk_response(
+    pairs_chunk: List[SubtitlePair],
+    global_memory: GlobalMemory,
+    config: ConfigSDK,
+    chunk_callback: Optional[Callable[[str], None]] = None,
+    print_system_prompt: bool = False
+) -> Tuple[List[SubtitlePair], UsageStats, str]:
+    """
+    Refine a chunk of subtitle pairs using OpenAI Responses API (always streaming).
+
+    Args:
+        pairs_chunk: List of SubtitlePair objects to refine
+        global_memory: Current global memory
+        config: ConfigSDK object
+        chunk_callback: Optional callback function called for each chunk of streaming text
+        print_system_prompt: Whether to print system prompt in debug mode (default: False)
+
+    Returns:
+        Tuple of (corrected_pairs, usage_stats, response_text)
+
+    Raises:
+        LLMAPIError: If refinement fails
+    """
+    # Keep learned glossary clean before building the prompt
+    removed_count, _ = prune_learned_glossary_against_user_glossary(global_memory)
+    if removed_count and getattr(config, "verbose", False):
+        print(f"  Glossary prune: removed {removed_count} learned entr(y/ies) covered by user glossary (pre-request)")
+
+    # Build system prompt with memory (using new template-based approach)
+    system_content = build_system_prompt(global_memory, config)
+
+    # Serialize pairs using configured format
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    user_content = build_user_prompt_for_chunk(pairs_serialized)
+
+    # Prepare messages (will be converted to Responses API format internally)
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_content}
+    ]
+
+    # Only print system prompt if explicitly requested
+    if print_system_prompt and getattr(config, "debug_prompts", False):
+        print("\n  System prompt (debug):\n")
+        print(system_content.rstrip() if system_content else "[Empty system prompt]")
+        print()
+
+    # Call Responses API
+    try:
+        response_text, usage = call_openai_api_response(
+            messages,
+            config,
+            model_settings=config.main_model,
+            chunk_callback=chunk_callback
+        )
+
+        # Clean response (remove thinking blocks, extract from code blocks)
+        cleaned = _clean_llm_response(response_text)
+
+        # For JSON format, additional validation
+        if config.intermediate_format.lower() == "json":
+            if not validate_response_format(cleaned):
+                try:
+                    preview = (response_text or "").rstrip()
+                except Exception:
+                    preview = "[Unavailable raw response]"
+
+                print("\n  [Raw LLM response (invalid format)]:\n")
+                print(preview if preview else "[Empty response]")
+                print()
+
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
+
+        # Deserialize using configured format (with fallback pattern extraction)
+        try:
+            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+        except SerializationError as e:
+            # Stage 2: Fallback - try pattern-based extraction
+            print(f"\n  [Deserialization failed, attempting pattern extraction...]")
+
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            if extracted is not None:
+                print(f"  [Pattern extraction successful, retrying deserialization...]")
+                try:
+                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    print(f"  [Recovery successful!]\n")
+                except SerializationError as e2:
+                    # Stage 3: Best-effort recovery
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    if recovered_pairs:
+                        skipped = len(recovery_errors)
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                        corrected_pairs = recovered_pairs
+                    else:
+                        print(f"  [Recovery failed]: {str(e2)}")
+                        print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                        print(f"  [Extracted excerpt]: {extracted[:500]}...")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+            else:
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                if recovered_pairs:
+                    skipped = len(recovery_errors)
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Best-effort recovery]: salvaged {len(recovered_pairs)} pair(s), skipped {skipped} malformed pair(s)\n")
+                    corrected_pairs = recovered_pairs
+                else:
+                    print(f"  [Pattern extraction found no markers]")
+                    print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
+                    print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+
+        # Check for duplicate pairs
+        duplicates = _detect_duplicate_pairs(corrected_pairs)
+        if duplicates:
+            print(f"\n  [Warning]: Duplicate pair IDs detected: {duplicates}")
+            print(f"  [Action]: Keeping last occurrence, removing duplicates")
+
+            id_to_pair = {}
+            for pair in corrected_pairs:
+                id_to_pair[pair.id] = pair
+
+            seen_ids = set()
+            deduplicated = []
+            for pair in corrected_pairs:
+                if pair.id not in seen_ids:
+                    deduplicated.append(id_to_pair[pair.id])
+                    seen_ids.add(pair.id)
+
+            corrected_pairs = deduplicated
+            print(f"  [Result]: {len(deduplicated)} unique pairs retained\n")
+
+        # Align IDs to expected chunk IDs
+        try:
+            corrected_pairs, remapped = _align_corrected_pair_ids(
+                expected_pairs=pairs_chunk,
+                corrected_pairs=corrected_pairs
+            )
+        except LLMAPIError:
+            expected_id_set = {p.id for p in pairs_chunk}
+            filtered = [p for p in corrected_pairs if p.id in expected_id_set]
+            if not filtered:
+                raise
+            corrected_pairs = filtered
+            remapped = False
+            print("  [Warning]: Dropped corrected pairs with unexpected IDs (best-effort salvage)")
+        if remapped:
+            expected_first = pairs_chunk[0].id if pairs_chunk else "?"
+            expected_last = pairs_chunk[-1].id if pairs_chunk else "?"
+            print(f"  [Warning]: Model returned local IDs; remapped to expected IDs {expected_first}-{expected_last}")
+
+        # Verify pair count
         if len(corrected_pairs) != len(pairs_chunk):
             expected_ids = [p.id for p in pairs_chunk]
             returned_ids = {p.id for p in corrected_pairs}
