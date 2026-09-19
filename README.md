@@ -4,14 +4,15 @@ A Python tool for refining bilingual (currently English-Chinese) ASS subtitles u
 
 ## Features
 
-**Check** `/experiment` and find more!
+**Code** lives in `subretrans/`; run the tool with `./run.sh`.
 
 - **Smart ASS Parsing**: Parses `.ass` subtitle files and matches English-Chinese pairs by timestamp
 - **Intelligent Chunking**: Splits subtitles into chunks that fit within LLM token limits
 - **Bilingual Refinement**:
   - **English**: Fixes capitalization, spacing, and punctuation only (preserves meaning)
   - **Chinese**: Improves translation quality, naturalness, and consistency
-- **Global Memory**: Maintains a terminology glossary and style notes across chunks, with a resume and checkpoint to allow you to continue work easily.
+- **Episode Memory**: Maintains terminology, style notes, and a cumulative `Incremental Story Description` across chunks; the complete memory can be resumed from a checkpoint.
+- **Agent Pipeline**: Supports two checkpointable modes: `parallel_initial` uses memoryless parallel first-pass translation followed by serial memory-aware proofreading; `serial_memory` uses that same serial flow to translate and proofread directly. Both continue through postprocessing, QA, human review, and release.
 - **ASS Tag Preservation**: Keeps all formatting tags (e.g., `{\i1}`, `{\b1}`, `\N`) intact
 - **Token Tracking**: Monitors API usage and estimates costs in real-time
 - **Robust Error Handling**: Automatic retries with exponential backoff
@@ -30,19 +31,19 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Set API key (or edit config.py)
+# 3. Set API key (or edit config.yaml)
 export OPENAI_API_KEY="your-api-key-here"
 
 # 4. Process subtitles (not suggested)
-python main.py example_input.ass output.ass
+./run.sh example_input.ass output.ass
 
 # 5. Test with sample (first 10 pairs)(not suggested)
-python main.py example_input.ass output.ass --dry-run
+./run.sh example_input.ass output.ass --dry-run
 ```
 
 </details>
 
-We recommended to use the excutable file in `/experiment` directory:
+We recommend using the executable script in the repository root:
 ```bash
 # 1. Create virtual environment
 python3 -m venv venv
@@ -51,11 +52,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. (IMPORTANT) Set you key in a file, and set its path in ./experiment/config.yaml
+# 3. (IMPORTANT) Set you key in a file, and set its path in ./config.yaml
 echo "YOUR_KEY" > key
 
 # 4. Process subtitles (not suggested)
-python ./experiment/main_sdk.py example_input.ass output.ass \
+./run.sh example_input.ass output.ass \
 --streaming --pairs-per-chunk 105  \
 --checkpoint --per-block-update -vvv
 ```
@@ -91,14 +92,15 @@ pip install -r requirements.txt
    export OPENAI_API_KEY="sk-proj-..."
    ```
 
-   Option B - Edit [config.py](config.py):
-   ```python
-   api_key: str = "sk-proj-..."
+   Option B - Edit [config.yaml](config.yaml):
+   ```yaml
+   api:
+     key_file: "key"
    ```
 
 5. **Test the installation**:
 ```bash
-python main.py --test-connection input.ass output.ass
+./run.sh --test-connection input.ass output.ass
 ```
 
 ## Usage
@@ -106,7 +108,7 @@ python main.py --test-connection input.ass output.ass
 ### Basic Usage
 
 ```bash
-python main.py input.ass output.ass
+./run.sh input.ass output.ass
 ```
 
 This will:
@@ -119,7 +121,7 @@ This will:
 ### Command Line Options
 
 ```
-usage: main.py [-h] [--model MODEL] [--dry-run] [--max-chunks MAX_CHUNKS]
+usage: ./run.sh [-h] [--model MODEL] [--dry-run] [--max-chunks MAX_CHUNKS]
                [--memory-limit MEMORY_LIMIT] [--pairs-per-chunk PAIRS_PER_CHUNK]
                [-v] [--stats STATS] [--test-connection]
                input output
@@ -144,34 +146,34 @@ optional arguments:
 
 ```bash
 # 1. Basic processing (token-based chunking)
-python main.py input.ass output.ass
+./run.sh input.ass output.ass
 
 # 2. Quick test with sample data (recommended for first use)
-python main.py input.ass output.ass --dry-run
+./run.sh input.ass output.ass --dry-run
 
 # 3. Process with fixed chunk size (50 pairs per chunk)
-python main.py input.ass output.ass --pairs-per-chunk 50
+./run.sh input.ass output.ass --pairs-per-chunk 50
 
 # 4. Process only first 3 chunks
-python main.py input.ass output.ass --max-chunks 3
+./run.sh input.ass output.ass --max-chunks 3
 
 # 5. Combine chunk size with max chunks (30 pairs per chunk, max 2 chunks)
-python main.py input.ass output.ass --pairs-per-chunk 30 --max-chunks 2
+./run.sh input.ass output.ass --pairs-per-chunk 30 --max-chunks 2
 
 # 6. Use a different model
-python main.py input.ass output.ass --model gpt-4o
+./run.sh input.ass output.ass --model gpt-4o
 
 # 7. Increase memory limit for better context
-python main.py input.ass output.ass --memory-limit 3000
+./run.sh input.ass output.ass --memory-limit 3000
 
 # 8. Test API connection before processing
-python main.py input.ass output.ass --test-connection
+./run.sh input.ass output.ass --test-connection
 
 # 9. Enable verbose mode with timing and response preview
-python main.py input.ass output.ass -v
+./run.sh input.ass output.ass -v
 
 # 10. Verbose mode with custom stats interval
-python main.py input.ass output.ass -v --stats 0.5
+./run.sh input.ass output.ass -v --stats 0.5
 ```
 
 ### Running the Example Script
@@ -184,17 +186,23 @@ chmod +x example_usage.sh
 ## Project Structure
 
 ```
-subretrans/
-├── main.py                  # CLI entry point and workflow orchestration
-├── config.py                # Configuration settings (API, tokens, pricing)
-├── ass_parser.py            # ASS file parsing and generation
-├── pairs.py                 # SubtitlePair data structure
-├── chunker.py               # Smart chunk splitting with token limits
-├── llm_client.py            # OpenAI API client with retry logic
-├── memory.py                # Global memory management
-├── prompts.py               # System and user prompt templates
-├── stats.py                 # Token usage statistics and cost tracking
-├── utils.py                 # Utility functions (token estimation, etc.)
+.
+├── run.sh                   # CLI entry point and workflow orchestration
+├── config.yaml              # Configuration settings (API, tokens, pricing)
+├── subretrans/
+│   ├── cli.py               # CLI implementation and workflow orchestration
+│   ├── config.py            # Configuration loading and settings
+│   ├── ass_parser.py        # ASS file parsing and generation
+│   ├── pairs.py             # SubtitlePair data structure
+│   ├── chunker.py           # Smart chunk splitting with token limits
+│   ├── llm.py               # OpenAI API client with retry logic
+│   ├── providers.py          # OpenAI Responses, Anthropic, Gemini, and legacy adapters
+│   ├── pipeline.py           # Checkpointable agent workflow graph
+│   ├── state.py              # Persistent pipeline state schema
+│   ├── memory.py             # Glossary and incremental episode story memory
+│   ├── prompts.py           # System and user prompt templates
+│   ├── stats.py             # Token usage statistics and cost tracking
+│   └── utils.py             # Utility functions (token estimation, etc.)
 ├── requirements.txt         # Python dependencies
 ├── README.md                # This file
 ├── example_usage.sh         # Example usage script
@@ -226,11 +234,12 @@ subretrans/
    - Builds system prompt with refinement rules + global memory
    - Sends subtitle pairs as JSON to LLM
    - Parses and validates LLM response
-   - Updates global memory with new terminology
+   - Updates terminology and the cumulative episode story description
 
 5. **Memory Management**
    - Extracts proper nouns and terminology
-   - Maintains cross-chunk context
+   - Maintains a concise, evidence-only story description of the episode so far
+   - Saves the complete memory to `.memory.yaml` when checkpointing is enabled
    - Automatically compresses if memory exceeds limit
 
 6. **Generate Output**
@@ -249,7 +258,7 @@ The tool supports two chunking strategies:
 - **Usage**: Default behavior (no flag needed)
 
 ```bash
-python main.py input.ass output.ass
+./run.sh input.ass output.ass
 ```
 
 #### 2. Pair-Based Chunking
@@ -260,16 +269,16 @@ python main.py input.ass output.ass
 
 ```bash
 # Process 50 pairs at a time
-python main.py input.ass output.ass --pairs-per-chunk 50
+./run.sh input.ass output.ass --pairs-per-chunk 50
 
 # Smaller chunks for testing
-python main.py input.ass output.ass --pairs-per-chunk 10
+./run.sh input.ass output.ass --pairs-per-chunk 10
 ```
 
 **Tip**: Combine with `--max-chunks` to limit processing:
 ```bash
 # Process first 100 pairs only (50 pairs/chunk × 2 chunks)
-python main.py input.ass output.ass --pairs-per-chunk 50 --max-chunks 2
+./run.sh input.ass output.ass --pairs-per-chunk 50 --max-chunks 2
 ```
 
 ### Verbose Mode
@@ -279,16 +288,16 @@ The tool supports verbose mode for detailed progress tracking:
 #### Enabling Verbose Mode
 ```bash
 # Basic verbose mode (timing + preview)
-python main.py input.ass output.ass -v
+./run.sh input.ass output.ass -v
 
 # Very verbose (-vv) dumps full API responses after each chunk
-python main.py input.ass output.ass -vv
+./run.sh input.ass output.ass -vv
 
 # Ultra verbose (-vvv) also prints the full system prompt/memory sent to the model
-python main.py input.ass output.ass -vvv
+./run.sh input.ass output.ass -vvv
 
 # Verbose with custom stats interval
-python main.py input.ass output.ass -v --stats 0.5
+./run.sh input.ass output.ass -v --stats 0.5
 ```
 
 #### Verbose Output Includes:
@@ -435,7 +444,7 @@ The system prompt is now generated from a **single markdown template file** (`ma
 
 ## Configuration (v0.0.6)
 
-Edit [config.py](config.py) to customize:
+Edit [config.yaml](config.yaml) to customize:
 
 ```python
 from dataclasses import dataclass, field
@@ -493,7 +502,7 @@ class Config:
 To use a different OpenAI-compatible API:
 
 ```python
-# In config.py
+# In config.yaml
 api_base_url: str = "https://your-api-endpoint.com/v1"
 
 @dataclass
@@ -551,7 +560,7 @@ Estimated cost:    $    0.5815 USD
 - Prompt tokens: $0.03 per 1K tokens
 - Completion tokens: $0.06 per 1K tokens
 
-**Note**: Actual costs may vary based on your OpenAI plan and model used. Update pricing in [config.py](config.py) for accurate estimates.
+**Note**: Actual costs may vary based on your OpenAI plan and model used. Update pricing in [config.yaml](config.yaml) for accurate estimates.
 
 ## Troubleshooting
 
@@ -561,7 +570,7 @@ Estimated cost:    $    0.5815 USD
 ```
 Configuration error: API key must be provided
 ```
-**Solution**: Set `OPENAI_API_KEY` environment variable or edit [config.py](config.py)
+**Solution**: Set `OPENAI_API_KEY` environment variable or edit [config.yaml](config.yaml)
 
 **2. Model Not Found**
 ```
@@ -573,7 +582,7 @@ API request failed: model 'gpt-5.1' not found
 ```
 API request failed: maximum context length exceeded
 ```
-**Solution**: Reduce `chunk_token_soft_limit` in [config.py](config.py)
+**Solution**: Reduce `chunk_token_soft_limit` in [config.yaml](config.yaml)
 
 **4. No Subtitle Pairs Found**
 ```
@@ -589,7 +598,7 @@ ModuleNotFoundError: No module named 'tiktoken'
 
 ### Debug Mode
 
-For verbose output, modify [main.py](main.py) to add debug logging:
+For verbose output, modify [subretrans/cli.py](subretrans/cli.py) to add debug logging:
 
 ```python
 import logging
@@ -679,7 +688,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Run tests
-python main.py test_input.ass test_output.ass --dry-run
+./run.sh test_input.ass test_output.ass --dry-run
 ```
 
 ## Support

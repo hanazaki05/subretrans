@@ -3,21 +3,21 @@
 
 # API Settings
 api:
-  key_file: "../key"  # Path to file containing API key (relative to this config file)
+  key_file: "key"  # Path to file containing API key (relative to this config file)
   base_url: "https://api.openai.com/v1"
   timeout: 800  # API request timeout in seconds
 
 # Main refinement model settings (GPT-5.* for subtitle correction)
 main_model:
-  name: "gemini-3-pro-preview"
+  name: "gpt-5.5"
   #name: "gpt-4o"
   max_output_tokens: 27000
   reasoning_effort: "high"  # none, low, medium, high
   temperature: 0.6
   #temperature: 0.4
   # Optional per-model API credentials (overrides global api settings)
-  key_file: "../key-yunwu"  # Path to model-specific API key file
-  base_url: "https://yunwu.ai/v1"  # Model-specific endpoint URL
+  key_file: "key-cliproxy"  # Path to model-specific API key file
+  base_url: "http://127.0.0.1:8317/v1"  # Model-specific endpoint URL
 
 # Terminology extraction model settings (GPT-4o-mini for glossary extraction)
 terminology_model:
@@ -25,8 +25,8 @@ terminology_model:
   max_output_tokens: 1800
   temperature: 0.45
   # Optional per-model API credentials (overrides global api settings)
-  #key_file: "../key-terminology"  # Path to model-specific API key file
-  #base_url: "https://another.url/v1"  # Model-specific endpoint URL
+  key_file: "key"  # Path to model-specific API key file
+  base_url: "https://api.openai.com/v1"  # Model-specific endpoint URL
 
 # Token management
 tokens:
@@ -54,12 +54,14 @@ glossary:
 
 # User customization
 user:
-  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/prompt_afters6e24.md"  # Path to main prompt template file (plan3.md strategy)
+  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/prompt_afters5e9.md"  # Path to main prompt template file (plan3.md strategy)
 
 # Runtime options (can be overridden by CLI flags)
 runtime:
-  api_mode: "chat-completion"
-  use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
+  api_mode: "response"
+  # API format: "chat-completion" (OpenAI chat/completions)
+  # or "response" (OpenAI Responses API)
+  use_stream: true  # Use streaming for chat-completion API (response API always streams)
   per_block_update: true  # Update output file after each chunk/block (recommended for safety)
   verbose: false  # Enable verbose output with detailed progress
   very_verbose: false  # Dump full API responses (requires verbose)

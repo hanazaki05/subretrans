@@ -10,17 +10,17 @@ import sys
 import os
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 # Import modules
-from config_sdk import load_config_sdk
-from ass_parser import parse_ass_file, build_pairs_from_ass_lines
-from chunker import chunk_pairs
-from memory import init_global_memory, estimate_memory_tokens
-from prompts import build_system_prompt, build_user_prompt_for_chunk, split_user_prompt_and_glossary, set_user_instruction
-from utils import estimate_tokens, estimate_pairs_tokens
-from serializers import serialize
+from .config import load_config_sdk
+from .ass_parser import parse_ass_file, build_pairs_from_ass_lines
+from .chunker import chunk_pairs
+from .memory import init_global_memory, estimate_memory_tokens
+from .prompts import build_system_prompt, build_user_prompt_for_chunk, split_user_prompt_and_glossary, set_user_instruction
+from .utils import estimate_tokens, estimate_pairs_tokens
+from .serializers import serialize
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
 
 def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, config):
@@ -72,8 +72,7 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
         if os.path.isabs(prompt_path_cfg):
             custom_prompt_path = prompt_path_cfg
         else:
-            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            custom_prompt_path = os.path.join(parent_dir, prompt_path_cfg)
+            custom_prompt_path = str(REPOSITORY_ROOT / prompt_path_cfg)
 
         if os.path.exists(custom_prompt_path):
             try:
@@ -253,13 +252,13 @@ def main():
         epilog="""
 Examples:
   # Generate prompts with 120 pairs per chunk
-  python genreq.py JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
+  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
 
   # Limit to first 2 chunks
-  python genreq.py JAG.S04E09.zh-cn.ass --pairs-per-chunk 120 --max-chunks 2
+  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120 --max-chunks 2
 
   # Custom output file
-  python genreq.py input.ass --pairs-per-chunk 100 --output my_prompts.md
+  python -m subretrans.genreq input.ass --pairs-per-chunk 100 --output my_prompts.md
 
 Note: This tool does NOT call the API, it only generates the prompts.
         """

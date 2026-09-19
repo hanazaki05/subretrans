@@ -9,7 +9,7 @@ Checks:
 - Remaining non-glossary, non-comment lines stay in instructions.
 """
 
-from prompts import split_user_prompt_and_glossary
+from subretrans.prompts import split_user_prompt_and_glossary
 
 
 SAMPLE_PROMPT = """You are a professional translator.
@@ -56,4 +56,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

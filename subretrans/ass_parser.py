@@ -11,7 +11,7 @@ import re
 import os
 import tempfile
 
-from pairs import SubtitlePair
+from .pairs import SubtitlePair
 
 ENGLISH_STYLE_NAMES = {"e3"}
 CHINESE_STYLE_NAMES = {"c3"}

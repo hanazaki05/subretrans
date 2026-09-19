@@ -7,9 +7,9 @@ Verifies that:
 - The local filtering in memory._parse_terminology_entries uses the same threshold
 """
 
-from config import Config
-from prompts import build_terminology_system_prompt
-from memory import _parse_terminology_entries, TerminologyEntry
+from subretrans.config import ConfigSDK
+from subretrans.prompts import build_memory_update_system_prompt
+from subretrans.memory import _parse_terminology_entries, TerminologyEntry
 
 
 def extract_threshold_line(prompt: str) -> str:
@@ -21,11 +21,11 @@ def extract_threshold_line(prompt: str) -> str:
 
 
 def demo_prompt_threshold():
-    cfg = Config()
+    cfg = ConfigSDK(api_key="test-key")
     min_conf = cfg.terminology_min_confidence
-    prompt = build_terminology_system_prompt(min_conf)
+    prompt = build_memory_update_system_prompt(min_conf)
     line = extract_threshold_line(prompt)
-    print("Config.terminology_min_confidence:", min_conf)
+    print("ConfigSDK.terminology_min_confidence:", min_conf)
     print("Prompt threshold line:", line)
 
 
@@ -49,4 +49,3 @@ def demo_filtering():
 if __name__ == "__main__":
     demo_prompt_threshold()
     demo_filtering()
-

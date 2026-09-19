@@ -7,34 +7,34 @@ while maintaining compatibility with the main project's structure.
 
 import json
 import time
-import sys
 import os
+from pathlib import Path
 from typing import List, Tuple, Optional, Union, Callable
 
 # OpenAI SDK imports
 from openai import OpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from config_sdk import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
-from pairs import SubtitlePair
-from memory import (
+from .config import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
+from .pairs import SubtitlePair
+from .memory import (
     GlobalMemory,
     validate_memory_structure,
     prune_learned_glossary_against_user_glossary,
 )
-from prompts import (
+from .prompts import (
     build_system_prompt,
     build_user_prompt_for_chunk,
     MEMORY_COMPRESSION_SYSTEM_PROMPT,
     build_memory_compression_prompt,
     validate_response_format
 )
-from stats import UsageStats
-from utils import extract_json_from_response
-from serializers import serialize, deserialize, deserialize_best_effort, SerializationError
+from .stats import UsageStats
+from .utils import extract_json_from_response
+from .serializers import serialize, deserialize, deserialize_best_effort, SerializationError
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
 
 class LLMAPIError(Exception):
@@ -76,12 +76,10 @@ def _resolve_model_credentials(
 
         # Check for model-specific API key file
         if model_settings.key_file:
-            # Resolve key file path relative to experiment directory
+            # Resolve key file path relative to the repository root
             key_file_path = model_settings.key_file
             if not os.path.isabs(key_file_path):
-                # Relative to experiment directory
-                experiment_dir = os.path.dirname(os.path.abspath(__file__))
-                key_file_path = os.path.join(experiment_dir, key_file_path)
+                key_file_path = str(REPOSITORY_ROOT / key_file_path)
 
             try:
                 api_key = load_api_key_from_file(key_file_path)
@@ -339,11 +337,6 @@ def _extract_from_format_marker(text: str, format_type: str) -> Optional[str]:
             return text[idx:].strip()
 
     elif format_type.lower() == "json":
-        # Leverage existing utils.extract_json_from_response()
-        import sys
-        import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-        from utils import extract_json_from_response
         return extract_json_from_response(text)
 
     elif format_type.lower() == "pseudo-toml":

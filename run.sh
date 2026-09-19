@@ -1,19 +1,19 @@
 #!/bin/bash
 #
-# Wrapper script to run main_sdk.py or genreq.py from any directory
+# Wrapper script to run the subtitle refiner or prompt generator from any directory
 #
 # Usage:
-#   ./run.sh input.ass output.ass [options]             # Run main_sdk.py
-#   ./run.sh genreq input.ass --pairs-per-chunk 120     # Run genreq.py
+#   ./run.sh input.ass output.ass [options]             # Run subretrans.cli
+#   ./run.sh genreq input.ass --pairs-per-chunk 120     # Run subretrans.genreq
 #
 # Examples:
 #   ./run.sh ~/files/input.ass ~/files/output.ass --stream -v
 #   ./run.sh input.ass output.ass --dry-run
 #   ./run.sh genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
-#   cd /tmp && /path/to/experiment/run.sh input.ass output.ass
+#   cd /tmp && /path/to/subretrans/run.sh input.ass output.ass
 #
 # Works with symlinks:
-#   ln -s /path/to/experiment/run.sh ~/bin/subretrans
+#   ln -s /path/to/subretrans/run.sh ~/bin/subretrans
 #   subretrans input.ass output.ass --stream -v
 #   subretrans genreq input.ass --pairs-per-chunk 120
 #
@@ -29,7 +29,7 @@ fi
 
 # Get the directory where the actual script is located (not the symlink)
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$SCRIPT_DIR"
 
 # (IMPORTANT KEEP HERE) remove python alias 
 unalias python &>/dev/null # IMPORTANT KEEP HERE
@@ -37,15 +37,15 @@ unalias python3 &>/dev/null # IMPORTANT KEEP HERE
 
 # Explicit paths for clarity (updated automatically based on script location)
 VENV_PATH="$PROJECT_DIR/venv/bin/activate"
-MAIN_SDK_PATH="$SCRIPT_DIR/main_sdk.py"
-GENREQ_PATH="$SCRIPT_DIR/genreq.py"
+CLI_PATH="$PROJECT_DIR/subretrans/cli.py"
+GENREQ_PATH="$PROJECT_DIR/subretrans/genreq.py"
 
 # Debug info (uncomment to troubleshoot)
 # echo "Script path: $SCRIPT_PATH"
 # echo "Script dir: $SCRIPT_DIR"
 # echo "Project dir: $PROJECT_DIR"
 # echo "Venv: $VENV_PATH"
-# echo "Main SDK: $MAIN_SDK_PATH"
+# echo "CLI: $CLI_PATH"
 # echo "Genreq: $GENREQ_PATH"
 
 # Activate virtual environment
@@ -59,7 +59,7 @@ source "$VENV_PATH"
 
 # Check if first argument is "genreq"
 if [ "$1" = "genreq" ]; then
-    # Run genreq.py with remaining arguments
+    # Run the prompt generator with remaining arguments
     if [ ! -f "$GENREQ_PATH" ]; then
         echo "Error: genreq.py not found at: $GENREQ_PATH"
         echo "Please check your installation."
@@ -67,14 +67,16 @@ if [ "$1" = "genreq" ]; then
     fi
 
     shift  # Remove "genreq" from arguments
-    exec python "$GENREQ_PATH" "$@"
+    cd "$PROJECT_DIR" || exit 1
+    exec python -m subretrans.genreq "$@"
 else
-    # Run main_sdk.py with all arguments passed through
-    if [ ! -f "$MAIN_SDK_PATH" ]; then
-        echo "Error: main_sdk.py not found at: $MAIN_SDK_PATH"
+    # Run the main CLI with all arguments passed through
+    if [ ! -f "$CLI_PATH" ]; then
+        echo "Error: CLI module not found at: $CLI_PATH"
         echo "Please check your installation."
         exit 1
     fi
 
-    exec python "$MAIN_SDK_PATH" "$@"
+    cd "$PROJECT_DIR" || exit 1
+    exec python -m subretrans.cli "$@"
 fi

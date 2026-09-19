@@ -11,7 +11,7 @@ try:
 except Exception:  # pragma: no cover
     tiktoken = None
 
-from pairs import SubtitlePair
+from .pairs import SubtitlePair
 
 
 def get_encoding(model_name: str = "gpt-4"):

@@ -10,7 +10,7 @@ import json
 from typing import TYPE_CHECKING, List, Dict, Tuple, Optional
 
 if TYPE_CHECKING:
-    from memory import GlobalMemory
+    from .memory import GlobalMemory
 
 
 _USER_INSTRUCTION: str = ""
@@ -149,9 +149,10 @@ def build_memory_section(global_memory: 'GlobalMemory') -> str:
     if global_memory.style_notes:
         sections.append(f"\n\n**Style Guidelines:**\n{global_memory.style_notes}")
 
-    # Add summary if present
-    if global_memory.summary:
-        sections.append(f"\n\n**Context:**\n{global_memory.summary}")
+    story_description = global_memory.story_description or "(No story events revealed yet.)"
+    sections.append(
+        "\n\n**Incremental Story Description:**\n" + story_description
+    )
 
     return "".join(sections)
 
@@ -196,7 +197,7 @@ def load_main_prompt_template(config) -> str:
     Load main prompt template from config.user_prompt_path.
 
     Args:
-        config: Config object with user_prompt_path attribute
+        config: ConfigSDK-like object with user_prompt_path attribute
 
     Returns:
         Template text as string
@@ -214,8 +215,8 @@ def load_main_prompt_template(config) -> str:
         if os.path.exists(prompt_path):
             full_path = os.path.abspath(prompt_path)
         else:
-            # Try relative to this file's directory (project root)
-            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # Try relative to the repository root.
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             full_path = os.path.join(base_dir, prompt_path)
     else:
         full_path = prompt_path
@@ -465,34 +466,57 @@ def inject_memory_into_template(template: str, global_memory: 'GlobalMemory') ->
     section_start, section_end, header_line = _find_section_boundaries(template, TARGET_SECTION)
 
     if section_start is None:
-        # Section not found - return template as-is with warning
         print(f"  Warning: '{TARGET_SECTION}' section not found in template")
-        return template
+        new_template = template
+    else:
+        original_content = template[section_start:section_end]
+        template_glossary = _parse_template_glossary(original_content)
+        user_glossary = getattr(global_memory, "user_glossary", []) or []
+        learned_glossary = getattr(global_memory, "glossary", []) or []
+        merged_user_glossary = _merge_glossaries(template_glossary, user_glossary)
+        new_content = _build_terminology_section(
+            merged_user_glossary, learned_glossary
+        )
+        new_template = (
+            template[:section_start]
+            + "\n"
+            + new_content
+            + "\n\n"
+            + template[section_end:].lstrip()
+        )
 
-    # Get original section content
-    original_content = template[section_start:section_end]
-
-    # Parse template glossary
-    template_glossary = _parse_template_glossary(original_content)
-
-    # Get memory glossaries
-    user_glossary = getattr(global_memory, "user_glossary", []) or []
-    learned_glossary = getattr(global_memory, "glossary", []) or []
-
-    # Merge template + user glossary
-    merged_user_glossary = _merge_glossaries(template_glossary, user_glossary)
-
-    # Build new section content
-    new_content = _build_terminology_section(merged_user_glossary, learned_glossary)
-
-    # Reconstruct template
-    # Keep the header line, replace content up to next section
-    new_template = template[:section_start] + "\n" + new_content + "\n\n" + template[section_end:].lstrip()
+    new_template = _inject_story_description_block(new_template, global_memory)
 
     # Renumber sections
     new_template = _renumber_sections(new_template)
 
     return new_template
+
+
+def _inject_story_description_block(
+    template: str, global_memory: 'GlobalMemory'
+) -> str:
+    """Insert or replace the template's independent episode-story block."""
+    title = "Incremental Story Description"
+    story = global_memory.story_description or "(No story events revealed yet.)"
+    section_start, section_end, _ = _find_section_boundaries(template, title)
+
+    if section_start is not None:
+        return (
+            template[:section_start]
+            + "\n"
+            + story
+            + "\n\n"
+            + template[section_end:].lstrip()
+        )
+
+    _, terminology_end, _ = _find_section_boundaries(
+        template, "User Terminology (Authoritative Glossary)"
+    )
+    block = f"### Incremental Story Description\n{story}\n\n"
+    if terminology_end is None:
+        return template.rstrip() + "\n\n" + block.rstrip()
+    return template[:terminology_end] + block + template[terminology_end:]
 
 
 def convert_examples_to_format(template: str, target_format: str) -> str:
@@ -514,20 +538,7 @@ def convert_examples_to_format(template: str, target_format: str) -> str:
     if target_format.lower() == "json":
         return template
 
-    # Import here to avoid circular dependency
-    try:
-        import sys
-        import os
-        # Add experiment directory to path
-        experiment_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiment")
-        if experiment_dir not in sys.path:
-            sys.path.insert(0, experiment_dir)
-
-        from serializers import convert_json_examples_to_format
-    except ImportError as e:
-        print(f"  Warning: Could not import serializers: {e}")
-        print("  Returning template with JSON examples unchanged")
-        return template
+    from .serializers import convert_json_examples_to_format
 
     # Step 0: Update the opening line that mentions "JSON input"
     format_name_map = {
@@ -656,20 +667,21 @@ def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
 
 
 # System prompt for memory compression
-MEMORY_COMPRESSION_SYSTEM_PROMPT = """You are a helpful assistant that compresses terminology and style information for subtitle refinement.
+MEMORY_COMPRESSION_SYSTEM_PROMPT = """You compress episode memory used for subtitle refinement.
 
 Your task is to:
-1. Keep ALL terminology entries (people, places, organizations, technical terms)
-2. Merge duplicate entries
-3. Remove less important or redundant information
-4. Keep style notes concise but informative
-5. Maintain the overall structure
+1. Preserve user_glossary exactly; it is authoritative and must not be compressed or changed
+2. Keep all unique learned terminology mappings while merging duplicates
+3. Keep style notes concise
+4. Shorten story_description without inventing events, identities, relationships, or states
+5. Return exactly the four fields shown below
 
 Return a compressed version in the same JSON format:
 {
+  "user_glossary": [{"eng": "...", "zh": "..."}],
   "glossary": [{"eng": "...", "zh": "...", "type": "..."}],
   "style_notes": "...",
-  "summary": "..."
+  "story_description": "..."
 }
 
 Be aggressive in compression but preserve all unique terminology mappings."""
@@ -689,9 +701,10 @@ def build_memory_compression_prompt(global_memory: 'GlobalMemory', target_tokens
     import json
 
     memory_dict = {
+        "user_glossary": global_memory.user_glossary,
         "glossary": global_memory.glossary,
         "style_notes": global_memory.style_notes,
-        "summary": global_memory.summary
+        "story_description": global_memory.story_description,
     }
 
     prompt = f"""Current memory is too large. Please compress it to approximately {target_tokens} tokens or less.
@@ -743,9 +756,9 @@ def validate_response_format(response: str) -> bool:
         return False
 
 
-TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT_TEMPLATE = """You are a bilingual terminology extractor for paired English and Chinese subtitles.
+MEMORY_UPDATE_SYSTEM_PROMPT_TEMPLATE = """You update episode memory from paired English and Chinese subtitles.
 
-Your task is to identify only the terms that require a consistent translation and produce a clean glossary. Follow these rules:
+Update both the learned glossary and the incremental story description. Follow these rules:
 - Focus on proper nouns: people, places, organizations, ships, military units, project/operation code names, legal statute names, show or work titles, and stable acronyms (e.g., JAG, NCIS)
 - Always extract all person names (character names) you can confidently identify, even if they appear only once in the current chunk.
 - Include keywords that need unified translations across the episode
@@ -753,38 +766,45 @@ Your task is to identify only the terms that require a consistent translation an
 - Do not invent translations or entries if the Chinese counterpart cannot be determined confidently
 - For every glossary item output: eng (trimmed, original casing), zh (trimmed), type (one of person/place/organization/title/acronym/unit/ship/project/law/other), confidence (0.0-1.0), evidence_ids (list of up to 5 subtitle ids where the term appears)
 - Only keep entries with confidence >= {min_conf}
-- Output strictly a JSON array with objects sorted by first appearance, without explanations or Markdown
+- Treat the previous story description as the established account of this same episode
+- Rewrite story_description as a concise cumulative description of only what has been revealed so far
+- Preserve relevant prior events while adding newly revealed events, character relationships or identities, and current states
+- Do not guess motives, identities, relationships, outcomes, or off-screen events
+- Output strictly one JSON object with exactly these keys, without explanations or Markdown:
+{{"glossary": [{{"eng": "...", "zh": "...", "type": "...", "confidence": 0.0, "evidence_ids": [1]}}], "story_description": "..."}}
 """
 
 
-TERMINOLOGY_EXTRACTION_USER_TEMPLATE = """Here is the list of corrected subtitle pairs. Each entry contains id, eng, and chinese fields.
-Extract the terminology glossary following the system instructions and return ONLY a JSON array.
+MEMORY_UPDATE_USER_TEMPLATE = """Update the episode memory from the corrected subtitle pairs below.
 
 You will also receive an optional "user glossary" that already defines some eng→zh mappings.
 - Do NOT output entries whose eng already appears in the user glossary.
 - Do NOT output any entry whose zh conflicts with the user glossary for the same eng.
 
-Subtitle pairs (JSON):
+Previous story description:
+{{PREVIOUS_STORY_DESCRIPTION}}
+
+Corrected subtitle pairs (JSON):
 {{PAIRS_JSON}}
 
 User glossary (JSON array, may be empty):
 {{USER_GLOSSARY_JSON}}
+
+Return ONLY the JSON object specified by the system instructions.
 """
 
 
-def build_terminology_system_prompt(min_confidence: float) -> str:
-    """Build the system prompt for terminology extraction using the configured confidence.
+def build_memory_update_system_prompt(min_confidence: float) -> str:
+    """Build the system prompt for an incremental episode-memory update.
 
     The numerical threshold shown to the model is kept in sync with the
-    post-filtering threshold used in memory.py via Config.terminology_min_confidence.
+    post-filtering threshold used in memory.py via ConfigSDK.terminology_min_confidence.
     """
 
     # Keep a short, human-friendly representation (e.g., 0.6 rather than 0.600000)
     if min_confidence is None:
         min_confidence = 0.6
-    return TERMINOLOGY_EXTRACTION_SYSTEM_PROMPT_TEMPLATE.format(min_conf=min_confidence)
-
-
+    return MEMORY_UPDATE_SYSTEM_PROMPT_TEMPLATE.format(min_conf=min_confidence)
 def split_user_prompt_and_glossary(text: str) -> Tuple[str, List[Dict[str, str]]]:
     """Split a custom main prompt into instructions and a simple eng→zh glossary.
 

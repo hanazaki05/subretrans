@@ -6,14 +6,14 @@ while preserving logical groupings.
 """
 
 from typing import List
-from pairs import SubtitlePair
-from utils import estimate_pair_tokens, estimate_pairs_tokens
-from config import Config
+from .pairs import SubtitlePair
+from .utils import estimate_pair_tokens, estimate_pairs_tokens
+from .config import ConfigSDK
 
 
 def chunk_pairs(
     pairs: List[SubtitlePair],
-    config: Config,
+    config: ConfigSDK,
     base_prompt_tokens: int
 ) -> List[List[SubtitlePair]]:
     """

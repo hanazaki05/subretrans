@@ -12,7 +12,7 @@ All formats preserve ASS formatting tags and handle special characters.
 import json
 import re
 from typing import List, Dict, Any, Tuple
-from pairs import SubtitlePair
+from .pairs import SubtitlePair
 
 
 class SerializationError(Exception):

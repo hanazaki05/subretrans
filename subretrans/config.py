@@ -6,13 +6,13 @@ the main project's structure.
 """
 
 import os
-import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 import yaml
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_api_key_from_file(key_file_path: str = None) -> str:
@@ -20,7 +20,7 @@ def load_api_key_from_file(key_file_path: str = None) -> str:
     Load API key from key file.
 
     Args:
-        key_file_path: Path to key file (defaults to ../key relative to this file)
+        key_file_path: Path to key file (defaults to key in the repository root)
 
     Returns:
         API key string
@@ -30,9 +30,7 @@ def load_api_key_from_file(key_file_path: str = None) -> str:
         ValueError: If key file is empty or invalid
     """
     if key_file_path is None:
-        # Default to key file in parent directory
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        key_file_path = os.path.join(os.path.dirname(current_dir), "key")
+        key_file_path = str(REPOSITORY_ROOT / "key")
 
     if not os.path.exists(key_file_path):
         raise FileNotFoundError(f"Key file not found: {key_file_path}")
@@ -51,7 +49,7 @@ def load_yaml_config(yaml_file_path: str = None) -> dict:
     Load configuration from YAML file.
 
     Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in this directory)
+        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
 
     Returns:
         Configuration dictionary
@@ -61,9 +59,7 @@ def load_yaml_config(yaml_file_path: str = None) -> dict:
         yaml.YAMLError: If YAML file is invalid
     """
     if yaml_file_path is None:
-        # Default to config.yaml in the same directory as this file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        yaml_file_path = os.path.join(current_dir, "config.yaml")
+        yaml_file_path = str(REPOSITORY_ROOT / "config.yaml")
 
     if not os.path.exists(yaml_file_path):
         raise FileNotFoundError(f"Config file not found: {yaml_file_path}")
@@ -189,7 +185,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
     Load configuration from YAML file.
 
     Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in this directory)
+        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
 
     Returns:
         ConfigSDK object with settings from YAML file
@@ -215,8 +211,7 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         if yaml_file_path:
             yaml_dir = os.path.dirname(os.path.abspath(yaml_file_path))
         else:
-            # Default location: experiment directory
-            yaml_dir = os.path.dirname(os.path.abspath(__file__))
+            yaml_dir = str(REPOSITORY_ROOT)
 
         # Resolve key file path relative to YAML directory
         key_file_path = os.path.join(yaml_dir, key_file_path)
@@ -307,7 +302,7 @@ def load_config_sdk(
     Load configuration from YAML file with optional overrides.
 
     Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in this directory)
+        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
         model_name: Override for main refinement model name
         terminology_model: Override for terminology extraction model name
         api_mode: Override for API mode (chat-completion or response)

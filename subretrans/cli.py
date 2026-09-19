@@ -12,12 +12,9 @@ import time
 import yaml
 from typing import Optional
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 # Import SDK-specific modules
-from config_sdk import load_config_sdk
-from llm_client_sdk import (
+from .config import load_config_sdk
+from .llm import (
     refine_chunk_sdk,
     refine_chunk_sdk_streaming,
     refine_chunk_sdk_response,
@@ -27,30 +24,31 @@ from llm_client_sdk import (
 )
 
 # Import shared modules from main project
-from ass_parser import (
+from .ass_parser import (
     parse_ass_file,
     build_pairs_from_ass_lines,
     apply_pairs_to_ass_lines,
     render_ass_file,
     write_ass_file
 )
-from chunker import chunk_pairs, print_chunk_statistics
-from memory import (
+from .chunker import chunk_pairs, print_chunk_statistics
+from .memory import (
     GlobalMemory,
     init_global_memory,
     update_global_memory,
     estimate_memory_tokens,
-    prune_learned_glossary_against_user_glossary
+    prune_learned_glossary_against_user_glossary,
+    validate_memory_structure,
 )
-from stats import (
+from .stats import (
     init_usage_stats,
     accumulate_usage,
     estimate_cost,
     print_usage_report,
     print_chunk_progress
 )
-from prompts import build_system_prompt
-from utils import estimate_tokens, print_verbose_preview, format_time
+from .prompts import build_system_prompt
+from .utils import estimate_tokens, print_verbose_preview, format_time
 
 
 def get_checkpoint_path(input_path: str) -> str:
@@ -61,52 +59,33 @@ def get_checkpoint_path(input_path: str) -> str:
         input_path: Path to input subtitle file
 
     Returns:
-        Path to checkpoint file (e.g., input.ass -> input.ass.glossary.yaml)
+        Path to checkpoint file (e.g., input.ass -> input.ass.memory.yaml)
     """
-    return f"{input_path}.glossary.yaml"
+    return f"{input_path}.memory.yaml"
 
 
-def save_glossary_checkpoint(glossary: list, checkpoint_path: str) -> None:
-    """
-    Save learned glossary to checkpoint file in YAML format.
-
-    Args:
-        glossary: List of learned glossary entries
-        checkpoint_path: Path to checkpoint file
-    """
-    try:
-        with open(checkpoint_path, 'w', encoding='utf-8') as f:
-            yaml.dump(glossary, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    except Exception as e:
-        print(f"  Warning: Could not save glossary checkpoint: {e}")
+def save_memory_checkpoint(memory: GlobalMemory, checkpoint_path: str) -> None:
+    """Persist the complete episode memory as YAML."""
+    with open(checkpoint_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            memory.to_dict(),
+            f,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
 
 
-def load_glossary_checkpoint(checkpoint_path: str) -> Optional[list]:
-    """
-    Load learned glossary from checkpoint file in YAML format.
-
-    Args:
-        checkpoint_path: Path to checkpoint file
-
-    Returns:
-        List of glossary entries if file exists and is valid, None otherwise
-    """
+def load_memory_checkpoint(checkpoint_path: str) -> Optional[GlobalMemory]:
+    """Load and validate complete episode memory from YAML."""
     if not os.path.exists(checkpoint_path):
         return None
 
-    try:
-        with open(checkpoint_path, 'r', encoding='utf-8') as f:
-            glossary = yaml.safe_load(f)
-
-        # Validate that it's a list
-        if not isinstance(glossary, list):
-            print(f"  Warning: Invalid checkpoint format in {checkpoint_path}")
-            return None
-
-        return glossary
-    except Exception as e:
-        print(f"  Warning: Could not load glossary checkpoint: {e}")
-        return None
+    with open(checkpoint_path, "r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f)
+    if not validate_memory_structure(payload):
+        raise ValueError(f"Invalid memory checkpoint: {checkpoint_path}")
+    return GlobalMemory.from_dict(payload)
 
 
 def apply_corrections_to_global_pairs(
@@ -208,7 +187,7 @@ def process_subtitles(
         api_mode: API format - 'chat-completion' or 'response'
         use_stream: Whether to use stream mode (chat-completion only; response always streams)
         resume_index: Optional pair index to resume from (skips pairs before this index)
-        enable_checkpoint: Whether to enable glossary checkpoint system (default: False)
+        enable_checkpoint: Whether to persist episode memory after each chunk
 
     Returns:
         True if successful, False otherwise
@@ -320,7 +299,8 @@ def process_subtitles(
             return removed_count
 
         # Load template glossary and populate user_glossary for lock mechanism
-        from prompts import load_main_prompt_template, _parse_template_glossary, _find_section_boundaries
+        from .prompts import load_main_prompt_template, _parse_template_glossary, _find_section_boundaries
+        template_glossary = None
         try:
             template = load_main_prompt_template(config)
             TARGET_SECTION = "User Terminology (Authoritative Glossary)"
@@ -335,15 +315,22 @@ def process_subtitles(
             if config.verbose:
                 print(f"  Warning: Failed to load template glossary: {e}")
 
-        # Load glossary checkpoint if enabled
+        # Load the complete episode-memory checkpoint if enabled. The current
+        # prompt template remains authoritative for user-defined terminology.
         if enable_checkpoint:
             checkpoint_path = get_checkpoint_path(input_path)
-            checkpoint_glossary = load_glossary_checkpoint(checkpoint_path)
-            if checkpoint_glossary:
-                print(f"  [CHECKPOINT] Loaded {len(checkpoint_glossary)} glossary entries from: {os.path.basename(checkpoint_path)}")
-                global_memory.glossary = checkpoint_glossary
+            checkpoint_memory = load_memory_checkpoint(checkpoint_path)
+            if checkpoint_memory is not None:
+                global_memory = checkpoint_memory
+                if template_glossary is not None:
+                    global_memory.user_glossary = template_glossary
+                story_status = "with story context" if global_memory.story_description else "without story context"
+                print(
+                    f"  [CHECKPOINT] Loaded {len(global_memory.glossary)} learned glossary entries "
+                    f"({story_status}) from: {os.path.basename(checkpoint_path)}"
+                )
                 if prune_learned_glossary("after loading checkpoint"):
-                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+                    save_memory_checkpoint(global_memory, checkpoint_path)
             else:
                 print(f"  [CHECKPOINT] No existing checkpoint found, will create: {os.path.basename(checkpoint_path)}")
 
@@ -396,7 +383,7 @@ def process_subtitles(
                 # Always prune learned glossary entries covered by the user glossary
                 # BEFORE building prompts / printing terminology.
                 if prune_learned_glossary("before LLM request") and enable_checkpoint and checkpoint_path:
-                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+                    save_memory_checkpoint(global_memory, checkpoint_path)
 
                 # In -vvv mode, show terminology before processing
                 # First chunk: show user-defined + learned
@@ -504,7 +491,7 @@ def process_subtitles(
                 # Ensure we don't keep redundant learned entries and persist memory each chunk (if enabled)
                 prune_learned_glossary("after memory update")
                 if enable_checkpoint and checkpoint_path:
-                    save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+                    save_memory_checkpoint(global_memory, checkpoint_path)
 
                 # Write per-block updates if enabled
                 if config.per_block_update:
@@ -533,17 +520,16 @@ def process_subtitles(
                         new_size = estimate_memory_tokens(global_memory, config.main_model.name)
                         print(f"  Memory compressed: {memory_tokens} → {new_size} tokens")
 
-                        # Save compressed glossary to checkpoint (if enabled)
+                        # Save compressed memory to checkpoint (if enabled)
                         if enable_checkpoint and checkpoint_path:
-                            save_glossary_checkpoint(global_memory.glossary, checkpoint_path)
+                            save_memory_checkpoint(global_memory, checkpoint_path)
                     except LLMAPIError as e:
                         print(f"  Warning: Memory compression failed: {e}")
                         print(f"  Continuing with uncompressed memory...")
 
             except LLMAPIError as e:
                 print(f"  Error processing chunk {i+1}: {e}")
-                print(f"  Skipping this chunk and continuing...")
-                continue
+                raise
 
         print("\n" + "-" * 60)
 
@@ -582,42 +568,42 @@ def main():
         epilog="""
 Examples:
   # Basic usage (non-stream)
-  python main_sdk.py input.ass output.ass
+  python -m subretrans.cli input.ass output.ass
 
   # Use stream mode for real-time feedback
-  python main_sdk.py input.ass output.ass --stream
+  python -m subretrans.cli input.ass output.ass --stream
 
   # Dry run with stream
-  python main_sdk.py input.ass output.ass --stream --dry-run
+  python -m subretrans.cli input.ass output.ass --stream --dry-run
 
   # Verbose stream mode
-  python main_sdk.py input.ass output.ass --stream -v
+  python -m subretrans.cli input.ass output.ass --stream -v
 
   # Use OpenAI Response API (always streams)
-  python main_sdk.py input.ass output.ass --api-mode response
+  python -m subretrans.cli input.ass output.ass --api-mode response
 
   # Fixed pairs per chunk
-  python main_sdk.py input.ass output.ass --pairs-per-chunk 50
+  python -m subretrans.cli input.ass output.ass --pairs-per-chunk 50
 
   # Limit number of chunks
-  python main_sdk.py input.ass output.ass --max-chunks 5
+  python -m subretrans.cli input.ass output.ass --max-chunks 5
 
   # Resume from a specific pair index (e.g., after error)
-  python main_sdk.py input.ass output.ass --resume 680 --pairs-per-chunk 75
+  python -m subretrans.cli input.ass output.ass --resume 680 --pairs-per-chunk 75
 
-  # Enable checkpoint system to save/load learned terminology
-  python main_sdk.py input.ass output.ass --checkpoint --stream
+  # Enable checkpointing for glossary and incremental episode story
+  python -m subretrans.cli input.ass output.ass --checkpoint --stream
 
-  # Resume with checkpoint (preserves learned terms across runs)
-  python main_sdk.py input.ass output.ass --resume 680 --checkpoint
+  # Resume with checkpoint (preserves complete episode memory)
+  python -m subretrans.cli input.ass output.ass --resume 680 --checkpoint
 
   # Disable per-block update (write only at end)
-  python main_sdk.py input.ass output.ass --no-per-block-update
+  python -m subretrans.cli input.ass output.ass --no-per-block-update
 
   # Enable per-block update explicitly (default behavior)
-  python main_sdk.py input.ass output.ass --per-block-update
+  python -m subretrans.cli input.ass output.ass --per-block-update
 
-Note: API key is automatically loaded from ../key file
+Note: API key is automatically loaded from the repository-root key file
 Note: Per-block update is enabled by default for data safety (write after each chunk)
         """
     )
@@ -719,7 +705,7 @@ Note: Per-block update is enabled by default for data safety (write after each c
     parser.add_argument(
         "--checkpoint",
         action="store_true",
-        help="Enable glossary checkpoint system (save/load learned terminology to/from .glossary.yaml file)"
+        help="Persist glossary and incremental story description in .memory.yaml"
     )
     parser.add_argument(
         "--per-block-update",
@@ -777,7 +763,7 @@ Note: Per-block update is enabled by default for data safety (write after each c
         )
     except ValueError as e:
         print(f"Configuration error: {e}")
-        print("Please check that the 'key' file exists in the parent directory")
+        print("Please check that the 'key' file exists in the repository root")
         return 1
 
     # Test connection if requested
