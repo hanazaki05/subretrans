@@ -7,7 +7,7 @@ api:
     model: "deepseek-v4.1-flash"
     key_file: "key-zenmux"
     base_url: "https://zenmux.ai/api/anthropic"
-    timeout: 1800
+    timeout: 30000
     max_retries: 0
     max_output_tokens: 27000
     reasoning_effort: null
@@ -37,7 +37,7 @@ api:
     model: "deepseek-v4.1-flash"
     key_file: "key-zenmux"
     base_url: "https://zenmux.ai/api/anthropic"
-    timeout: 1800
+    timeout: 30000
     max_retries: 2
     max_output_tokens: 131072
     reasoning_effort: null

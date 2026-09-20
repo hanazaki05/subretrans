@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 - Style detection for English/Chinese events is defined once in `ass_parser` and reused by merge, postprocess, and structural QA.
 - `pipeline status <thread-id>` reports where a run stopped.
 - Library modules log through `logging`; `print` is limited to the final CLI summaries. `--debug`/`-vv` now also covers the refine stage.
-- Default `timeout` for the primer and agent roles in the shipped configs is 1800 seconds (was 30000).
+- Default `timeout` for the primer and agent roles in the shipped configs is 30000 seconds (was 1800).
 
 ### Fixed
 - A failed cost lookup no longer fails a completed refinement.
