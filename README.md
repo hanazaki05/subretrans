@@ -96,6 +96,16 @@ context: cumulative story description, authoritative user glossary, and the
 complete learned glossary including confidence and evidence IDs. QA checkpoints are bound to the memory hash, so
 changing that context invalidates old QA progress instead of silently reusing it.
 
+### TODO: Rank-aware name verification
+
+When QA detects a full personal name paired with a military rank, run two
+independent Exa research passes before proposing a terminology decision. The
+first pass should identify the person, service branch, and rank context; the
+second should independently verify the Chinese rank translation in the
+relevant military or episode context. Add a learned term only when both passes
+agree. Conflicting or insufficient evidence must remain a human-review item and
+must not override `user_glossary`.
+
 The run writes the human-review candidate beside the input subtitle, inserting
 `.review` before the output extension (for example,
 `JAG.S07E07.en-cn.review.ass`). Approval publishes that review file, including
