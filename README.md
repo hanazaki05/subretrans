@@ -113,7 +113,12 @@ any manual edits, to the requested output path.
 
 `parallel_initial` wraps Subtitle Edit's official headless `seconv` project.
 On first use it clones the configured repository revision, builds `seconv`, and
-converts/cleans the source into the run's UTF-8 SRT artifact. Building the
+converts/cleans the source into the run's UTF-8 SRT artifact. Before primer,
+the English subtitle passes through Subtitle Edit twice: `first_pass_operations`
+runs the full configured cleanup together with the multiple-replace template,
+then `second_pass_operations` runs only `FixUnneededSpaces` on that first-pass
+SRT. The second pass does not load the first-pass settings file or repeat the
+multiple-replace template. Building the
 pinned source requires the .NET 10 SDK/runtime. The generic ASS normalization
 and structural QA live in `subtitle_processing.py`. Deterministic cleanup is an
 ordered allowlist under `postprocess.operations`; removing an operation disables
@@ -122,7 +127,7 @@ it. Show/episode replacements are configured separately under
 operation is enabled. The default `subtitle_edit` section reproduces the checked options
 from Subtitle Edit's Batch convert window through
 `subtitle_edit_settings.json`, `subtitle_edit_multiple_replace.template`, and
-an explicit `operations` list.
+the explicit `first_pass_operations` and `second_pass_operations` lists.
 
 `parallel_initial` never receives glossary or story memory, so its batches can
 run independently. The following serial refinement stage maintains the

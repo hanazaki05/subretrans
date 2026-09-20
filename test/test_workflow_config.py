@@ -267,9 +267,11 @@ def test_subtitle_edit_loader_resolves_paths_and_builds_strict_settings(
   dotnet_executable: dotnet
   settings_file: subtitle-edit-settings.json
   multiple_replace_file: multiple-replace.template
-  operations:
+  first_pass_operations:
     - --fix-common-errors
     - --remove-text-for-hi
+  second_pass_operations:
+    - --fix-common-errors-rules:FixUnneededSpaces
 """,
     )
 
@@ -284,16 +286,19 @@ def test_subtitle_edit_loader_resolves_paths_and_builds_strict_settings(
         dotnet_executable="dotnet",
         settings_file=(tmp_path / "subtitle-edit-settings.json").resolve(),
         multiple_replace_file=(tmp_path / "multiple-replace.template").resolve(),
-        operations=("--fix-common-errors", "--remove-text-for-hi"),
+        first_pass_operations=("--fix-common-errors", "--remove-text-for-hi"),
+        second_pass_operations=(
+            "--fix-common-errors-rules:FixUnneededSpaces",
+        ),
     )
 
 
 @pytest.mark.parametrize(
     "operations, match",
     [
-        ("[]", "operations must be a non-empty list"),
-        ("--fix-common-errors", "operations must be a non-empty list"),
-        ("['']", r"operations\[0\] must be a non-empty string"),
+        ("[]", "first_pass_operations must be a non-empty list"),
+        ("--fix-common-errors", "first_pass_operations must be a non-empty list"),
+        ("['']", r"first_pass_operations\[0\] must be a non-empty string"),
     ],
 )
 def test_subtitle_edit_loader_rejects_invalid_operations(
@@ -309,7 +314,8 @@ def test_subtitle_edit_loader_rejects_invalid_operations(
   dotnet_executable: dotnet
   settings_file: subtitle-edit-settings.json
   multiple_replace_file: multiple-replace.template
-  operations: {operations}
+  first_pass_operations: {operations}
+  second_pass_operations: [--fix-common-errors-rules:FixUnneededSpaces]
 """,
     )
 
@@ -328,7 +334,8 @@ def test_subtitle_edit_loader_rejects_unknown_fields(tmp_path: Path) -> None:
   dotnet_executable: dotnet
   settings_file: subtitle-edit-settings.json
   multiple_replace_file: multiple-replace.template
-  operations: [--fix-common-errors]
+  first_pass_operations: [--fix-common-errors]
+  second_pass_operations: [--fix-common-errors-rules:FixUnneededSpaces]
   extra: unsupported
 """,
     )

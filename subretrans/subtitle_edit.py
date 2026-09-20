@@ -26,7 +26,8 @@ class SubtitleEditSettings:
     dotnet_executable: str
     settings_file: Path
     multiple_replace_file: Path
-    operations: tuple[str, ...]
+    first_pass_operations: tuple[str, ...]
+    second_pass_operations: tuple[str, ...]
 
     def __post_init__(self) -> None:
         for name in ("repository_url", "revision", "dotnet_executable"):
@@ -43,10 +44,17 @@ class SubtitleEditSettings:
         ):
             if not isinstance(getattr(self, name), Path):
                 raise TypeError(f"{name} must be a Path")
-        if not isinstance(self.operations, tuple):
-            raise TypeError("operations must be a tuple")
-        if any(not isinstance(operation, str) or not operation.strip() for operation in self.operations):
-            raise ValueError("operations must contain only non-empty strings")
+        for field_name in ("first_pass_operations", "second_pass_operations"):
+            operations = getattr(self, field_name)
+            if not isinstance(operations, tuple):
+                raise TypeError(f"{field_name} must be a tuple")
+            if any(
+                not isinstance(operation, str) or not operation.strip()
+                for operation in operations
+            ):
+                raise ValueError(
+                    f"{field_name} must contain only non-empty strings"
+                )
 
 
 @dataclass(frozen=True)
@@ -158,11 +166,17 @@ def ensure_seconv(settings: SubtitleEditSettings) -> Path | SeconvCommand:
     return command
 
 
-def preprocess_with_seconv(
-    settings: SubtitleEditSettings, input_path: Path, output_path: Path
+def _convert_with_seconv(
+    settings: SubtitleEditSettings,
+    input_path: Path,
+    output_path: Path,
+    *,
+    output_format: str,
+    operations: tuple[str, ...],
+    include_settings: bool,
+    multiple_replace: bool,
+    action: str,
 ) -> Path:
-    """Convert one subtitle to strict UTF-8 SRT through the pinned ``seconv``."""
-
     input_path = Path(input_path)
     output_path = Path(output_path)
     if input_path.resolve() == output_path.resolve():
@@ -173,27 +187,66 @@ def preprocess_with_seconv(
         command.argv_prefix if isinstance(command, SeconvCommand) else (str(command),)
     )
     argv = [
-            *argv_prefix,
-            str(input_path),
-            "subrip",
-            f"--output-filename:{output_path}",
-            "--overwrite",
-            "--encoding:utf-8-no-bom",
-            "--json",
-            f"--settings:{settings.settings_file}",
-            *settings.operations,
-            f"--multiple-replace:{settings.multiple_replace_file}",
-        ]
+        *argv_prefix,
+        str(input_path),
+        output_format,
+        f"--output-filename:{output_path}",
+        "--overwrite",
+        "--encoding:utf-8-no-bom",
+        "--json",
+    ]
+    if include_settings:
+        argv.append(f"--settings:{settings.settings_file}")
+    argv.extend(operations)
+    if multiple_replace:
+        argv.append(f"--multiple-replace:{settings.multiple_replace_file}")
     try:
         subprocess.run(argv, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as error:
         details = (error.stderr or error.stdout or "no seconv output").strip()
         raise RuntimeError(
-            f"Subtitle Edit preprocessing failed with exit code "
+            f"Subtitle Edit {action} failed with exit code "
             f"{error.returncode}: {details}"
         ) from error
     if not output_path.is_file():
         raise FileNotFoundError(f"seconv did not create output file: {output_path}")
-    read_srt(output_path)
-    logger.info("Subtitle Edit: generated and validated %s", output_path)
     return output_path
+
+
+def preprocess_with_seconv(
+    settings: SubtitleEditSettings, input_path: Path, output_path: Path
+) -> Path:
+    """Run the configured two-pass English cleanup into strict UTF-8 SRT."""
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("input_path and output_path must be different")
+    first_pass_path = output_path.with_name(
+        f"{output_path.stem}.subtitle-edit-first-pass{output_path.suffix}"
+    )
+    first_pass = _convert_with_seconv(
+        settings,
+        input_path,
+        first_pass_path,
+        output_format="subrip",
+        operations=settings.first_pass_operations,
+        include_settings=True,
+        multiple_replace=True,
+        action="preprocessing",
+    )
+    read_srt(first_pass)
+    logger.info("Subtitle Edit: first English cleanup pass complete: %s", first_pass)
+    output = _convert_with_seconv(
+        settings,
+        first_pass,
+        output_path,
+        output_format="subrip",
+        operations=settings.second_pass_operations,
+        include_settings=False,
+        multiple_replace=False,
+        action="second preprocessing pass",
+    )
+    read_srt(output)
+    logger.info("Subtitle Edit: second English space-cleanup pass complete: %s", output)
+    return output

@@ -91,10 +91,12 @@ subtitle_edit:
   dotnet_executable: "dotnet"
   settings_file: "subtitle_edit_settings.json"
   multiple_replace_file: "subtitle_edit_multiple_replace.template"
-  operations:
+  first_pass_operations:
     - "--remove-text-for-hi"
     - "--remove-line-breaks"
     - "--fix-common-errors-rules:FixEmptyLines,FixInvalidItalicTags,FixUnneededSpaces,FixMissingSpaces,FixUnneededPeriods,FixCommas,FixShortLines,FixDoubleApostrophes,FixCommonOcrErrors,FixMissingOpenBracket,FixDoubleGreaterThan,FixDoubleDash,FixHyphensRemoveDashSingleLine,AddMissingQuotes"
+  second_pass_operations:
+    - "--fix-common-errors-rules:FixUnneededSpaces"
 
 # Glossary settings
 glossary:

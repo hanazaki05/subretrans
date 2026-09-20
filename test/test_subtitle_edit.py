@@ -17,7 +17,14 @@ REVISION = "7fca79c1b0f88e6cd59d5800f9c0b49c642a13b9"
 REPOSITORY = "https://github.com/SubtitleEdit/subtitleedit.git"
 
 
-def settings(tmp_path: Path, *, operations: tuple[str, ...] = ()) -> SubtitleEditSettings:
+def settings(
+    tmp_path: Path,
+    *,
+    first_pass_operations: tuple[str, ...] = (),
+    second_pass_operations: tuple[str, ...] = (
+        "--fix-common-errors-rules:FixUnneededSpaces",
+    ),
+) -> SubtitleEditSettings:
     return SubtitleEditSettings(
         repository_url=REPOSITORY,
         revision=REVISION,
@@ -26,7 +33,8 @@ def settings(tmp_path: Path, *, operations: tuple[str, ...] = ()) -> SubtitleEdi
         dotnet_executable="dotnet-test",
         settings_file=tmp_path / "subtitle-edit-settings.json",
         multiple_replace_file=tmp_path / "multiple-replace.template",
-        operations=operations,
+        first_pass_operations=first_pass_operations,
+        second_pass_operations=second_pass_operations,
     )
 
 
@@ -36,7 +44,10 @@ def settings(tmp_path: Path, *, operations: tuple[str, ...] = ()) -> SubtitleEdi
         ({"repository_url": ""}, "repository_url must be a non-empty"),
         ({"revision": "abc"}, "40-character hexadecimal"),
         ({"dotnet_executable": "  "}, "dotnet_executable must be a non-empty"),
-        ({"operations": ("--remove-text-for-hearing-impaired", "")}, "operations"),
+        (
+            {"first_pass_operations": ("--remove-text-for-hearing-impaired", "")},
+            "first_pass_operations",
+        ),
     ],
 )
 def test_settings_reject_invalid_values(
@@ -50,7 +61,10 @@ def test_settings_reject_invalid_values(
         "dotnet_executable": "dotnet",
         "settings_file": tmp_path / "subtitle-edit-settings.json",
         "multiple_replace_file": tmp_path / "multiple-replace.template",
-        "operations": (),
+        "first_pass_operations": (),
+        "second_pass_operations": (
+            "--fix-common-errors-rules:FixUnneededSpaces",
+        ),
     }
     values.update(overrides)
 
@@ -225,7 +239,13 @@ def test_preprocess_invokes_exact_command_and_strictly_parses_output(
 ) -> None:
     configured = settings(
         tmp_path,
-        operations=("--remove-text-for-hearing-impaired", "--fix-common-errors"),
+        first_pass_operations=(
+            "--remove-text-for-hearing-impaired",
+            "--fix-common-errors",
+        ),
+        second_pass_operations=(
+            "--fix-common-errors-rules:FixUnneededSpaces",
+        ),
     )
     input_path = tmp_path / "episode.ass"
     output_path = tmp_path / "episode.srt"
@@ -239,7 +259,10 @@ def test_preprocess_invokes_exact_command_and_strictly_parses_output(
     ) -> subprocess.CompletedProcess[str]:
         assert check and capture_output and text
         seen.append(argv)
-        output_path.write_text(
+        output_argument = next(
+            value for value in argv if value.startswith("--output-filename:")
+        )
+        Path(output_argument.split(":", 1)[1]).write_text(
             "1\n00:00:01,000 --> 00:00:02,000\nLine\n", encoding="utf-8"
         )
         return subprocess.CompletedProcess(argv, 0, stdout='{"success":true}', stderr="")
@@ -247,13 +270,14 @@ def test_preprocess_invokes_exact_command_and_strictly_parses_output(
     monkeypatch.setattr(subtitle_edit.subprocess, "run", fake_run)
 
     assert preprocess_with_seconv(configured, input_path, output_path) == output_path
+    first_pass_path = tmp_path / "episode.subtitle-edit-first-pass.srt"
     assert seen == [
         [
             "dotnet-test",
             "/build/seconv.dll",
             str(input_path),
             "subrip",
-            f"--output-filename:{output_path}",
+            f"--output-filename:{first_pass_path}",
             "--overwrite",
             "--encoding:utf-8-no-bom",
             "--json",
@@ -261,7 +285,18 @@ def test_preprocess_invokes_exact_command_and_strictly_parses_output(
             "--remove-text-for-hearing-impaired",
             "--fix-common-errors",
             f"--multiple-replace:{configured.multiple_replace_file}",
-        ]
+        ],
+        [
+            "dotnet-test",
+            "/build/seconv.dll",
+            str(first_pass_path),
+            "subrip",
+            f"--output-filename:{output_path}",
+            "--overwrite",
+            "--encoding:utf-8-no-bom",
+            "--json",
+            "--fix-common-errors-rules:FixUnneededSpaces",
+        ],
     ]
 
 

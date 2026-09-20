@@ -244,17 +244,22 @@ def load_subtitle_edit_settings(yaml_path: str | Path) -> SubtitleEditSettings:
             "dotnet_executable",
             "settings_file",
             "multiple_replace_file",
-            "operations",
+            "first_pass_operations",
+            "second_pass_operations",
         },
     )
 
-    raw_operations = section["operations"]
-    if not isinstance(raw_operations, list) or not raw_operations:
-        raise ValueError("subtitle_edit.operations must be a non-empty list")
-    operations = tuple(
-        _nonempty_string(operation, f"subtitle_edit.operations[{index}]")
-        for index, operation in enumerate(raw_operations)
-    )
+    parsed_operations: dict[str, tuple[str, ...]] = {}
+    for field_name in ("first_pass_operations", "second_pass_operations"):
+        raw_operations = section[field_name]
+        if not isinstance(raw_operations, list) or not raw_operations:
+            raise ValueError(f"subtitle_edit.{field_name} must be a non-empty list")
+        parsed_operations[field_name] = tuple(
+            _nonempty_string(
+                operation, f"subtitle_edit.{field_name}[{index}]"
+            )
+            for index, operation in enumerate(raw_operations)
+        )
 
     return SubtitleEditSettings(
         repository_url=_nonempty_string(
@@ -278,5 +283,6 @@ def load_subtitle_edit_settings(yaml_path: str | Path) -> SubtitleEditSettings:
             "subtitle_edit.multiple_replace_file",
             yaml_dir,
         ),
-        operations=operations,
+        first_pass_operations=parsed_operations["first_pass_operations"],
+        second_pass_operations=parsed_operations["second_pass_operations"],
     )
