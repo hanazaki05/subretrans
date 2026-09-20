@@ -20,11 +20,7 @@ def initial_state(
     return {
         "artifact_path": "/tmp/input.ass",
         "artifact_hash": "input-hash",
-        "translation_manifest_path": (
-            "/tmp/translations.json"
-            if translation_mode == "parallel_initial"
-            else None
-        ),
+        "translation_manifest_path": None,
         "translation_mode": translation_mode,
         "stage": "preprocess",
         "refine_chunk_cursor": 0,
@@ -41,6 +37,8 @@ def recording_handlers(calls: list[str]) -> dict[Stage, StageHandler]:
         def handler(state: PipelineState) -> dict[str, Any]:
             calls.append(stage)
             assert state["stage"] == stage
+            if stage == "preprocess" and state["translation_mode"] == "parallel_initial":
+                return {"translation_manifest_path": "/tmp/translations.json"}
             if stage == "qa":
                 return {"qa_conclusion": "passed"}
             return {}

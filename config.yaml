@@ -28,6 +28,43 @@ terminology_model:
   #key_file: "key-terminology"  # Path to model-specific API key file
   #base_url: "https://another.url/v1"  # Model-specific endpoint URL
 
+# Memoryless first-pass translation provider. This is independent from the
+# serial refinement model and can run batches concurrently.
+translation_model:
+  protocol: "openai-responses"
+  name: "gemini-3-pro-preview"
+  key_file: "key-yunwu"
+  base_url: "https://yunwu.ai/v1"
+  timeout: 800
+  max_retries: 0
+
+# Agent pipeline persistence and initial-translation settings.
+pipeline:
+  state_dir: ".subretrans-runs"
+  checkpoint_db: ".subretrans-runs/pipeline.sqlite3"
+  batch_size: 20
+  max_workers: 4
+  source_language: "English"
+  target_language: "Simplified Chinese"
+  user_instruction: "Preserve subtitle line breaks and formatting tags."
+  episode_replacements:
+    - {from: "萨拉", to: "莎拉"}
+    - {from: "罗伯茨", to: "罗伯特"}
+    - {from: "圣迭戈", to: "圣地亚哥"}
+    - {from: "SECNAV", to: "SecNav"}
+    - {from: "A.J.", to: "AJ"}
+    - {from: "A.J", to: "AJ"}
+
+subtitle_edit:
+  repository_url: "https://github.com/SubtitleEdit/subtitleedit.git"
+  revision: "7fca79c1b0f88e6cd59d5800f9c0b49c642a13b9"
+  source_dir: ".subretrans-tools/subtitleedit"
+  build_dir: ".subretrans-tools/seconv"
+  dotnet_executable: "dotnet"
+  operations:
+    - "--fix-common-errors"
+    - "--remove-text-for-hi"
+
 # Token management
 tokens:
   max_context_tokens: 160000

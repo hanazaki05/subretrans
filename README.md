@@ -64,6 +64,36 @@ echo "YOUR_KEY" > key
 ### Current limit:
 The ASS subtitle pairs are detected accorading to `example_input.ass` file, so you need to follow this format.
 
+## Agent Pipeline
+
+The persistent pipeline has two modes:
+
+```bash
+# Subtitle Edit preprocessing -> parallel initial translation -> serial proofreading
+./run.sh pipeline run source.en.srt release.ass \
+  --mode parallel_initial --thread-id episode-s07e01 --config config.yaml
+
+# Existing ASS -> serial translation/proofreading with incremental episode memory
+./run.sh pipeline run bilingual.ass release.ass \
+  --mode serial_memory --thread-id episode-s07e02 --config config.yaml
+
+# Resume the final human-review gate
+./run.sh pipeline review episode-s07e01 approve --config config.yaml
+```
+
+`parallel_initial` wraps Subtitle Edit's official headless `seconv` project.
+On first use it clones the configured repository revision, builds `seconv`, and
+converts/cleans the source into the run's UTF-8 SRT artifact. Building the
+pinned source requires the .NET 10 SDK/runtime. The generic ASS normalization
+and structural QA live in `subtitle_processing.py`; show/episode replacements
+are ordered rules under `pipeline.episode_replacements` rather than built into
+that module.
+
+`parallel_initial` never receives glossary or story memory, so its batches can
+run independently. The following serial refinement stage maintains the
+incremental story description. `serial_memory` skips initial translation and
+uses that same serial refinement path directly on an existing ASS artifact.
+
 ## Installation
 
 ### Prerequisites

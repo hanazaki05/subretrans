@@ -6,8 +6,11 @@ This is the SDK version that supports both streaming and non-streaming modes.
 """
 
 import argparse
+import hashlib
+import json
 import sys
 import os
+import tempfile
 import time
 import yaml
 from typing import Optional
@@ -86,6 +89,53 @@ def load_memory_checkpoint(checkpoint_path: str) -> Optional[GlobalMemory]:
     if not validate_memory_structure(payload):
         raise ValueError(f"Invalid memory checkpoint: {checkpoint_path}")
     return GlobalMemory.from_dict(payload)
+
+
+def file_sha256(path: str) -> str:
+    """Return the SHA-256 digest for an artifact."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def save_refine_progress(
+    progress_path: str,
+    *,
+    next_pair: int,
+    artifact_path: str,
+    memory_checkpoint_path: Optional[str],
+) -> None:
+    """Atomically commit the serial refinement recovery point."""
+    payload = {
+        "version": 1,
+        "next_pair": next_pair,
+        "artifact_path": artifact_path,
+        "artifact_hash": file_sha256(artifact_path),
+        "memory_checkpoint_path": memory_checkpoint_path,
+        "memory_hash": (
+            file_sha256(memory_checkpoint_path)
+            if memory_checkpoint_path is not None
+            else None
+        ),
+    }
+    destination = os.path.abspath(progress_path)
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.",
+        suffix=".tmp",
+        dir=os.path.dirname(destination),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def apply_corrections_to_global_pairs(
@@ -175,7 +225,9 @@ def process_subtitles(
     api_mode: str = "chat-completion",
     use_stream: bool = False,
     resume_index: Optional[int] = None,
-    enable_checkpoint: bool = False
+    enable_checkpoint: bool = False,
+    checkpoint_path_override: Optional[str] = None,
+    progress_manifest_path: Optional[str] = None,
 ) -> bool:
     """
     Main processing function for subtitle refinement using SDK.
@@ -188,6 +240,8 @@ def process_subtitles(
         use_stream: Whether to use stream mode (chat-completion only; response always streams)
         resume_index: Optional pair index to resume from (skips pairs before this index)
         enable_checkpoint: Whether to persist episode memory after each chunk
+        checkpoint_path_override: Run-scoped memory checkpoint path
+        progress_manifest_path: Run-scoped serial refinement progress file
 
     Returns:
         True if successful, False otherwise
@@ -318,7 +372,7 @@ def process_subtitles(
         # Load the complete episode-memory checkpoint if enabled. The current
         # prompt template remains authoritative for user-defined terminology.
         if enable_checkpoint:
-            checkpoint_path = get_checkpoint_path(input_path)
+            checkpoint_path = checkpoint_path_override or get_checkpoint_path(input_path)
             checkpoint_memory = load_memory_checkpoint(checkpoint_path)
             if checkpoint_memory is not None:
                 global_memory = checkpoint_memory
@@ -488,22 +542,27 @@ def process_subtitles(
                 # Update global memory
                 global_memory = update_global_memory(global_memory, corrected_pairs, config)
 
-                # Ensure we don't keep redundant learned entries and persist memory each chunk (if enabled)
+                # Ensure we don't keep redundant learned entries.
                 prune_learned_glossary("after memory update")
-                if enable_checkpoint and checkpoint_path:
-                    save_memory_checkpoint(global_memory, checkpoint_path)
 
                 # Write per-block updates if enabled
                 if config.per_block_update:
-                    try:
-                        updated_ass_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
-                        output_content = render_ass_file(header, updated_ass_lines)
-                        write_ass_file(output_path, output_content)
-                        # Always show save status (not just in verbose mode)
-                        missing_note = f", {len(missing_ids)} missing" if missing_ids else ""
-                        print(f"  [Per-block] ✓ Updated pairs {chunk_first_id}-{chunk_last_id}{missing_note} ({cumulative_pairs_processed}/{len(pairs)} total) in {output_path}")
-                    except Exception as e:
-                        print(f"  [Per-block] ✗ Failed to save progress: {e}")
+                    updated_ass_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
+                    output_content = render_ass_file(header, updated_ass_lines)
+                    write_ass_file(output_path, output_content)
+                    missing_note = f", {len(missing_ids)} missing" if missing_ids else ""
+                    print(f"  [Per-block] ✓ Updated pairs {chunk_first_id}-{chunk_last_id}{missing_note} ({cumulative_pairs_processed}/{len(pairs)} total) in {output_path}")
+
+                # Commit memory only after the corresponding artifact write.
+                if enable_checkpoint and checkpoint_path and config.per_block_update:
+                    save_memory_checkpoint(global_memory, checkpoint_path)
+                if progress_manifest_path and config.per_block_update:
+                    save_refine_progress(
+                        progress_manifest_path,
+                        next_pair=cumulative_pairs_processed,
+                        artifact_path=output_path,
+                        memory_checkpoint_path=checkpoint_path,
+                    )
 
                 # Check if memory needs compression
                 memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
@@ -521,8 +580,15 @@ def process_subtitles(
                         print(f"  Memory compressed: {memory_tokens} → {new_size} tokens")
 
                         # Save compressed memory to checkpoint (if enabled)
-                        if enable_checkpoint and checkpoint_path:
+                        if enable_checkpoint and checkpoint_path and config.per_block_update:
                             save_memory_checkpoint(global_memory, checkpoint_path)
+                        if progress_manifest_path and config.per_block_update:
+                            save_refine_progress(
+                                progress_manifest_path,
+                                next_pair=cumulative_pairs_processed,
+                                artifact_path=output_path,
+                                memory_checkpoint_path=checkpoint_path,
+                            )
                     except LLMAPIError as e:
                         print(f"  Warning: Memory compression failed: {e}")
                         print(f"  Continuing with uncompressed memory...")
@@ -541,6 +607,15 @@ def process_subtitles(
         # Write output
         write_ass_file(output_path, output_content)
         print(f"  Output written to: {output_path}")
+        if enable_checkpoint and checkpoint_path:
+            save_memory_checkpoint(global_memory, checkpoint_path)
+        if progress_manifest_path:
+            save_refine_progress(
+                progress_manifest_path,
+                next_pair=cumulative_pairs_processed,
+                artifact_path=output_path,
+                memory_checkpoint_path=checkpoint_path,
+            )
 
         # Step 8: Print statistics
         cost = estimate_cost(
@@ -615,6 +690,10 @@ Note: Per-block update is enabled by default for data safety (write after each c
     parser.add_argument(
         "output",
         help="Output .ass subtitle file"
+    )
+    parser.add_argument(
+        "--config",
+        help="YAML configuration path (default: repository config.yaml)",
     )
     parser.add_argument(
         "--api-mode",
@@ -708,6 +787,14 @@ Note: Per-block update is enabled by default for data safety (write after each c
         help="Persist glossary and incremental story description in .memory.yaml"
     )
     parser.add_argument(
+        "--checkpoint-path",
+        help="Explicit run-scoped memory checkpoint path",
+    )
+    parser.add_argument(
+        "--progress-manifest",
+        help="Explicit run-scoped serial refinement progress JSON path",
+    )
+    parser.add_argument(
         "--per-block-update",
         action="store_true",
         default=None,
@@ -748,6 +835,7 @@ Note: Per-block update is enabled by default for data safety (write after each c
     # Load configuration (SDK version)
     try:
         config = load_config_sdk(
+            yaml_file_path=args.config,
             model_name=args.model,
             api_mode=args.api_mode,
             use_stream=args.stream,
@@ -784,7 +872,9 @@ Note: Per-block update is enabled by default for data safety (write after each c
         api_mode=config.api_mode,
         use_stream=config.use_stream,
         resume_index=args.resume,
-        enable_checkpoint=args.checkpoint
+        enable_checkpoint=args.checkpoint or args.checkpoint_path is not None,
+        checkpoint_path_override=args.checkpoint_path,
+        progress_manifest_path=args.progress_manifest,
     )
 
     return 0 if success else 1

@@ -5,6 +5,7 @@
 # Usage:
 #   ./run.sh input.ass output.ass [options]             # Run subretrans.cli
 #   ./run.sh genreq input.ass --pairs-per-chunk 120     # Run subretrans.genreq
+#   ./run.sh pipeline run input.srt output.ass [...]     # Run agent pipeline
 #
 # Examples:
 #   ./run.sh ~/files/input.ass ~/files/output.ass --stream -v
@@ -39,6 +40,7 @@ unalias python3 &>/dev/null # IMPORTANT KEEP HERE
 VENV_PATH="$PROJECT_DIR/venv/bin/activate"
 CLI_PATH="$PROJECT_DIR/subretrans/cli.py"
 GENREQ_PATH="$PROJECT_DIR/subretrans/genreq.py"
+PIPELINE_CLI_PATH="$PROJECT_DIR/subretrans/pipeline_cli.py"
 
 # Debug info (uncomment to troubleshoot)
 # echo "Script path: $SCRIPT_PATH"
@@ -58,7 +60,16 @@ fi
 source "$VENV_PATH"
 
 # Check if first argument is "genreq"
-if [ "$1" = "genreq" ]; then
+if [ "$1" = "pipeline" ]; then
+    if [ ! -f "$PIPELINE_CLI_PATH" ]; then
+        echo "Error: pipeline_cli.py not found at: $PIPELINE_CLI_PATH"
+        exit 1
+    fi
+
+    shift
+    cd "$PROJECT_DIR" || exit 1
+    exec python -m subretrans.pipeline_cli "$@"
+elif [ "$1" = "genreq" ]; then
     # Run the prompt generator with remaining arguments
     if [ ! -f "$GENREQ_PATH" ]; then
         echo "Error: genreq.py not found at: $GENREQ_PATH"
