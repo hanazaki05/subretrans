@@ -14,7 +14,7 @@ api:
     temperature: 1.0
   refine:
     protocol: "google-gemini"
-    model: "gemini-3.1-pro-preview"
+    model: "gemini-3.8-flash"
     key_file: "key-openlux"
     base_url: "https://api.openlux.ai"
     timeout: 800
