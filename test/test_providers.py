@@ -8,8 +8,10 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from subretrans.providers import (
     ModelConfig,
     ModelProtocol,
+    ToolDefinition,
     build_chat_model,
     clean_response_text,
+    invoke_with_tools,
     invoke_text,
 )
 from subretrans.stats import UsageStats
@@ -244,6 +246,19 @@ def test_invoke_text_rejects_non_message_responses() -> None:
         )
     with pytest.raises(ValueError, match="no streamed chunks"):
         invoke_text(SimpleNamespace(stream=lambda messages: iter(())), [("human", "x")], stream=True)
+
+
+def test_invoke_with_tools_requires_a_positive_finite_budget() -> None:
+    tool = ToolDefinition("inspect", "Inspect context.", {"type": "object"})
+
+    with pytest.raises(ValueError, match="max_tool_steps must be a positive integer"):
+        invoke_with_tools(
+            SimpleNamespace(),
+            [("human", "check")],
+            [tool],
+            lambda name, arguments: {},
+            max_tool_steps=0,
+        )
 
 
 @pytest.mark.parametrize(

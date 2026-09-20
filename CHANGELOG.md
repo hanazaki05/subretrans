@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Frozen cue and effective-glossary manifests with deterministic evidence, authority, and episode-replacement validation.
+- Read-only QA suggestion pools and a separate bounded repair agent using a provider-neutral strict JSON action protocol, atomic 1--3 cue groups, persistent decisions/coverage, and immutable audit generations.
+- Bounded rank/name research through two independent Exa/model passes, public-page evidence snapshots, allowlisted reference-subtitle readers, and a read-only SSRF-resistant web fetcher.
+- A versioned `run.json` commit point that hashes artifacts, configuration, all prompt contents, cumulative budgets, and repair/research state.
+
 ### Changed
 - **One refine engine.** The legacy CLI engine (`cli.process_subtitles` and `llm.py`) is replaced by `subretrans/refine.py`; the agent pipeline and the standalone CLI call the same `refine_serial()`. Output, memory, and progress are written atomically after every chunk (the `--per-block-update` switch is gone because per-chunk commits are always on).
 - **One provider layer.** Every role, including OpenAI Responses and OpenAI-compatible chat endpoints, is called through LangChain via `providers.build_chat_model()` and `providers.invoke_text()`. Retries are the provider SDK's `max_retries`; the hand-rolled string-matching retry loops are removed. Streaming works for every protocol.
@@ -14,6 +20,9 @@ All notable changes to this project will be documented in this file.
 - `pipeline status <thread-id>` reports where a run stopped.
 - Library modules log through `logging`; `print` is limited to the final CLI summaries. `--debug`/`-vv` now also covers the refine stage.
 - Default `timeout` for the primer and agent roles in the shipped configs is 30000 seconds (was 1800).
+- QA no longer applies subtitle changes or writes review files. The repair stage always performs a coverage-tracked full sweep, and review export is confined to the run directory until explicit approval/release.
+- `api.repair`, `prompts.repair_path`, strict `repair`/`research` settings, and configured read-only reference roots replace `pipeline.agent_max_repair_attempts`.
+- Existing pipeline checkpoints are intentionally incompatible with the new run/prompt/repair schema and must be started as a new run; no implicit migration is attempted.
 
 ### Fixed
 - A failed cost lookup no longer fails a completed refinement.

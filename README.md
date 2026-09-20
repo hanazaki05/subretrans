@@ -23,9 +23,10 @@ committed on-disk state.
   sections and fields are errors.
 - **Agent pipeline**: Subtitle Edit preprocessing, memoryless parallel
   initial translation, SRT-to-ASS merge, serial refinement, deterministic
-  postprocessing, structural plus semantic QA with bounded targeted repairs,
-  and an explicit human-review gate. Every stage is checkpointed with
-  LangGraph and bound to artifact, memory, and prompt hashes.
+  postprocessing, frozen cue/effective-glossary manifests, read-only semantic
+  QA, bounded autonomous repair, and an explicit human-review gate. Every
+  committed stage is bound to artifact, memory, configuration, and prompt
+  hashes.
 - **Robust response handling**: `<think>` blocks and code fences are stripped,
   malformed intermediate representations are salvaged pair by pair, duplicate
   ids are deduplicated, and renumbered ids are remapped or refused.
@@ -112,40 +113,38 @@ Deterministic cleanup is the ordered allowlist under
 `postprocess.episode_replacements` and run only when the
 `episode_replacements` operation is enabled.
 
-QA first audits structure (paired events, empty text, timing order), then the
-`agent` role audits `qa.batch_size`-pair windows at every offset in
-`qa.window_offsets` with `qa.max_workers` concurrent requests. Each window
-receives the final refine memory as read-only context. A failed audit may
-return targeted Chinese replacements; conflicting repairs from overlapping
-windows are dropped and reported. Each applied repair produces a new artifact
-that is postprocessed and audited again, bounded by
-`pipeline.agent_max_repair_attempts`. QA progress is committed per wave and is
-keyed by artifact hash, batch layout, repair history, memory hash, and prompt
-hash, so a changed input invalidates old progress instead of reusing it.
+After deterministic cleanup, the run freezes a cue manifest and an effective
+glossary. The user glossary and configured episode replacements are
+authoritative; learned entries must pass evidence and conflict validation.
+Rank-and-name candidates can trigger two independent Exa-backed research
+passes. Search summaries are only discovery hints: accepted findings require
+bounded public-page evidence, compatible A/B conclusions, and deterministic
+revalidation. Missing credentials, insufficient evidence, or exhausted
+research budgets become human-review items.
 
-The review candidate is written beside the input as
-`<release stem>.review<ext>` (for example `JAG.S07E07.en-cn.review.ass`).
-Approval publishes that file, including manual edits, to the release path.
+QA first audits structure, then the `agent` role audits overlapping windows.
+It can only write a persisted suggestion pool. The separate `repair` role may
+inspect context and approved reference roots, dismiss or merge suggestions,
+open missed issues, and stage complete 1--3 cue groups. The host enforces cue
+identity, ASS structure, the frozen glossary, episode replacements, base
+hashes, and atomic group application. A mandatory full-episode sweep runs even
+when QA reports no issues. Postprocessed candidates are re-audited within the
+same persistent run budget; repeated issues reuse their prior decisions rather
+than silently reopening.
+
+The review candidate is exported only inside the run directory. Approval
+copies that reviewed artifact to an immutable approved snapshot; the separate
+release action publishes it to the requested destination.
 
 ### Run state
 
-Each run lives in `pipeline.state_dir/<thread-id>/` with `run.json`, the
-stage artifacts (`preprocessed.en.srt`, `translation.json`,
-`translated.zh.srt`, `merged.ass`, `refined.ass`, `memory.yaml`,
-`refine-progress.json`, `postprocessed*.ass`, `qa-progress-*.json`,
-`qa-repair-*.ass`, `qa-repair-history.json`), and the shared LangGraph
-SQLite checkpoint at `pipeline.checkpoint_db`. A thread id can be started only
-once; use `resume` to continue it.
-
-### TODO: Rank-aware name verification
-
-When QA detects a full personal name paired with a military rank, run two
-independent Exa research passes before proposing a terminology decision. The
-first pass should identify the person, service branch, and rank context; the
-second should independently verify the Chinese rank translation in the
-relevant military or episode context. Add a learned term only when both passes
-agree. Conflicting or insufficient evidence must remain a human-review item and
-must not override `user_glossary`.
+Each run lives in `pipeline.state_dir/<thread-id>/`. `run.json` is the
+authoritative commit point; it records immutable artifact versions, dependency
+hashes, prompt/configuration hashes, repair/research budgets, and the current
+heads. Repair checkpoints are immutable generations whose pointer is moved
+only after every artifact and audit exchange has been written. Resume rejects
+changed dependencies or malformed state instead of guessing how to continue.
+A thread id can be started only once; use `resume` to continue it.
 
 ## Standalone Refinement CLI
 
@@ -186,7 +185,7 @@ All settings live in [config.yaml](config.yaml); every section is required and
 paths are relative to the YAML file.
 
 ```yaml
-api:                    # four roles: primer, refine, extraction, agent
+api:                    # five roles: primer, refine, extraction, agent, repair
   refine:
     protocol: google-gemini          # openai-responses | openai-chat-compatible | anthropic-messages | google-gemini
     model: gemini-3.8-flash
@@ -200,14 +199,19 @@ api:                    # four roles: primer, refine, extraction, agent
 pipeline:
   state_dir: .subretrans-runs
   checkpoint_db: .subretrans-runs/pipeline.sqlite3
-  agent_max_repair_attempts: 2
 prompts:
   shared_path: prompts/shared_translation_rules.md
   refine_path: prompts/refine_task.md
   qa_path: prompts/qa_task.md
+  repair_path: prompts/repair_task.md
 primer:     { batch_size, max_workers, source_language, target_language, user_instruction }
 refine:     { batch_size, chunk_token_soft_limit, memory_token_limit, intermediate_representation }
 qa:         { batch_size, max_workers, window_offsets }
+repair:     { max_tool_steps, max_full_sweeps, max_repair_attempts, context_radius,
+              max_group_span, max_glossary_repair_attempts }
+reference_roots: [../bsub]  # exactly one read-only subtitle-reference root
+research:   { exa_key_file, timeout, max_requests, max_fetches_per_request,
+              max_response_bytes }
 postprocess: { operations, episode_replacements }
 subtitle_edit: { repository_url, revision, source_dir, build_dir, dotnet_executable,
                  settings_file, multiple_replace_file, first_pass_operations, second_pass_operations }
@@ -228,6 +232,7 @@ Prompts are Markdown files under `prompts/`:
 
 - Refine system prompt = `shared_translation_rules.md` + `refine_task.md`
 - QA system prompt = `shared_translation_rules.md` + `qa_task.md`
+- Repair system prompt = `shared_translation_rules.md` + `repair_task.md`
 
 The shared file holds the Chinese style rules, JAG-specific context, the
 `### User Terminology (Authoritative Glossary)` list, and the cross-line
@@ -236,8 +241,8 @@ entries plus the learned terminology, an `### Incremental Story Description`
 block is inserted after it, sections are renumbered, and the few-shot examples
 are converted to the configured intermediate representation. A template
 without the glossary section is a configuration error. New pipeline runs hash
-the config file and all three prompt files into `prompt_version`, so editing a
-prompt invalidates old QA progress instead of silently reusing it.
+the config file and all four prompt files, so editing a prompt invalidates old
+downstream progress instead of silently reusing it.
 
 ## Project Structure
 
@@ -245,7 +250,7 @@ prompt invalidates old QA progress instead of silently reusing it.
 .
 ├── run.sh                          # Entry point: cli, genreq, pipeline
 ├── config.yaml                     # Single strict configuration
-├── prompts/                        # Shared rules, refine task, QA task
+├── prompts/                        # Shared rules plus refine, QA, and repair tasks
 ├── subtitle_edit_settings.json     # Subtitle Edit batch-convert profile
 ├── subtitle_edit_multiple_replace.template
 ├── subretrans/
@@ -261,8 +266,12 @@ prompt invalidates old QA progress instead of silently reusing it.
 │   ├── subtitle_processing.py      # SRT/ASS merge, postprocess, structural QA
 │   ├── subtitle_edit.py            # Pinned seconv build and two-pass cleanup
 │   ├── translation.py, model_translation.py   # Memoryless parallel first pass
-│   ├── model_agent.py              # Semantic QA and targeted repairs
-│   ├── pipeline.py, state.py       # LangGraph graph and checkpointed state
+│   ├── model_agent.py              # Read-only semantic QA suggestions
+│   ├── repair.py                   # Bounded repair tools, ledger, atomic groups
+│   ├── cue_manifest.py, glossary_validation.py
+│   ├── research.py, webfetch.py, reference_reader.py
+│   ├── run_manifest.py             # Authoritative immutable run commit point
+│   ├── pipeline.py, state.py       # LangGraph graph and minimal checkpoint state
 │   ├── stage_handlers.py           # Filesystem stage implementations
 │   ├── pipeline_cli.py             # run / status / resume / review
 │   ├── cli.py                      # Standalone refinement CLI

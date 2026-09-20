@@ -70,6 +70,7 @@ def write_config(tmp_path: Path, **refine_overrides: object) -> Path:
     (tmp_path / "shared.md").write_text(SHARED_PROMPT, encoding="utf-8")
     (tmp_path / "refine.md").write_text(REFINE_PROMPT, encoding="utf-8")
     (tmp_path / "qa.md").write_text("QA task.\n", encoding="utf-8")
+    (tmp_path / "repair.md").write_text("Repair task.\n", encoding="utf-8")
     role = {
         "protocol": "openai-chat-compatible",
         "key_file": str(key),
@@ -90,17 +91,17 @@ def write_config(tmp_path: Path, **refine_overrides: object) -> Path:
     payload = {
         "api": {
             name: {**role, "model": f"{name}-model"}
-            for name in ("primer", "refine", "extraction", "agent")
+            for name in ("primer", "refine", "extraction", "agent", "repair")
         },
         "pipeline": {
             "state_dir": str(tmp_path / "state"),
             "checkpoint_db": str(tmp_path / "state/checkpoints.sqlite3"),
-            "agent_max_repair_attempts": 1,
         },
         "prompts": {
             "shared_path": str(tmp_path / "shared.md"),
             "refine_path": str(tmp_path / "refine.md"),
             "qa_path": str(tmp_path / "qa.md"),
+            "repair_path": str(tmp_path / "repair.md"),
         },
         "primer": {
             "batch_size": 2,
@@ -111,6 +112,22 @@ def write_config(tmp_path: Path, **refine_overrides: object) -> Path:
         },
         "refine": refine,
         "qa": {"batch_size": 10, "max_workers": 1, "window_offsets": [0]},
+        "repair": {
+            "max_tool_steps": 8,
+            "max_full_sweeps": 1,
+            "max_repair_attempts": 1,
+            "context_radius": 2,
+            "max_group_span": 3,
+            "max_glossary_repair_attempts": 1,
+        },
+        "research": {
+            "exa_key_file": None,
+            "timeout": 10,
+            "max_requests": 2,
+            "max_fetches_per_request": 2,
+            "max_response_bytes": 65536,
+        },
+        "reference_roots": [str(tmp_path / "references")],
         "postprocess": {"operations": [], "episode_replacements": []},
         "subtitle_edit": {
             "repository_url": "https://example.test/subtitleedit.git",
@@ -377,7 +394,8 @@ def test_refine_serial_commits_artifact_memory_and_progress(tmp_path: Path, mode
     assert "Hello" in rendered and "你好！" in rendered and "再见！" in rendered
     saved = yaml.safe_load(memory.read_text(encoding="utf-8"))
     assert saved["user_glossary"] == [{"eng": "Harm", "zh": "哈姆"}, {"eng": "Mac", "zh": "麦可"}]
-    assert [entry["eng"] for entry in saved["glossary"]] == ["Webb"]
+    assert saved["glossary"] == []
+    assert any(decision["eng"] == "Webb" for decision in saved["glossary_decisions"])
     assert saved["story_description"] == "Webb meets Harm."
     assert "style_notes" not in saved
     assert atomic_calls == [memory, memory]

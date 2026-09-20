@@ -24,6 +24,29 @@ def sha256_file(path: str | os.PathLike[str]) -> str:
     return digest.hexdigest()
 
 
+def canonical_json_bytes(payload: Any) -> bytes:
+    """Encode JSON deterministically for content-addressed metadata.
+
+    Hashes of manifests and evidence metadata must not depend on dictionary
+    insertion order, indentation, or a trailing newline.  ``allow_nan=False``
+    also prevents a non-portable NaN/Infinity spelling from entering a hash.
+    """
+
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def sha256_json(payload: Any) -> str:
+    """Return the SHA-256 digest of a canonical JSON representation."""
+
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
 def require_distinct_paths(first: str | os.PathLike[str], second: str | os.PathLike[str]) -> None:
     """Reject in-place processing so an input is never clobbered by its output."""
 

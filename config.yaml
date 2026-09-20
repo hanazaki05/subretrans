@@ -42,18 +42,28 @@ api:
     max_output_tokens: 131072
     reasoning_effort: null
     temperature: 1.0
+  repair:
+    protocol: "anthropic-messages"
+    model: "deepseek-v4.1-flash"
+    key_file: "key-zenmux"
+    base_url: "https://zenmux.ai/api/anthropic"
+    timeout: 30000
+    max_retries: 2
+    max_output_tokens: 131072
+    reasoning_effort: null
+    temperature: 1.0
 
-# Persistent pipeline state and agent repair policy.
+# Persistent pipeline state.
 pipeline:
   state_dir: ".subretrans-runs"
   checkpoint_db: ".subretrans-runs/pipeline.sqlite3"
-  agent_max_repair_attempts: 2
 
 # Prompt composition. Shared rules are prepended to each stage-specific task.
 prompts:
   shared_path: "prompts/shared_translation_rules.md"
   refine_path: "prompts/refine_task.md"
   qa_path: "prompts/qa_task.md"
+  repair_path: "prompts/repair_task.md"
 
 primer:
   batch_size: 60
@@ -72,6 +82,24 @@ qa:
   batch_size: 64
   max_workers: 4
   window_offsets: [0, 32]
+
+repair:
+  max_tool_steps: 24
+  max_full_sweeps: 1
+  max_repair_attempts: 2
+  context_radius: 3
+  max_group_span: 3
+  max_glossary_repair_attempts: 2
+
+reference_roots: ["../bsub"]
+
+research:
+  # The research client reads this lazily; a missing key escalates the item.
+  exa_key_file: "key-exa"
+  timeout: 20
+  max_requests: 8
+  max_fetches_per_request: 3
+  max_response_bytes: 200000
 
 postprocess:
   operations:

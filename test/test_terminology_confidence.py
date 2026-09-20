@@ -22,7 +22,7 @@ def test_parsing_filters_by_threshold_type_and_shape() -> None:
     high = _parse_terminology_entries(RAW, min_confidence=0.6)
     low = _parse_terminology_entries(RAW, min_confidence=0.4)
 
-    assert high == [TerminologyEntry("Bryer", "布赖尔", "person", 0.8, (20, 21))]
+    assert high == [TerminologyEntry("Bryer", "布赖尔", "person", 0.8, (20,))]
     assert [entry.eng for entry in low] == ["Bryer", "Chris"]
-    assert high[0].to_dict()["evidence_ids"] == [20, 21]
+    assert high[0].to_dict()["evidence_ids"] == [20]
     assert _parse_terminology_entries("not a list", min_confidence=0.6) == []

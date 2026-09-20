@@ -10,6 +10,7 @@ from subretrans.subtitle_processing import (
     audit_ass,
     merge_srt_to_ass,
     postprocess_ass,
+    postprocess_chinese_cue,
     read_srt,
     write_srt,
 )
@@ -146,6 +147,17 @@ def test_postprocess_ass_runs_only_selected_operations(tmp_path: Path) -> None:
     )
 
     assert output.read_text(encoding="utf-8") == "Style: C3,Arial\n萨拉……\n"
+
+
+def test_postprocess_chinese_cue_is_local_and_honors_episode_authority() -> None:
+    assert postprocess_chinese_cue(
+        "{\\i1}罗伯茨……，{\\i0}",
+        ("clean_chinese_dialogue", "normalize_punctuation", "episode_replacements"),
+        (("罗伯茨", "罗伯特"),),
+    ) == "罗伯特..."
+
+    with pytest.raises(ValueError, match="unsupported postprocess"):
+        postprocess_chinese_cue("字幕", ("unknown",), ())
 
 
 def test_audit_ass_reports_structural_failures(tmp_path: Path) -> None:

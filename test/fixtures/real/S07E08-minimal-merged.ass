@@ -1,0 +1,15 @@
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Style: English3,Calibri
+Style: Chinese3,Microsoft YaHei
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: -1,0:00:21.84,0:00:24.80,English3,,0,0,0,,- Sir. -Good to see you, Lieutenant. Let's go on in.
+Dialogue:  1,0:00:21.84,0:00:24.80,Chinese3,,0,0,0,,- 长官。-很高兴见到你，上尉。我们进去吧。
+Dialogue: -1,0:00:39.16,0:00:41.60,English3,,0,0,0,,- Oh, my God. - Ma'am, are you all right?
+Dialogue:  1,0:00:39.16,0:00:41.60,Chinese3,,0,0,0,,- 哦，我的天哪。-女士，您没事吧？
+Dialogue: -1,0:00:41.68,0:00:43.29,English3,,0,0,0,,Where did he come from? I didn't even see him.
+Dialogue:  1,0:00:41.68,0:00:43.29,Chinese3,,0,0,0,,他从哪儿来的？我甚至都没看见他。

@@ -10,6 +10,8 @@ from subretrans.config import (
     PrimerSettings,
     PromptPaths,
     QASettings,
+    RepairSettings,
+    ResearchSettings,
     RefineSettings,
     RoleModelSettings,
     load_config,
@@ -53,11 +55,11 @@ def config_yaml(
 pipeline:
   state_dir: runtime/state
   checkpoint_db: runtime/checkpoints.sqlite
-  agent_max_repair_attempts: 2
 prompts:
   shared_path: prompts/shared.md
   refine_path: prompts/refine.md
   qa_path: prompts/qa.md
+  repair_path: prompts/repair.md
 primer:
   batch_size: {primer_batch_size}
   max_workers: 3
@@ -73,6 +75,20 @@ qa:
   batch_size: 40
   max_workers: 3
   window_offsets: [0, 20]
+repair:
+  max_tool_steps: 24
+  max_full_sweeps: 1
+  max_repair_attempts: 2
+  context_radius: 3
+  max_group_span: 3
+  max_glossary_repair_attempts: 2
+research:
+  exa_key_file: null
+  timeout: 20
+  max_requests: 8
+  max_fetches_per_request: 3
+  max_response_bytes: 200000
+reference_roots: [../bsub]
 postprocess:
   operations:
     - normalize_style_names
@@ -126,16 +142,19 @@ def test_load_config_validates_every_section_once(tmp_path: Path) -> None:
     assert config.pipeline == PipelineSettings(
         state_dir=(tmp_path / "runtime/state").resolve(),
         checkpoint_db=(tmp_path / "runtime/checkpoints.sqlite").resolve(),
-        agent_max_repair_attempts=2,
     )
     assert config.prompts == PromptPaths(
         shared=(tmp_path / "prompts/shared.md").resolve(),
         refine=(tmp_path / "prompts/refine.md").resolve(),
         qa=(tmp_path / "prompts/qa.md").resolve(),
+        repair=(tmp_path / "prompts/repair.md").resolve(),
     )
     assert config.primer == PrimerSettings(8, 3, "English", "Simplified Chinese", "Preserve speaker tone.")
     assert config.refine == RefineSettings(5, 80000, 4000, "xml-pair")
     assert config.qa == QASettings(40, 3, (0, 20))
+    assert config.repair == RepairSettings(24, 1, 2, 3, 3, 2)
+    assert config.research == ResearchSettings(None, 20.0, 8, 3, 200000)
+    assert config.reference_roots == ((tmp_path / "../bsub").resolve(),)
     assert config.postprocess == PostprocessSettings(
         ("normalize_style_names", "episode_replacements"), (("old", "new"),)
     )
@@ -176,7 +195,17 @@ def test_load_config_accepts_absolute_paths_and_nulls(tmp_path: Path) -> None:
     assert config.pipeline.state_dir == absolute_state.resolve()
     assert config.refine.batch_size is None
     assert config.primer.user_instruction is None
+    assert config.research.exa_key_file is None
     assert config.postprocess == PostprocessSettings((), ())
+
+
+def test_load_config_defers_non_null_exa_key_loading(tmp_path: Path) -> None:
+    content = config_yaml().replace("exa_key_file: null", "exa_key_file: secrets/exa.key")
+
+    config = load_config(write_config(tmp_path, content))
+
+    assert config.research.exa_key_file == (tmp_path / "secrets/exa.key").resolve()
+    assert not config.research.exa_key_file.exists()
 
 
 @pytest.mark.parametrize(
@@ -195,8 +224,12 @@ def test_load_config_accepts_absolute_paths_and_nulls(tmp_path: Path) -> None:
         ),
         (config_yaml(source_language="''"), "source_language must be a non-empty"),
         (
-            config_yaml().replace("  agent_max_repair_attempts: 2", "  agent_max_repair_attempts: -1"),
-            "agent_max_repair_attempts must be a non-negative integer",
+            config_yaml().replace("repair:\n  max_tool_steps: 24", "repair:\n  max_tool_steps: -1"),
+            "repair.max_tool_steps must be a positive integer",
+        ),
+        (
+            config_yaml().replace("  max_group_span: 3", "  max_group_span: 4"),
+            "repair.max_group_span must not exceed 3",
         ),
         (
             config_yaml().replace("  max_workers: 3\n  source", "  max_workers: 3\n  extra: true\n  source"),
@@ -215,6 +248,10 @@ def test_load_config_accepts_absolute_paths_and_nulls(tmp_path: Path) -> None:
         (config_yaml(first_pass_operations="[]"), "first_pass_operations must be a non-empty list"),
         (config_yaml(first_pass_operations="['']"), r"first_pass_operations\[0\] must be a non-empty string"),
         (config_yaml() + "legacy_section: {}\n", "unknown sections: legacy_section"),
+        (
+            config_yaml().replace("pipeline:\n  state_dir", "pipeline:\n  agent_max_repair_attempts: 2\n  state_dir"),
+            "pipeline has unknown fields: agent_max_repair_attempts",
+        ),
         (config_yaml().replace("glossary:\n  max_entries: 100\n  terminology_min_confidence: 0.6\n", ""), "missing sections: glossary"),
     ],
 )

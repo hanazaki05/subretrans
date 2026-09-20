@@ -14,6 +14,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
+from .glossary_validation import EffectiveGlossary, build_effective_glossary, normalize_term_key
 from .serializers import convert_json_examples_to_format
 
 if TYPE_CHECKING:
@@ -155,12 +156,12 @@ def parse_authoritative_glossary(template: str) -> list[dict[str, str]]:
 def _merge_glossaries(
     template_glossary: list[dict[str, str]], runtime_glossary: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Template order first, runtime entries override by case-insensitive key."""
+    """Template order first, runtime entries override by normalized key."""
 
     merged: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for entry in (*template_glossary, *runtime_glossary):
-        key = str(entry.get("eng", "")).casefold()
+        key = normalize_term_key(entry.get("eng", ""))
         if not key:
             continue
         if key not in merged:
@@ -169,36 +170,94 @@ def _merge_glossaries(
     return [merged[key] for key in order]
 
 
+def build_effective_prompt_glossary(
+    template_glossary: list[dict[str, str]],
+    memory: GlobalMemory,
+    *,
+    episode_replacements: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
+) -> EffectiveGlossary:
+    """Build the immutable glossary used by prompt and QA callers.
+
+    The template is the baseline authority and the runtime user glossary is
+    merged over it before configured episode replacements and learned terms are
+    validated.  Keeping this construction in one helper prevents prompt code
+    from accidentally displaying a different glossary than the QA payload.
+    """
+
+    merged_authority = _merge_glossaries(template_glossary, memory.user_glossary)
+    return build_effective_glossary(
+        merged_authority,
+        memory.glossary,
+        episode_replacements,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
+    )
+
+
+def _entry_value(entry: Any, name: str, default: Any = "") -> Any:
+    if isinstance(entry, dict):
+        return entry.get(name, default)
+    return getattr(entry, name, default)
+
+
 def render_terminology_section(
-    user_glossary: list[dict[str, Any]], learned_glossary: list[dict[str, Any]]
+    user_glossary: list[dict[str, Any]] | tuple[Any, ...],
+    learned_glossary: list[dict[str, Any]] | tuple[Any, ...],
+    *,
+    effective: EffectiveGlossary | None = None,
 ) -> str:
-    """Render the glossary section body: authoritative entries then the learned supplement."""
+    """Render authoritative entries then learned entries from one frozen view."""
+
+    if effective is not None:
+        user_glossary = effective.authoritative
+        learned_glossary = effective.learned
 
     lines = [
-        f"- {entry['eng']}: {entry['zh']}"
+        f"- {_entry_value(entry, 'eng')}: {_entry_value(entry, 'zh')}"
         for entry in user_glossary
-        if entry.get("eng") and entry.get("zh")
+        if _entry_value(entry, "eng") and _entry_value(entry, "zh")
     ]
     if learned_glossary:
         if lines:
             lines.append("")
         lines.append("**Learned Terminology (Supplement):**")
         for entry in learned_glossary:
-            eng, zh = entry.get("eng", ""), entry.get("zh", "")
+            eng, zh = _entry_value(entry, "eng"), _entry_value(entry, "zh")
             if eng and zh:
-                entry_type = entry.get("type", "")
+                entry_type = _entry_value(entry, "type", "")
                 suffix = f" ({entry_type})" if entry_type else ""
                 lines.append(f"- {eng}{suffix}: {zh}")
     return "\n".join(lines)
 
 
-def render_memory_sections(memory: GlobalMemory) -> str:
+def render_memory_sections(
+    memory: GlobalMemory,
+    *,
+    effective: EffectiveGlossary | None = None,
+    episode_replacements: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
+) -> str:
     """Render memory exactly as injected into the refine prompt, for token estimation."""
 
+    if effective is None:
+        effective = build_effective_glossary(
+            memory.user_glossary,
+            memory.glossary,
+            episode_replacements,
+            episode_id=episode_id,
+            manifest_hash=manifest_hash,
+            artifact_hash=artifact_hash,
+        )
     story = memory.story_description or EMPTY_STORY_PLACEHOLDER
     return (
         f"### {GLOSSARY_SECTION_TITLE}\n"
-        f"{render_terminology_section(memory.user_glossary, memory.glossary)}\n\n"
+        f"{render_terminology_section((), (), effective=effective)}\n\n"
         f"### {STORY_SECTION_TITLE}\n{story}\n"
     )
 
@@ -227,7 +286,16 @@ def _inject_story_block(template: str, story: str) -> str:
     return template[:end] + block + template[end:]
 
 
-def inject_memory_into_template(template: str, memory: GlobalMemory) -> str:
+def inject_memory_into_template(
+    template: str,
+    memory: GlobalMemory,
+    *,
+    episode_replacements: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
+    effective: EffectiveGlossary | None = None,
+) -> str:
     """Rewrite the glossary section with runtime memory and add the story block.
 
     The authoritative section is mandatory; template entries are kept and
@@ -239,8 +307,16 @@ def inject_memory_into_template(template: str, memory: GlobalMemory) -> str:
     if bounds is None:
         raise ValueError(f"prompt template has no '{GLOSSARY_SECTION_TITLE}' section")
     template_glossary = parse_template_glossary(template[bounds[0] : bounds[1]])
-    merged = _merge_glossaries(template_glossary, memory.user_glossary)
-    content = render_terminology_section(merged, memory.glossary)
+    if effective is None:
+        effective = build_effective_prompt_glossary(
+            template_glossary,
+            memory,
+            episode_replacements=episode_replacements,
+            episode_id=episode_id,
+            manifest_hash=manifest_hash,
+            artifact_hash=artifact_hash,
+        )
+    content = render_terminology_section((), (), effective=effective)
     rewritten = template[: bounds[0]] + content + "\n\n" + template[bounds[1] :].lstrip()
     story = memory.story_description or EMPTY_STORY_PLACEHOLDER
     return _renumber_sections(_inject_story_block(rewritten, story))
@@ -288,11 +364,27 @@ def convert_examples_to_format(template: str, target_format: str) -> str:
 
 
 def build_refine_system_prompt(
-    memory: GlobalMemory, prompt_paths: PromptPaths, representation: str
+    memory: GlobalMemory,
+    prompt_paths: PromptPaths,
+    representation: str,
+    *,
+    episode_replacements: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
+    effective: EffectiveGlossary | None = None,
 ) -> str:
     """Compose, inject memory into, and format-convert the refine system prompt."""
 
-    template = inject_memory_into_template(load_refine_prompt_template(prompt_paths), memory)
+    template = inject_memory_into_template(
+        load_refine_prompt_template(prompt_paths),
+        memory,
+        episode_replacements=episode_replacements,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
+        effective=effective,
+    )
     return convert_examples_to_format(template, representation)
 
 

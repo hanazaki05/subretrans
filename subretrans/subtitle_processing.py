@@ -422,6 +422,43 @@ _OPERATION_HANDLERS = {
 }
 
 
+def postprocess_chinese_cue(
+    text: str,
+    operations: Sequence[str],
+    episode_replacements: Sequence[tuple[str, str]],
+) -> str:
+    """Apply deterministic postprocessing to one affected Chinese cue only.
+
+    Operations that only normalize ASS container fields are deliberately
+    ignored here. This function is used after a staged repair so unrelated
+    cues, English text, timing, styles, and event structure cannot change.
+    """
+
+    if type(text) is not str:
+        raise TypeError("Chinese cue text must be a string")
+    result = text
+    for operation in operations:
+        if operation not in POSTPROCESS_OPERATIONS:
+            raise ValueError(f"unsupported postprocess operation: {operation}")
+        if operation == "clean_chinese_dialogue":
+            result = result.replace("。", " ")
+            result = result.replace(r"{\i1}", "").replace(r"{\i0}", "")
+            if result.endswith("，"):
+                result = result.rstrip("，")
+        elif operation == "normalize_punctuation":
+            result = _normalize_punctuation(result)
+        elif operation == "normalize_italics":
+            result = _normalize_italics(result)
+        elif operation == "episode_replacements":
+            for old, new in episode_replacements:
+                if not old:
+                    raise ValueError("episode replacement source must not be empty")
+                result = result.replace(old, new)
+        # normalize_style_names and normalize_event_fields do not operate on
+        # cue text and therefore have no cue-local effect.
+    return result
+
+
 def postprocess_ass(
     input_path: Path,
     output_path: Path,

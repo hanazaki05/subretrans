@@ -21,7 +21,7 @@ from .subtitle_processing import POSTPROCESS_OPERATIONS
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPOSITORY_ROOT / "config.yaml"
-API_ROLES = ("primer", "refine", "extraction", "agent")
+API_ROLES = ("primer", "refine", "extraction", "agent", "repair")
 INTERMEDIATE_REPRESENTATIONS = ("json", "xml-pair", "pseudo-toml")
 CONFIG_SECTIONS = {
     "api",
@@ -33,6 +33,9 @@ CONFIG_SECTIONS = {
     "postprocess",
     "subtitle_edit",
     "glossary",
+    "repair",
+    "research",
+    "reference_roots",
 }
 ROLE_FIELDS = {
     "protocol",
@@ -92,12 +95,13 @@ class RoleModelSettings:
 
 @dataclass(frozen=True)
 class ApiRoles:
-    """The four model roles used by the workflow."""
+    """The five model roles used by the workflow."""
 
     primer: RoleModelSettings
     refine: RoleModelSettings
     extraction: RoleModelSettings
     agent: RoleModelSettings
+    repair: RoleModelSettings
 
     def __getitem__(self, role: str) -> RoleModelSettings:
         if role not in API_ROLES:
@@ -112,7 +116,6 @@ class ApiRoles:
 class PipelineSettings:
     state_dir: Path
     checkpoint_db: Path
-    agent_max_repair_attempts: int
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,7 @@ class PromptPaths:
     shared: Path
     refine: Path
     qa: Path
+    repair: Path
 
 
 @dataclass(frozen=True)
@@ -149,6 +153,29 @@ class QASettings:
 
 
 @dataclass(frozen=True)
+class RepairSettings:
+    """Finite budgets and bounds for the autonomous repair stage."""
+
+    max_tool_steps: int
+    max_full_sweeps: int
+    max_repair_attempts: int
+    context_radius: int
+    max_group_span: int
+    max_glossary_repair_attempts: int
+
+
+@dataclass(frozen=True)
+class ResearchSettings:
+    """Bounded, read-only external research settings."""
+
+    exa_key_file: Path | None
+    timeout: float
+    max_requests: int
+    max_fetches_per_request: int
+    max_response_bytes: int
+
+
+@dataclass(frozen=True)
 class PostprocessSettings:
     operations: tuple[str, ...]
     episode_replacements: tuple[tuple[str, str], ...]
@@ -171,9 +198,12 @@ class AppConfig:
     primer: PrimerSettings
     refine: RefineSettings
     qa: QASettings
+    repair: RepairSettings
+    research: ResearchSettings
     postprocess: PostprocessSettings
     subtitle_edit: SubtitleEditSettings
     glossary: GlossarySettings
+    reference_roots: tuple[Path, ...]
 
     @property
     def model_versions(self) -> dict[str, str]:
@@ -299,26 +329,24 @@ def _load_api(payload: dict[str, Any], yaml_dir: Path) -> ApiRoles:
 
 
 def _load_pipeline(payload: dict[str, Any], yaml_dir: Path) -> PipelineSettings:
-    section = _section(
-        payload, "pipeline", {"state_dir", "checkpoint_db", "agent_max_repair_attempts"}
-    )
+    section = _section(payload, "pipeline", {"state_dir", "checkpoint_db"})
     return PipelineSettings(
         state_dir=_resolve_path(section["state_dir"], "pipeline.state_dir", yaml_dir),
         checkpoint_db=_resolve_path(
             section["checkpoint_db"], "pipeline.checkpoint_db", yaml_dir
         ),
-        agent_max_repair_attempts=_nonnegative_int(
-            section["agent_max_repair_attempts"], "pipeline.agent_max_repair_attempts"
-        ),
     )
 
 
 def _load_prompts(payload: dict[str, Any], yaml_dir: Path) -> PromptPaths:
-    section = _section(payload, "prompts", {"shared_path", "refine_path", "qa_path"})
+    section = _section(
+        payload, "prompts", {"shared_path", "refine_path", "qa_path", "repair_path"}
+    )
     return PromptPaths(
         shared=_resolve_path(section["shared_path"], "prompts.shared_path", yaml_dir),
         refine=_resolve_path(section["refine_path"], "prompts.refine_path", yaml_dir),
         qa=_resolve_path(section["qa_path"], "prompts.qa_path", yaml_dir),
+        repair=_resolve_path(section["repair_path"], "prompts.repair_path", yaml_dir),
     )
 
 
@@ -390,6 +418,85 @@ def _load_qa(payload: dict[str, Any]) -> QASettings:
         batch_size=batch_size,
         max_workers=_positive_int(section["max_workers"], "qa.max_workers"),
         window_offsets=tuple(offsets),
+    )
+
+
+def _load_repair(payload: dict[str, Any]) -> RepairSettings:
+    section = _section(
+        payload,
+        "repair",
+        {
+            "max_tool_steps",
+            "max_full_sweeps",
+            "max_repair_attempts",
+            "context_radius",
+            "max_group_span",
+            "max_glossary_repair_attempts",
+        },
+    )
+    max_group_span = _positive_int(section["max_group_span"], "repair.max_group_span")
+    if max_group_span > 3:
+        raise ValueError("repair.max_group_span must not exceed 3")
+    return RepairSettings(
+        max_tool_steps=_positive_int(section["max_tool_steps"], "repair.max_tool_steps"),
+        max_full_sweeps=_positive_int(
+            section["max_full_sweeps"], "repair.max_full_sweeps"
+        ),
+        max_repair_attempts=_nonnegative_int(
+            section["max_repair_attempts"], "repair.max_repair_attempts"
+        ),
+        context_radius=_nonnegative_int(
+            section["context_radius"], "repair.context_radius"
+        ),
+        max_group_span=max_group_span,
+        max_glossary_repair_attempts=_nonnegative_int(
+            section["max_glossary_repair_attempts"],
+            "repair.max_glossary_repair_attempts",
+        ),
+    )
+
+
+def _load_reference_roots(payload: dict[str, Any], yaml_dir: Path) -> tuple[Path, ...]:
+    values = payload["reference_roots"]
+    if not isinstance(values, list):
+        raise ValueError("reference_roots must be a list")
+    roots = tuple(
+        _resolve_path(value, f"reference_roots[{index}]", yaml_dir)
+        for index, value in enumerate(values)
+    )
+    if len(roots) != 1:
+        raise ValueError("reference_roots must contain exactly one root")
+    return roots
+
+
+def _load_research(payload: dict[str, Any], yaml_dir: Path) -> ResearchSettings:
+    section = _section(
+        payload,
+        "research",
+        {
+            "exa_key_file",
+            "timeout",
+            "max_requests",
+            "max_fetches_per_request",
+            "max_response_bytes",
+        },
+    )
+    exa_key_file = section["exa_key_file"]
+    if exa_key_file is not None:
+        exa_key_file = _resolve_path(exa_key_file, "research.exa_key_file", yaml_dir)
+    timeout = section["timeout"]
+    if not _is_number(timeout) or timeout <= 0:
+        raise ValueError("research.timeout must be a positive number of seconds")
+    return ResearchSettings(
+        exa_key_file=exa_key_file,
+        timeout=float(timeout),
+        max_requests=_positive_int(section["max_requests"], "research.max_requests"),
+        max_fetches_per_request=_positive_int(
+            section["max_fetches_per_request"], "research.max_fetches_per_request"
+        ),
+        max_response_bytes=_positive_int(
+            section["max_response_bytes"], "research.max_response_bytes"
+        ),
     )
 
 
@@ -511,7 +618,10 @@ def load_config(yaml_path: str | Path | None = None) -> AppConfig:
         primer=_load_primer(payload),
         refine=_load_refine(payload),
         qa=_load_qa(payload),
+        repair=_load_repair(payload),
+        research=_load_research(payload, yaml_dir),
         postprocess=_load_postprocess(payload),
         subtitle_edit=_load_subtitle_edit(payload, yaml_dir),
         glossary=_load_glossary(payload),
+        reference_roots=_load_reference_roots(payload, yaml_dir),
     )

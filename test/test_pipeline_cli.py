@@ -1,24 +1,24 @@
 import argparse
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from subretrans.config import PromptPaths
+from subretrans.config import PromptPaths, RepairSettings
 from subretrans.fsutil import sha256_file
-from subretrans.model_agent import AgentQAResult
 from subretrans.pipeline_cli import (
+    _existing_run,
     _prompt_version,
     _refine_callable,
+    _repair_callable,
     _validate_thread_id,
     build_parser,
-    resume_pipeline,
-    review_pipeline,
     run_pipeline,
-    status_pipeline,
 )
 from subretrans.refine import RefineProgress
+from subretrans.run_manifest import RUN_MANIFEST_VERSION, create_manifest, load_manifest
 
 
 VALID_ASS = """[Script Info]
@@ -31,82 +31,6 @@ Dialogue:  1,0:00:01.00,0:00:02.00,Chinese3,,0,0,0,,你好
 """
 
 MEMORY_YAML = "user_glossary: []\nglossary: []\nstory_description: Test episode context.\n"
-
-
-def write_config(tmp_path: Path) -> Path:
-    key = tmp_path / "key"
-    key.write_text("test-key\n", encoding="utf-8")
-    for name, body in (
-        ("shared.md", "Shared subtitle rules.\n"),
-        ("refine.md", "Refine task.\n"),
-        ("qa.md", "QA task.\n"),
-    ):
-        (tmp_path / name).write_text(body, encoding="utf-8")
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        f"""api:
-  primer: &model
-    protocol: openai-responses
-    model: test-model
-    key_file: {key}
-    base_url: https://example.test/v1
-    timeout: 30
-    max_retries: 0
-    max_output_tokens: 1000
-    reasoning_effort: null
-    temperature: null
-  refine: *model
-  extraction: *model
-  agent: *model
-pipeline:
-  state_dir: {tmp_path / 'state'}
-  checkpoint_db: {tmp_path / 'state/checkpoints.sqlite3'}
-  agent_max_repair_attempts: 1
-prompts:
-  shared_path: {tmp_path / 'shared.md'}
-  refine_path: {tmp_path / 'refine.md'}
-  qa_path: {tmp_path / 'qa.md'}
-primer:
-  batch_size: 2
-  max_workers: 2
-  source_language: English
-  target_language: Simplified Chinese
-  user_instruction: null
-refine:
-  batch_size: 1
-  chunk_token_soft_limit: 80000
-  memory_token_limit: 4000
-  intermediate_representation: xml-pair
-qa:
-  batch_size: 10
-  max_workers: 2
-  window_offsets: [0, 5]
-postprocess:
-  operations:
-    - clean_chinese_dialogue
-    - normalize_punctuation
-    - normalize_style_names
-    - normalize_event_fields
-    - normalize_italics
-    - episode_replacements
-  episode_replacements: []
-subtitle_edit:
-  repository_url: https://github.com/SubtitleEdit/subtitleedit.git
-  revision: 7fca79c1b0f88e6cd59d5800f9c0b49c642a13b9
-  source_dir: {tmp_path / 'tools/subtitleedit'}
-  build_dir: {tmp_path / 'tools/seconv'}
-  dotnet_executable: dotnet
-  settings_file: {tmp_path / 'subtitle-edit-settings.json'}
-  multiple_replace_file: {tmp_path / 'multiple-replace.template'}
-  first_pass_operations: [--fix-common-errors]
-  second_pass_operations: [--fix-common-errors]
-glossary:
-  max_entries: 100
-  terminology_min_confidence: 0.6
-""",
-        encoding="utf-8",
-    )
-    return config
 
 
 def write_progress(progress_path: Path, output_path: Path, checkpoint_path: Path) -> None:
@@ -126,18 +50,17 @@ def write_progress(progress_path: Path, output_path: Path, checkpoint_path: Path
 
 
 def test_prompt_version_includes_all_prompt_components(tmp_path: Path) -> None:
+    paths = {
+        name: tmp_path / f"{name}.md" for name in ("shared", "refine", "qa", "repair")
+    }
     config_path = tmp_path / "config.yaml"
-    shared = tmp_path / "shared.md"
-    refine = tmp_path / "refine.md"
-    qa = tmp_path / "qa.md"
-    for path, body in ((config_path, "config"), (shared, "shared"), (refine, "refine"), (qa, "qa")):
-        path.write_text(body, encoding="utf-8")
-    config = SimpleNamespace(
-        path=config_path, prompts=PromptPaths(shared=shared, refine=refine, qa=qa)
-    )
+    config_path.write_text("config", encoding="utf-8")
+    for name, path in paths.items():
+        path.write_text(name, encoding="utf-8")
+    config = SimpleNamespace(path=config_path, prompts=PromptPaths(**paths))
 
     original = _prompt_version(config)
-    qa.write_text("updated qa", encoding="utf-8")
+    paths["repair"].write_text("updated repair", encoding="utf-8")
 
     assert _prompt_version(config) != original
 
@@ -151,107 +74,77 @@ def test_rejects_unsafe_thread_ids(thread_id: str) -> None:
 def test_parser_exposes_all_subcommands() -> None:
     parser = build_parser()
 
-    run = parser.parse_args(["run", "in.ass", "out.ass", "--mode", "serial_memory", "--thread-id", "e1"])
+    run = parser.parse_args(
+        ["run", "in.ass", "out.ass", "--mode", "serial_memory", "--thread-id", "e1"]
+    )
     assert run.func is run_pipeline
     assert Path(run.config).name == "config.yaml"
-    assert parser.parse_args(["status", "e1", "--debug"]).func is status_pipeline
-    assert parser.parse_args(["review", "e1", "reject"]).func is review_pipeline
-    assert parser.parse_args(["resume", "e1"]).func is resume_pipeline
+    assert parser.parse_args(["status", "e1", "--debug"]).command == "status"
+    assert parser.parse_args(["review", "e1", "reject"]).command == "review"
+    assert parser.parse_args(["resume", "e1"]).command == "resume"
 
 
-def test_serial_pipeline_cli_resumes_failure_and_releases_review(
-    tmp_path: Path, monkeypatch, capsys
+def test_run_creates_v3_manifest_with_run_local_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "input.ass"
     source.write_text(VALID_ASS, encoding="utf-8")
-    release = tmp_path / "release.ass"
-    config = write_config(tmp_path)
-    refine_attempts = 0
-    seen_configs = []
-
-    def fake_refine_factory(app_config):
-        seen_configs.append(app_config)
-
-        def refine(input_path, output_path, checkpoint_path, progress_path):
-            nonlocal refine_attempts
-            refine_attempts += 1
-            if refine_attempts == 1:
-                raise RuntimeError("transient refine failure")
-            output_path.write_bytes(input_path.read_bytes())
-            checkpoint_path.write_text(MEMORY_YAML, encoding="utf-8")
-            write_progress(progress_path, output_path, checkpoint_path)
-
-        return refine
-
-    monkeypatch.setattr("subretrans.pipeline_cli._refine_callable", fake_refine_factory)
-    monkeypatch.setattr(
-        "subretrans.pipeline_cli.build_agent_qa",
-        lambda settings, system_prompt: (
-            lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(True, (), ())
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("test config", encoding="utf-8")
+    state_dir = tmp_path / "state"
+    release = tmp_path / "published" / "episode.ass"
+    config = SimpleNamespace(
+        path=config_path.resolve(),
+        prompts=SimpleNamespace(
+            shared=config_path,
+            refine=config_path,
+            qa=config_path,
+            repair=config_path,
         ),
-    )
-    run_args = argparse.Namespace(
-        input=str(source),
-        output=str(release),
-        mode="serial_memory",
-        thread_id="episode-01",
-        config=str(config),
-    )
-    review_args = argparse.Namespace(thread_id="episode-01", decision="approve", config=str(config))
-    resume_args = argparse.Namespace(thread_id="episode-01", config=str(config))
-    status_args = argparse.Namespace(thread_id="episode-01", config=str(config))
-
-    with pytest.raises(RuntimeError, match="transient refine failure"):
-        run_pipeline(run_args)
-    assert status_pipeline(status_args) == 0
-    assert "stopped before refine_serial; run `pipeline resume" in capsys.readouterr().out
-    assert resume_pipeline(resume_args) == 0
-    assert refine_attempts == 2
-    assert all(seen.path == config.resolve() for seen in seen_configs)
-    assert "is awaiting human review" in capsys.readouterr().out
-    assert status_pipeline(status_args) == 0
-    assert "Status: awaiting human review" in capsys.readouterr().out
-    review = tmp_path / "release.review.ass"
-    assert review.exists()
-    assert not release.exists()
-    review.write_text(
-        review.read_text(encoding="utf-8-sig").replace("你好", "人工修改"),
-        encoding="utf-8-sig",
-    )
-    assert review_pipeline(review_args) == 0
-    assert release.exists()
-    assert "人工修改" in release.read_text(encoding="utf-8-sig")
-    assert status_pipeline(status_args) == 0
-    assert "Status: released" in capsys.readouterr().out
-    metadata = json.loads((tmp_path / "state/episode-01/run.json").read_text(encoding="utf-8"))
-    assert metadata == {
-        "version": 2,
-        "config_path": str(config.resolve()),
-        "review_path": str(review),
-        "release_path": str(release),
-        "translation_mode": "serial_memory",
-    }
-
-
-def test_review_rejects_mismatched_config(tmp_path: Path) -> None:
-    config = write_config(tmp_path)
-    run_dir = tmp_path / "state/episode-02"
-    run_dir.mkdir(parents=True)
-    (run_dir / "run.json").write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "config_path": str(tmp_path / "other.yaml"),
-                "review_path": str(tmp_path / "r.review.ass"),
-                "release_path": str(tmp_path / "r.ass"),
-                "translation_mode": "serial_memory",
-            }
+        pipeline=SimpleNamespace(
+            state_dir=state_dir,
+            checkpoint_db=state_dir / "checkpoints.sqlite3",
         ),
-        encoding="utf-8",
+        repair=SimpleNamespace(
+            max_repair_attempts=2,
+            max_tool_steps=10,
+            max_full_sweeps=1,
+            max_glossary_repair_attempts=1,
+        ),
+        research=SimpleNamespace(max_requests=3),
     )
 
-    with pytest.raises(ValueError, match="review config does not match the run config"):
-        review_pipeline(argparse.Namespace(thread_id="episode-02", decision="reject", config=str(config)))
+    class FakeGraph:
+        def invoke(self, state, graph_config):
+            assert state["next_stage"] == "preprocess"
+            assert graph_config == {"configurable": {"thread_id": "episode-01"}}
+            return {"__interrupt__": ("review",)}
+
+    @contextmanager
+    def fake_open_graph(context):
+        yield FakeGraph()
+
+    monkeypatch.setattr("subretrans.pipeline_cli.load_config", lambda path: config)
+    monkeypatch.setattr("subretrans.pipeline_cli._open_graph", fake_open_graph)
+    monkeypatch.setattr("subretrans.pipeline_cli._prompt_version", lambda config: "test-prompt")
+
+    result = run_pipeline(
+        argparse.Namespace(
+            input=str(source),
+            output=str(release),
+            mode="serial_memory",
+            thread_id="episode-01",
+            config=str(config_path),
+        )
+    )
+
+    manifest_path = state_dir / "episode-01" / "run.json"
+    manifest = load_manifest(manifest_path, verify_artifacts=False)
+    assert result == 0
+    assert manifest["version"] == RUN_MANIFEST_VERSION
+    assert Path(manifest["review"]["path"]).is_relative_to(manifest_path.parent)
+    assert manifest["release"]["path"] == str(release.resolve())
+    assert not release.parent.exists()
 
 
 def test_refine_callable_resumes_from_committed_progress(tmp_path: Path, monkeypatch) -> None:
@@ -285,7 +178,118 @@ def test_refine_callable_resumes_from_committed_progress(tmp_path: Path, monkeyp
     assert [call["input"] for call in calls] == [original, original]
     assert all(call["output"] == output and call["config"] is config for call in calls)
     assert all(
-        call["checkpoint_path"] == memory and call["progress_path"] == progress for call in calls
+        call["checkpoint_path"] == memory and call["progress_path"] == progress
+        for call in calls
     )
     assert calls[0]["options"].resume_index == 3
     assert calls[1]["options"].resume_index is None
+
+
+def test_existing_run_rejects_changed_prompt_content(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(VALID_ASS, encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("config", encoding="utf-8")
+    prompt_paths = {
+        name: tmp_path / f"{name}.md" for name in ("shared", "refine", "qa", "repair")
+    }
+    for name, path in prompt_paths.items():
+        path.write_text(name, encoding="utf-8")
+    state_dir = tmp_path / "state"
+    run_dir = state_dir / "episode"
+    run_dir.mkdir(parents=True)
+    create_manifest(
+        run_dir / "run.json",
+        run_id="episode",
+        translation_mode="serial_memory",
+        source_path=source,
+        config_path=config_path,
+        prompt_paths=prompt_paths,
+        release_path=tmp_path / "release.ass",
+        budget_limits={},
+    )
+    config = SimpleNamespace(
+        path=config_path.resolve(),
+        prompts=SimpleNamespace(**prompt_paths),
+        pipeline=SimpleNamespace(state_dir=state_dir),
+    )
+    monkeypatch.setattr("subretrans.pipeline_cli.load_config", lambda path: config)
+    prompt_paths["qa"].write_text("changed", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="qa prompt changed"):
+        _existing_run(
+            argparse.Namespace(thread_id="episode", config=str(config_path)), "resume"
+        )
+
+
+def test_repair_callable_resumes_one_run_level_session_across_qa_rounds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from subretrans.repair import RepairOutcome
+
+    shared = tmp_path / "shared.md"
+    repair_prompt = tmp_path / "repair.md"
+    shared.write_text("shared", encoding="utf-8")
+    repair_prompt.write_text("repair", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    refined = run_dir / "refined.ass"
+    current = run_dir / "current.ass"
+    refined.write_text(VALID_ASS, encoding="utf-8")
+    current.write_text(VALID_ASS, encoding="utf-8")
+    (run_dir / "memory.yaml").write_text(MEMORY_YAML, encoding="utf-8")
+    cue = run_dir / "cue.json"
+    cue.write_text("{}", encoding="utf-8")
+    glossary = run_dir / "glossary.json"
+    glossary.write_text('{"authoritative": [], "learned": []}', encoding="utf-8")
+    pool = run_dir / "pool.json"
+    pool.write_text('{"suggestions": []}', encoding="utf-8")
+    config = SimpleNamespace(
+        prompts=SimpleNamespace(shared=shared, repair=repair_prompt),
+        repair=RepairSettings(8, 1, 2, 1, 3, 0),
+        postprocess=SimpleNamespace(operations=(), episode_replacements=()),
+        api=SimpleNamespace(repair=object()),
+    )
+    seen_history_lengths: list[int] = []
+
+    def fake_run_repair_agent(*, session, **kwargs):
+        seen_history_lengths.append(len(session.history))
+        session.history.append({"kind": "round", "index": len(seen_history_lengths)})
+        session.tool_steps_used += 1
+        session.repair_attempts_used += 1
+        session._commit()
+        return RepairOutcome(
+            "finish",
+            session.ordered_current,
+            session.current_hash,
+            session.state_dir,
+            session.tool_steps_used,
+            session.repair_attempts_used,
+            None,
+        )
+
+    monkeypatch.setattr("subretrans.repair.run_repair_agent", fake_run_repair_agent)
+    run_repair = _repair_callable(config)
+
+    results = []
+    for attempt in (1, 2):
+        results.append(
+            run_repair(
+                run_dir=run_dir,
+                refined_artifact_path=refined,
+                current_artifact_path=current,
+                cue_manifest_path=cue,
+                effective_glossary_path=glossary,
+                suggestion_pool_path=pool,
+                decision_log_path=run_dir / "repair" / f"decisions-{attempt:03d}.json",
+                coverage_path=run_dir / "repair" / f"coverage-{attempt:03d}.json",
+                max_tool_steps=8,
+                max_full_sweeps=1,
+                max_group_span=3,
+            )
+        )
+
+    assert seen_history_lengths == [0, 1]
+    assert [result["tool_steps_used"] for result in results] == [1, 1]
+    assert results[0]["history_path"] != results[1]["history_path"]
+    assert Path(results[0]["history_path"]).is_file()

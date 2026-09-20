@@ -78,6 +78,25 @@ def test_normalized_keys_drive_pruning_and_user_glossary_lock() -> None:
     assert prune_learned_glossary_against_user_glossary(memory) == (0, [])
 
 
+def test_memory_exposes_effective_glossary_with_replacement_provenance() -> None:
+    memory = GlobalMemory(
+        user_glossary=[{"eng": "Harm", "zh": "哈姆"}],
+        glossary=[{"eng": "Webb", "zh": "韦布", "type": "person"}],
+    )
+
+    effective = memory.effective_glossary(
+        episode_replacements=[("罗伯茨", "罗伯特")],
+        episode_id="S07E08",
+        manifest_hash="m",
+        artifact_hash="a",
+    )
+
+    assert [term.eng for term in effective.authoritative] == ["Harm", "罗伯茨"]
+    assert [term.eng for term in effective.learned] == ["Webb"]
+    assert effective.authoritative[1].provenance["source"] == "episode_replacement"
+    assert effective.learned[0].provenance["manifest_hash"] == "m"
+
+
 def test_template_injection_adds_story_block_after_glossary() -> None:
     memory = GlobalMemory(
         glossary=[{"eng": "Webb", "zh": "韦布", "type": "person"}],

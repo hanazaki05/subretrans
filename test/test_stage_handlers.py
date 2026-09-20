@@ -1,14 +1,23 @@
-import hashlib
 import json
 from pathlib import Path
 
-import pytest
-
-from subretrans.model_agent import AgentQAResult, AgentRepair
-from subretrans.subtitle_processing import read_srt
-from subretrans.stage_handlers import WorkflowSettings, build_stage_handlers
-from subretrans.state import PipelineState
-from subretrans.translation import TranslationResult, load_manifest
+from subretrans.fsutil import atomic_copy, atomic_write_json, sha256_file
+from subretrans.model_agent import (
+    AgentQAEvidence,
+    AgentQAMemory,
+    AgentQAResult,
+    AgentQASuggestion,
+    AgentQATranslation,
+)
+from subretrans.run_manifest import artifact_path, create_manifest, load_manifest
+from subretrans.stage_handlers import (
+    WorkflowSettings,
+    _default_freeze_effective_glossary,
+    build_stage_handlers,
+)
+from subretrans.cue_manifest import build_cue_manifest, save_cue_manifest
+from subretrans.subtitle_processing import SrtCue, write_srt
+from subretrans.translation import TranslationResult
 
 
 VALID_ASS = """[Script Info]
@@ -17,548 +26,483 @@ ScriptType: v4.00+
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,Hello
-Dialogue:  1,0:00:01.00,0:00:02.00,Chinese3,,0,0,0,,你好
+Dialogue:  1,0:00:01.00,0:00:02.00,Chinese3,,0,0,0,,错误
 """
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def state_for(path: Path, mode: str) -> PipelineState:
-    memory = path.parent / "test-memory.yaml"
-    memory.write_text(
-        "user_glossary: []\nglossary: []\n"
-        "story_description: Test episode context.\n",
-        encoding="utf-8",
-    )
-    return {
-        "artifact_path": str(path),
-        "artifact_hash": sha256(path),
-        "translation_manifest_path": None,
-        "translation_mode": mode,  # type: ignore[typeddict-item]
-        "stage": "preprocess",
-        "refine_chunk_cursor": 0,
-        "memory_checkpoint_path": str(memory),
-        "memory_hash": sha256(memory),
-        "model_versions": {
-            "primer": "test-primer",
-            "refine": "test-refine",
-            "extraction": "test-extraction",
-            "agent": "test-agent",
+def setup_run(tmp_path: Path):
+    source = tmp_path / "input.ass"
+    source.write_text(VALID_ASS, encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("config", encoding="utf-8")
+    state = create_manifest(
+        tmp_path / "run.json",
+        run_id="episode",
+        translation_mode="serial_memory",
+        source_path=source,
+        config_path=config,
+        prompt_paths={name: config for name in ("shared", "refine", "qa", "repair")},
+        release_path=tmp_path / "release.ass",
+        budget_limits={
+            "repair_attempts": 1,
+            "tool_steps": 4,
+            "full_sweeps": 1,
+            "glossary_repairs": 0,
+            "research_requests": 0,
         },
-        "prompt_version": "test-prompt",
-        "qa_conclusion": "pending",
-        "qa_passed": False,
-        "qa_repair_applied": False,
-        "agent_repair_attempts": 0,
-    }
+    )
+
+    def refine(input_path, output_path, memory_path, progress_path):
+        atomic_copy(input_path, output_path)
+        memory_path.write_text(
+            "user_glossary: []\nglossary: []\nstory_description: Context.\n",
+            encoding="utf-8",
+        )
+        atomic_write_json(
+            progress_path,
+            {
+                "version": 1,
+                "next_pair": 1,
+                "artifact_path": str(output_path),
+                "artifact_hash": sha256_file(output_path),
+                "memory_checkpoint_path": str(memory_path),
+                "memory_hash": sha256_file(memory_path),
+            },
+        )
+
+    def freeze_cues(input_path, output_path):
+        atomic_write_json(output_path, {"version": 1, "source": sha256_file(input_path)})
+
+    def freeze_glossary(**kwargs):
+        atomic_write_json(
+            kwargs["output_path"],
+            {
+                "version": 1,
+                "authoritative": [{"eng": "Commander", "zh": "指挥官"}],
+                "learned": [
+                    {
+                        "eng": "Turner",
+                        "zh": "特纳",
+                        "confidence": 0.9,
+                        "evidence_ids": [0],
+                    }
+                ],
+            },
+        )
+        atomic_write_json(kwargs["decisions_path"], {"version": 1, "decisions": []})
+
+    return state, refine, freeze_cues, freeze_glossary
 
 
-def apply_update(state: PipelineState, update) -> PipelineState:
-    state.update(update)
+def make_handlers(
+    tmp_path: Path,
+    *,
+    qa_result: AgentQAResult,
+    repair_calls: list[Path],
+    qa_memories: list[AgentQAMemory] | None = None,
+    qa_histories: list[tuple] | None = None,
+    dismiss_suggestions: bool = False,
+):
+    state, refine, freeze_cues, freeze_glossary = setup_run(tmp_path)
+
+    def repair_runner(**kwargs):
+        repair_calls.append(Path(kwargs["current_artifact_path"]))
+        output = tmp_path / "repair" / "candidate.ass"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_copy(kwargs["current_artifact_path"], output)
+        pool = json.loads(Path(kwargs["suggestion_pool_path"]).read_text(encoding="utf-8"))
+        decisions = []
+        if dismiss_suggestions:
+            decisions = [
+                {
+                    "issue_id": entry["issue_id"],
+                    "issue_key": entry["key"],
+                    "status": "dismissed",
+                    "reason": "verified false positive",
+                }
+                for entry in pool["suggestions"]
+            ]
+        atomic_write_json(
+            kwargs["decision_log_path"], {"version": 1, "decisions": decisions}
+        )
+        atomic_write_json(
+            kwargs["coverage_path"], {"version": 1, "full_sweeps_completed": 1}
+        )
+        repair_state = tmp_path / "repair" / "repair-state.json"
+        history = tmp_path / "repair" / "history.json"
+        staged = tmp_path / "repair" / "staged.json"
+        exchanges = tmp_path / "repair" / "exchanges.json"
+        for path, payload in (
+            (repair_state, {"version": 1, "generation": 1}),
+            (history, {"version": 1, "history": []}),
+            (staged, {"version": 1, "groups": []}),
+            (exchanges, {"version": 1, "exchanges": []}),
+        ):
+            atomic_write_json(path, payload)
+        return {
+            "artifact_path": output,
+            "repair_state_path": repair_state,
+            "history_path": history,
+            "staged_path": staged,
+            "exchanges_path": exchanges,
+            "tool_steps_used": 1,
+            "full_sweeps_used": 1,
+            "escalated": False,
+        }
+
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            run_dir=tmp_path,
+            primer_batch_size=1,
+            primer_max_workers=1,
+            episode_replacements=(),
+            qa_batch_size=10,
+            max_repair_attempts=1,
+            max_tool_steps=4,
+            max_full_sweeps=1,
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=refine,
+        agent_qa=lambda pairs, structural, history, memory: (
+            qa_memories.append(memory) if qa_memories is not None else None
+        )
+        or (qa_histories.append(history) if qa_histories is not None else None)
+        or qa_result,
+        freeze_cues=freeze_cues,
+        freeze_glossary=freeze_glossary,
+        repair_runner=repair_runner,
+    )
+    return state, handlers
+
+
+def run_to_qa(state, handlers):
+    for stage in (
+        "preprocess",
+        "freeze_manifest",
+        "refine_serial",
+        "postprocess",
+        "glossary",
+        "qa",
+    ):
+        state = handlers[stage](state)
     return state
 
 
-def make_refine(*, progress_mutation=None):
-    def refine(
-        input_path: Path,
-        output_path: Path,
-        checkpoint_path: Path,
-        progress_path: Path,
-    ) -> None:
-        output_path.write_bytes(input_path.read_bytes())
-        checkpoint_path.write_text(
-            "user_glossary: []\nglossary: []\n"
-            "story_description: Test episode context.\n",
-            encoding="utf-8",
-        )
-        payload = {
-            "version": 1,
-            "next_pair": 7,
-            "artifact_path": str(output_path),
-            "artifact_hash": sha256(output_path),
-            "memory_checkpoint_path": str(checkpoint_path),
-            "memory_hash": sha256(checkpoint_path),
-        }
-        if progress_mutation is not None:
-            progress_mutation(payload)
-        progress_path.write_text(json.dumps(payload), encoding="utf-8")
+def test_default_glossary_freeze_escalates_unavailable_rank_research(tmp_path: Path) -> None:
+    artifact = tmp_path / "rank.ass"
+    artifact.write_text(
+        VALID_ASS.replace("Hello", "Commander Harmon Rabb reporting"), encoding="utf-8"
+    )
+    cue_path = tmp_path / "cue-manifest.json"
+    save_cue_manifest(build_cue_manifest(artifact, episode_id="JAG.S07E07"), cue_path)
+    memory = tmp_path / "memory.yaml"
+    memory.write_text(
+        """user_glossary:
+  - eng: Commander
+    zh: 中校
+glossary:
+  - eng: Commander Harmon Rabb
+    zh: 哈蒙·拉布中校
+    type: title
+    confidence: 0.9
+    evidence_ids: [0]
+story_description: Episode context.
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "effective.json"
+    decisions = tmp_path / "decisions.json"
+    research = tmp_path / "research.json"
+    repairs = tmp_path / "repairs.json"
 
-    return refine
+    result = _default_freeze_effective_glossary(
+        memory_path=memory,
+        cue_manifest_path=cue_path,
+        artifact_path=artifact,
+        output_path=output,
+        decisions_path=decisions,
+        research_path=research,
+        repair_path=repairs,
+        episode_replacements=(),
+        research_runner=None,
+        glossary_repair_runner=None,
+        max_research_requests=4,
+        max_glossary_repairs=1,
+    )
+
+    effective = json.loads(output.read_text(encoding="utf-8"))
+    report = json.loads(research.read_text(encoding="utf-8"))
+    assert effective["learned"] == []
+    assert report["human_review_required"] is True
+    assert report["decisions"][0]["passes"][0]["error"] == "research_unavailable"
+    assert result["research_requests_used"] == 0
 
 
-def pass_agent_qa(pairs, structural_qa, repair_history, episode_memory):
-    return AgentQAResult(True, (), ())
+def test_invalid_rank_evidence_cannot_bypass_research_through_glossary_repair(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "rank.ass"
+    artifact.write_text(
+        VALID_ASS.replace("Hello", "Chaplain Turner reports"), encoding="utf-8"
+    )
+    cue_path = tmp_path / "cue-manifest.json"
+    save_cue_manifest(build_cue_manifest(artifact, episode_id="JAG.S07E11"), cue_path)
+    memory = tmp_path / "memory.yaml"
+    memory.write_text(
+        """user_glossary:
+  - eng: Commander
+    zh: 中校
+glossary:
+  - eng: Commander Turner
+    zh: 特纳指挥官
+    type: title
+    confidence: 0.9
+    evidence_ids: [0]
+story_description: Episode context.
+""",
+        encoding="utf-8",
+    )
+    repair_called = False
+
+    def repair_runner(**kwargs):
+        nonlocal repair_called
+        repair_called = True
+        return {"attempts_used": 1, "actions": []}
+
+    output = tmp_path / "effective.json"
+    _default_freeze_effective_glossary(
+        memory_path=memory,
+        cue_manifest_path=cue_path,
+        artifact_path=artifact,
+        output_path=output,
+        decisions_path=tmp_path / "decisions.json",
+        research_path=tmp_path / "research.json",
+        repair_path=tmp_path / "repairs.json",
+        episode_replacements=(),
+        research_runner=None,
+        glossary_repair_runner=repair_runner,
+        max_research_requests=4,
+        max_glossary_repairs=1,
+    )
+
+    effective = json.loads(output.read_text(encoding="utf-8"))
+    assert effective["learned"] == []
+    assert repair_called is False
+    assert any(
+        entry["reason"] == "research-insufficient"
+        for entry in effective["unresolved"]
+    )
 
 
-def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -> None:
-    source = tmp_path / "episode.mkv"
-    source.write_bytes(b"fake media")
-    run_dir = tmp_path / "run"
-    review_path = tmp_path / "episode.review.ass"
-    release_path = tmp_path / "release.ass"
-    preprocess_calls = []
-    seen_batches = []
+def test_glossary_repair_correction_is_revalidated_before_freeze(tmp_path: Path) -> None:
+    artifact = tmp_path / "term.ass"
+    artifact.write_text(
+        VALID_ASS.replace("Hello", "Naval Aviator Harmon Rabb reports"), encoding="utf-8"
+    )
+    cue_path = tmp_path / "cue-manifest.json"
+    save_cue_manifest(build_cue_manifest(artifact, episode_id="episode"), cue_path)
+    memory = tmp_path / "memory.yaml"
+    memory.write_text(
+        """user_glossary: []
+glossary:
+  - eng: Naval Aviator
+    zh: 海军飞行员
+    type: title
+    confidence: 0.9
+    evidence_ids: [99]
+story_description: Context.
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "effective.json"
 
-    def preprocess_subtitle(input_path: Path, output_path: Path) -> Path:
-        preprocess_calls.append((input_path, output_path))
-        output_path.write_text(
-            "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n"
-            "2\n00:00:03,000 --> 00:00:04,000\nWorld\n",
-            encoding="utf-8",
-        )
+    result = _default_freeze_effective_glossary(
+        memory_path=memory,
+        cue_manifest_path=cue_path,
+        artifact_path=artifact,
+        output_path=output,
+        decisions_path=tmp_path / "decisions.json",
+        research_path=tmp_path / "research.json",
+        repair_path=tmp_path / "repairs.json",
+        episode_replacements=(),
+        research_runner=None,
+        glossary_repair_runner=lambda **kwargs: {
+            "attempts_used": 1,
+            "actions": [
+                {
+                    "action": "correct",
+                    "eng": "Naval Aviator",
+                    "reason": "repair evidence binding",
+                    "candidate": {
+                        "eng": "Naval Aviator",
+                        "zh": "海军飞行员",
+                        "type": "title",
+                        "confidence": 0.9,
+                        "evidence_ids": [0],
+                    },
+                }
+            ],
+        },
+        max_research_requests=0,
+        max_glossary_repairs=2,
+    )
+
+    effective = json.loads(output.read_text(encoding="utf-8"))
+    assert effective["learned"][0]["eng"] == "Naval Aviator"
+    assert effective["learned"][0]["evidence_ids"] == [0]
+    assert result["glossary_repairs_used"] == 1
+
+
+def test_qa_persists_suggestions_without_modifying_artifact(tmp_path: Path) -> None:
+    suggestion = AgentQASuggestion(
+        affected_ids=(0,),
+        kind="accuracy",
+        diagnosis="Meaning is reversed.",
+        evidence=(AgentQAEvidence((0,), "English and Chinese disagree."),),
+        suggested_translations=(AgentQATranslation(0, "你好"),),
+    )
+    state, handlers = make_handlers(
+        tmp_path, qa_result=AgentQAResult(False, (suggestion,)), repair_calls=[]
+    )
+    state = run_to_qa(state, handlers)
+    manifest = load_manifest(state["manifest_path"])
+
+    current = artifact_path(state["manifest_path"], manifest, "current")
+    pool = artifact_path(state["manifest_path"], manifest, "suggestion_pool")
+    assert "错误" in current.read_text(encoding="utf-8-sig")
+    assert json.loads(pool.read_text(encoding="utf-8"))["suggestions"][0]["affected_ids"] == [0]
+    assert state["next_stage"] == "repair"
+
+
+def test_parallel_translation_keeps_committed_seed_immutable(tmp_path: Path) -> None:
+    source = tmp_path / "input.mkv"
+    source.write_text("container", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("config", encoding="utf-8")
+    state = create_manifest(
+        tmp_path / "run.json",
+        run_id="parallel",
+        translation_mode="parallel_initial",
+        source_path=source,
+        config_path=config,
+        prompt_paths={name: config for name in ("shared", "refine", "qa", "repair")},
+        release_path=tmp_path / "release.ass",
+        budget_limits={},
+    )
+
+    def preprocess(input_path, output_path):
+        write_srt((SrtCue(1, "00:00:01,000", "00:00:02,000", "Hello"),), output_path)
         return output_path
 
-    def translate(batch):
-        seen_batches.append(batch)
-        return [
-            TranslationResult(request.id, f"中:{request.source}")
-            for request in batch
-        ]
-
     handlers = build_stage_handlers(
-        WorkflowSettings(
-            run_dir,
-            review_path,
-            release_path,
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
+        WorkflowSettings(tmp_path, 1, 1, ()),
+        preprocess_subtitle=preprocess,
+        translate_batch=lambda batch: tuple(
+            TranslationResult(request.id, "你好") for request in batch
         ),
-        preprocess_subtitle=preprocess_subtitle,
-        translate_batch=translate,
-        refine=make_refine(),
-        agent_qa=pass_agent_qa,
+        refine=lambda *args: None,
+        agent_qa=lambda *args: AgentQAResult(True, ()),
+        repair_runner=lambda **kwargs: {},
     )
-    state = state_for(source, "parallel_initial")
+    state = handlers["preprocess"](state)
+    before = load_manifest(state["manifest_path"])
+    seed_ref = before["artifacts"]["translation_seed"]
 
-    apply_update(state, handlers["preprocess"](state))
-    manifest_path = Path(state["translation_manifest_path"])  # type: ignore[arg-type]
-    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert set(manifest_payload) == {
-        "version",
-        "source_artifact_path",
-        "translated_artifact_path",
-        "units",
-    }
-    assert all("memory" not in key for key in manifest_payload)
-    assert manifest_payload["source_artifact_path"] == str(
-        run_dir / "preprocessed.en.srt"
+    state = handlers["translate_parallel"](state)
+    after = load_manifest(state["manifest_path"])
+
+    assert after["artifacts"]["translation_seed"] == seed_ref
+    assert after["heads"]["translation_manifest"] == "translation_manifest"
+
+
+def test_repair_runs_even_when_qa_pool_is_empty(tmp_path: Path) -> None:
+    calls: list[Path] = []
+    state, handlers = make_handlers(
+        tmp_path, qa_result=AgentQAResult(True, ()), repair_calls=calls
     )
-    assert preprocess_calls == [(source, run_dir / "preprocessed.en.srt")]
-    assert state["artifact_path"] == str(source)
+    state = run_to_qa(state, handlers)
+    state = handlers["repair"](state)
 
-    translation_state = {
-        "artifact_path": state["artifact_path"],
-        "artifact_hash": state["artifact_hash"],
-        "translation_manifest_path": state["translation_manifest_path"],
-        "stage": "translate_parallel",
-        "model_version": state["model_versions"]["primer"],
-        "prompt_version": state["prompt_version"],
-    }
-    assert handlers["translate_parallel"](translation_state) == {}
-    assert [request.id for batch in seen_batches for request in batch] == [1, 2]
-    translated = read_srt(run_dir / "translated.zh.srt")
-    assert [(cue.start, cue.end, cue.text) for cue in translated] == [
-        ("00:00:01,000", "00:00:02,000", "中:Hello"),
-        ("00:00:03,000", "00:00:04,000", "中:World"),
-    ]
-    assert all(unit.translation for unit in load_manifest(manifest_path).units)
-
-    apply_update(state, handlers["merge_ass"](state))
-    assert Path(state["artifact_path"]).name == "merged.ass"
-    assert state["artifact_hash"] == sha256(Path(state["artifact_path"]))
-    apply_update(state, handlers["refine_serial"](state))
-    assert state["refine_chunk_cursor"] == 7
-    assert state["memory_hash"] == sha256(run_dir / "memory.yaml")
-    apply_update(state, handlers["postprocess"](state))
-    apply_update(state, handlers["qa"](state))
-    assert state["qa_conclusion"] == "passed"
-    assert state["artifact_path"] == str(review_path)
-    assert review_path.read_bytes() == (run_dir / "postprocessed.ass").read_bytes()
-    assert handlers["human_review"](state) == {}
-    review_path.write_text(
-        review_path.read_text(encoding="utf-8-sig").replace("中:Hello", "人工修改"),
-        encoding="utf-8-sig",
-    )
-    apply_update(state, handlers["release"](state))
-    assert state["artifact_path"] == str(release_path)
-    assert state["artifact_hash"] == sha256(release_path)
-    assert "人工修改" in release_path.read_text(encoding="utf-8-sig")
+    assert len(calls) == 1
+    assert state["next_stage"] == "qa_verify"
+    manifest = load_manifest(state["manifest_path"])
+    assert manifest["budgets"]["repair_attempts"]["used"] == 1
+    for head in (
+        "repair_state",
+        "decision_log",
+        "repair_history",
+        "repair_staged",
+        "repair_exchanges",
+        "coverage",
+    ):
+        assert manifest["heads"][head] is not None
 
 
-def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(VALID_ASS, encoding="utf-8")
-    run_dir = tmp_path / "serial-run"
-    release_path = tmp_path / "serial-release.ass"
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            run_dir,
-            tmp_path / "serial-review.ass",
-            release_path,
-            primer_batch_size=2,
-            primer_max_workers=2,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: pytest.fail(
-            "serial mode preprocessed"
-        ),
-        translate_batch=lambda batch: pytest.fail("serial mode translated"),
-        refine=make_refine(),
-        agent_qa=pass_agent_qa,
-    )
-    state = state_for(source, "serial_memory")
-
-    assert handlers["preprocess"](state) == {"translation_manifest_path": None}
-    assert not (run_dir / "translation.json").exists()
-    apply_update(state, handlers["refine_serial"](state))
-    apply_update(state, handlers["postprocess"](state))
-    apply_update(state, handlers["qa"](state))
-    assert state["qa_conclusion"] == "passed"
-    apply_update(state, handlers["release"](state))
-    assert release_path.exists()
-
-
-def test_qa_runs_configured_batches(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(
-        VALID_ASS
-        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
-        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
-        encoding="utf-8",
-    )
-    seen_batches = []
-    seen_memories = []
-
-    def qa(batch, structural_qa, repair_history, episode_memory):
-        seen_batches.append(tuple(pair.id for pair in batch))
-        seen_memories.append(episode_memory)
-        return AgentQAResult(True, (), ())
-
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=1,
-            episode_replacements=(),
-            qa_batch_size=1,
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=qa,
+def test_qa_receives_only_the_frozen_effective_glossary(tmp_path: Path) -> None:
+    memories: list[AgentQAMemory] = []
+    state, handlers = make_handlers(
+        tmp_path,
+        qa_result=AgentQAResult(True, ()),
+        repair_calls=[],
+        qa_memories=memories,
     )
 
-    update = handlers["qa"](state_for(source, "serial_memory"))
+    run_to_qa(state, handlers)
 
-    assert seen_batches == [(0,), (1,)]
-    assert all(
-        memory.story_description == "Test episode context."
-        for memory in seen_memories
+    assert memories[0].user_glossary[0].eng == "Commander"
+    assert memories[0].user_glossary[0].zh == "指挥官"
+    assert memories[0].glossary[0].eng == "Turner"
+    assert memories[0].glossary[0].zh == "特纳"
+
+
+def test_qa_verify_uses_prior_decisions_and_suppresses_dismissed_repeat(
+    tmp_path: Path,
+) -> None:
+    suggestion = AgentQASuggestion(
+        affected_ids=(0,),
+        kind="accuracy",
+        diagnosis="Meaning is reversed.",
+        evidence=(AgentQAEvidence((0,), "English and Chinese disagree."),),
+        suggested_translations=(AgentQATranslation(0, "你好"),),
     )
-    assert update["qa_passed"] is True
-
-
-def test_qa_rejects_changed_memory_checkpoint(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(VALID_ASS, encoding="utf-8")
-    state = state_for(source, "serial_memory")
-    Path(state["memory_checkpoint_path"]).write_text(
-        "user_glossary: []\nglossary: []\n"
-        "story_description: Changed context.\n",
-        encoding="utf-8",
-    )
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=1,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=pass_agent_qa,
+    histories: list[tuple] = []
+    state, handlers = make_handlers(
+        tmp_path,
+        qa_result=AgentQAResult(False, (suggestion,)),
+        repair_calls=[],
+        qa_histories=histories,
+        dismiss_suggestions=True,
     )
 
-    with pytest.raises(ValueError, match="memory checkpoint hash"):
-        handlers["qa"](state)
+    state = run_to_qa(state, handlers)
+    state = handlers["repair"](state)
+    state = handlers["qa_verify"](state)
+    manifest = load_manifest(state["manifest_path"])
+    pool = artifact_path(state["manifest_path"], manifest, "suggestion_pool")
+
+    assert histories[0] == ()
+    assert histories[1][0].status == "dismissed"
+    assert json.loads(pool.read_text(encoding="utf-8"))["suggestions"] == []
+    assert state["next_stage"] == "review_export"
 
 
-def test_qa_user_glossary_overrides_learned_duplicate(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(VALID_ASS, encoding="utf-8")
-    state = state_for(source, "serial_memory")
-    memory_path = Path(state["memory_checkpoint_path"])
-    memory_path.write_text(
-        "user_glossary:\n"
-        "- {eng: Commander, zh: 中校}\n"
-        "glossary:\n"
-        "- {eng: ' commander ', zh: 指挥官, type: title, confidence: 0.9, evidence_ids: [1]}\n"
-        "- {eng: SecNav, zh: 海军部长, type: title, confidence: 0.8, evidence_ids: [2]}\n"
-        "story_description: Test episode context.\n",
-        encoding="utf-8",
+def test_review_is_run_local_and_approval_freezes_edited_copy(tmp_path: Path) -> None:
+    calls: list[Path] = []
+    state, handlers = make_handlers(
+        tmp_path, qa_result=AgentQAResult(True, ()), repair_calls=calls
     )
-    state["memory_hash"] = sha256(memory_path)
-    seen = []
+    state = run_to_qa(state, handlers)
+    state = handlers["repair"](state)
+    state = handlers["qa_verify"](state)
+    state = handlers["review_export"](state)
+    manifest = load_manifest(state["manifest_path"])
+    review = Path(manifest["review"]["path"])
+    assert review.is_relative_to(tmp_path)
+    review.write_text(review.read_text(encoding="utf-8-sig").replace("错误", "人工修改"), encoding="utf-8-sig")
 
-    def qa(batch, structural_qa, repair_history, episode_memory):
-        seen.append(episode_memory)
-        return AgentQAResult(True, (), ())
-
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=1,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=qa,
-    )
-
-    handlers["qa"](state)
-
-    assert seen[0].user_glossary[0].zh == "中校"
-    assert [entry.eng for entry in seen[0].glossary] == ["SecNav"]
-
-
-def test_qa_runs_overlapping_windows_and_keeps_conflicts_for_review(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(
-        VALID_ASS
-        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
-        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
-        encoding="utf-8",
-    )
-
-    def qa(batch, structural_qa, repair_history, episode_memory):
-        translation = "甲" if batch[0].id == 0 else "乙"
-        return AgentQAResult(
-            False,
-            ("Needs correction",),
-            (AgentRepair(1, translation),),
-        )
-
-    review = tmp_path / "review.ass"
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            review,
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
-            qa_batch_size=2,
-            qa_max_workers=2,
-            qa_window_offsets=(0, 1),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=qa,
-    )
-
-    update = handlers["qa"](state_for(source, "serial_memory"))
-
-    assert update["qa_repair_applied"] is False
-    assert "conflicting repairs for ID 1" in update["qa_conclusion"]
-    assert review.read_bytes() == source.read_bytes()
-
-
-def test_qa_resumes_after_last_committed_batch(tmp_path) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(
-        VALID_ASS
-        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
-        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
-        encoding="utf-8",
-    )
-    seen_batches = []
-    fail_second_batch = True
-
-    def qa(batch, structural_qa, repair_history, episode_memory):
-        nonlocal fail_second_batch
-        seen_batches.append(tuple(pair.id for pair in batch))
-        if batch[0].id == 1 and fail_second_batch:
-            fail_second_batch = False
-            raise RuntimeError("QA interrupted")
-        return AgentQAResult(True, (), ())
-
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=1,
-            episode_replacements=(),
-            qa_batch_size=1,
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=qa,
-    )
-    state = state_for(source, "serial_memory")
-
-    with pytest.raises(RuntimeError, match="QA interrupted"):
-        handlers["qa"](state)
-    update = handlers["qa"](state)
-
-    assert seen_batches == [(0,), (1,), (1,)]
-    assert update["qa_passed"] is True
-
-
-@pytest.mark.parametrize(
-    "mutate, match",
-    [
-        (lambda payload: payload.update(version=2), "version must be 1"),
-        (
-            lambda payload: payload.update(artifact_hash="0" * 64),
-            "artifact_hash does not match",
-        ),
-        (
-            lambda payload: payload.update(memory_hash="0" * 64),
-            "memory_hash does not match",
-        ),
-        (lambda payload: payload.update(next_pair=True), "non-negative integer"),
-        (lambda payload: payload.update(extra=True), "unknown fields: extra"),
-    ],
-)
-def test_refine_rejects_invalid_progress(tmp_path, mutate, match) -> None:
-    source = tmp_path / "input.ass"
-    source.write_text(VALID_ASS, encoding="utf-8")
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(progress_mutation=mutate),
-        agent_qa=pass_agent_qa,
-    )
-
-    with pytest.raises(ValueError, match=match):
-        handlers["refine_serial"](state_for(source, "serial_memory"))
-
-
-def test_qa_failure_reports_counts(tmp_path) -> None:
-    source = tmp_path / "bad.ass"
-    source.write_text(VALID_ASS.replace(",,你好", ",,"), encoding="utf-8")
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(
-            False, ("Missing translation",), ()
-        ),
-    )
-
-    conclusion = handlers["qa"](state_for(source, "serial_memory"))["qa_conclusion"]
-
-    assert conclusion.startswith("structural=failed: ")
-    assert "empty_chinese_events=1" in conclusion
-
-
-def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> None:
-    source = tmp_path / "wrong.ass"
-    source.write_text(VALID_ASS.replace("你好", "错误"), encoding="utf-8")
-    run_dir = tmp_path / "run"
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            run_dir,
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=1,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: output_path,
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(
-            False,
-            ("The Chinese translation is incorrect.",),
-            (AgentRepair(0, "你好"),),
-        ),
-    )
-    state = state_for(source, "serial_memory")
-
-    update = handlers["qa"](state)
-
-    repaired = Path(update["artifact_path"])
-    assert repaired == run_dir / "qa-repair-001.ass"
-    assert "你好" in repaired.read_text(encoding="utf-8-sig")
-    assert "Hello" in repaired.read_text(encoding="utf-8-sig")
-    assert "错误" in source.read_text(encoding="utf-8")
-    assert update["agent_repair_attempts"] == 1
-    assert update["qa_repair_applied"] is True
-
-    exhausted_state = state_for(source, "serial_memory")
-    exhausted_state["agent_repair_attempts"] = 1
-    exhausted = handlers["qa"](exhausted_state)
-    assert exhausted["qa_repair_applied"] is False
-    assert exhausted["artifact_path"] == str(tmp_path / "review.ass")
-
-
-def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_path) -> None:
-    malformed_ass = tmp_path / "bad.ass"
-    malformed_ass.write_text("not ass\n", encoding="utf-8")
-    srt = tmp_path / "input.srt"
-    srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
-    handlers = build_stage_handlers(
-        WorkflowSettings(
-            tmp_path / "run",
-            tmp_path / "review.ass",
-            tmp_path / "release.ass",
-            primer_batch_size=1,
-            primer_max_workers=1,
-            agent_max_repair_attempts=2,
-            episode_replacements=(),
-        ),
-        preprocess_subtitle=lambda input_path, output_path: pytest.fail(
-            "serial mode preprocessed"
-        ),
-        translate_batch=lambda batch: (),
-        refine=make_refine(),
-        agent_qa=pass_agent_qa,
-    )
-
-    with pytest.raises(ValueError, match="expected a .ass"):
-        handlers["preprocess"](state_for(srt, "serial_memory"))
-    with pytest.raises(ValueError, match="not parseable"):
-        handlers["preprocess"](state_for(malformed_ass, "serial_memory"))
+    state = handlers["human_review"](state, "approve")
+    manifest = load_manifest(state["manifest_path"])
+    approved = artifact_path(state["manifest_path"], manifest, "approved")
+    assert "人工修改" in approved.read_text(encoding="utf-8-sig")
+    assert approved != review

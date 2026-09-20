@@ -1,0 +1,15 @@
+[Script Info]
+ScriptType: v4.00+
+
+[V4+ Styles]
+Style: English3,Calibri
+Style: Chinese3,Microsoft YaHei
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: -1,0:00:05.70,0:00:08.44,English3,,0,0,0,,Merry Christmas. Thank you, sir.
+Dialogue:  1,0:00:05.70,0:00:08.44,Chinese3,,0,0,0,,圣诞快乐。谢谢您，先生。
+Dialogue: -1,0:00:08.53,0:00:10.66,English3,,0,0,0,,Help save the children.
+Dialogue:  1,0:00:08.53,0:00:10.66,Chinese3,,0,0,0,,请帮助拯救孩子们。
+Dialogue: -1,0:00:10.75,0:00:13.27,English3,,0,0,0,,Thank you, ma'am. Thank you.
+Dialogue:  1,0:00:10.75,0:00:13.27,Chinese3,,0,0,0,,谢谢您，女士。谢谢。

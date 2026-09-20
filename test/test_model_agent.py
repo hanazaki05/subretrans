@@ -5,217 +5,150 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from subretrans.model_agent import (
-    AgentQAMemory,
+    AgentQADecisionHistory,
+    AgentQAEvidence,
     AgentQAGlossaryTerm,
+    AgentQAMemory,
     AgentQAResult,
+    AgentQASuggestion,
     AgentQATerm,
-    AgentRepair,
-    AgentRepairHistory,
+    AgentQATranslation,
     build_agent_qa,
 )
 from subretrans.pairs import SubtitlePair
 
 
-QA_PROMPT = (
-    "SHARED RULE SENTINEL\n\nQA TASK SENTINEL\n"
-    "For adjacent cross-line sentences, return coordinated complete replacements."
-)
-
-
-def role_settings() -> Mock:
+def _settings() -> Mock:
     settings = Mock()
     settings.config = Mock(name="config")
-    settings.max_output_tokens = 1400
-    settings.reasoning_effort = "high"
-    settings.temperature = 0.2
     return settings
 
 
-def pairs() -> tuple[SubtitlePair, ...]:
+def _pairs() -> tuple[SubtitlePair, ...]:
     return (
-        SubtitlePair(id=4, eng="He did not leave.", chinese="他走了。"),
-        SubtitlePair(id=9, eng="Stay here.", chinese="留在这里。"),
+        SubtitlePair(4, "He did not leave.", "他走了。"),
+        SubtitlePair(5, "Stay here.", "留在这里。"),
     )
 
 
-def episode_memory() -> AgentQAMemory:
+def _memory() -> AgentQAMemory:
     return AgentQAMemory(
-        story_description="Harm briefs Mac about the case.",
-        user_glossary=(AgentQATerm("Harm", "哈姆"),),
-        glossary=(
-            AgentQAGlossaryTerm(
-                "SecNav", "海军部长", "title", 0.9, (12, 18)
-            ),
-        ),
+        "Harm briefs Mac.",
+        (AgentQATerm("Harm", "哈姆"),),
+        (AgentQAGlossaryTerm("SecNav", "海军部长", "title", 0.9, (4,)),),
     )
 
 
 @patch("subretrans.model_agent.build_chat_model")
-def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
+def test_qa_returns_structured_read_only_suggestions(build_chat_model) -> None:
     model = build_chat_model.return_value
     model.invoke.return_value = AIMessage(
         content=json.dumps(
             {
                 "passed": False,
-                "issues": ["ID 4 reverses the negation."],
-                "repairs": [{"id": 4, "translation": "他没有离开。"}],
+                "suggestions": [
+                    {
+                        "affected_ids": [4],
+                        "kind": "meaning",
+                        "diagnosis": "The negation is reversed.",
+                        "evidence": [
+                            {"affected_ids": [4], "observation": "did not is negative"}
+                        ],
+                        "suggested_translations": [
+                            {"id": 4, "translation": "他没有离开。"}
+                        ],
+                    }
+                ],
             }
         )
     )
-    settings = role_settings()
-
-    qa = build_agent_qa(settings, QA_PROMPT)
+    qa = build_agent_qa(_settings(), "QA prompt")
     result = qa(
-        pairs(),
-        "Structural QA passed: all events are paired.",
-        (),
-        episode_memory(),
+        _pairs(),
+        "structurally valid",
+        (AgentQADecisionHistory("old-key", "dismissed", "false positive"),),
+        _memory(),
     )
 
     assert result == AgentQAResult(
-        passed=False,
-        issues=("ID 4 reverses the negation.",),
-        repairs=(AgentRepair(id=4, translation="他没有离开。"),),
+        False,
+        (
+            AgentQASuggestion(
+                (4,),
+                "meaning",
+                "The negation is reversed.",
+                (AgentQAEvidence((4,), "did not is negative"),),
+                (AgentQATranslation(4, "他没有离开。"),),
+            ),
+        ),
     )
-    build_chat_model.assert_called_once_with(settings.config)
-    messages = model.invoke.call_args.args[0]
-    assert messages[0][1] == QA_PROMPT
-    assert messages[0][1].count("SHARED RULE SENTINEL") == 1
-    assert messages[0][1].count("QA TASK SENTINEL") == 1
-    assert "coordinated complete replacements" in messages[0][1]
-    assert json.loads(messages[1][1]) == {
-        "pairs": [
-            {"id": 4, "english": "He did not leave.", "chinese": "他走了。"},
-            {"id": 9, "english": "Stay here.", "chinese": "留在这里。"},
-        ],
-        "structural_qa": "Structural QA passed: all events are paired.",
-        "repair_history": [],
-        "episode_memory": {
-            "story_description": "Harm briefs Mac about the case.",
-            "user_glossary": [{"eng": "Harm", "zh": "哈姆"}],
-            "glossary": [
-                {
-                    "eng": "SecNav",
-                    "zh": "海军部长",
-                    "type": "title",
-                    "confidence": 0.9,
-                    "evidence_ids": [12, 18],
-                }
-            ],
-        },
-    }
-    assert model.invoke.call_args.kwargs == {}
+    request = json.loads(model.invoke.call_args.args[0][1][1])
+    assert request["decision_history"] == [
+        {"issue_key": "old-key", "status": "dismissed", "reason": "false positive"}
+    ]
+    assert "repairs" not in model.invoke.return_value.content
 
 
 @pytest.mark.parametrize(
     "payload, match",
     [
-        (
-            {"passed": True, "issues": [], "repairs": [], "extra": True},
-            "unknown fields",
-        ),
+        ({"passed": True, "suggestions": [], "extra": 1}, "unknown fields"),
+        ({"passed": False, "suggestions": []}, "at least one suggestion"),
         (
             {
-                "passed": False,
-                "issues": ["Wrong meaning"],
-                "repairs": [
-                    {"id": 4, "translation": "正确"},
-                    {"id": 4, "translation": "也正确"},
+                "passed": True,
+                "suggestions": [
+                    {
+                        "affected_ids": [4],
+                        "kind": "meaning",
+                        "diagnosis": "wrong",
+                        "evidence": [{"affected_ids": [4], "observation": "evidence"}],
+                    }
                 ],
             },
-            "must be unique",
+            "passing response",
         ),
         (
             {
                 "passed": False,
-                "issues": ["Wrong meaning"],
-                "repairs": [{"id": 7, "translation": "正确"}],
+                "suggestions": [
+                    {
+                        "affected_ids": [9],
+                        "kind": "meaning",
+                        "diagnosis": "wrong",
+                        "evidence": [{"affected_ids": [4], "observation": "evidence"}],
+                    }
+                ],
             },
             "does not belong",
         ),
         (
-            {"passed": True, "issues": ["Wrong meaning"], "repairs": []},
-            "passing response",
-        ),
-        (
-            {
-                "passed": True,
-                "issues": [],
-                "repairs": [{"id": 4, "translation": "正确"}],
-            },
-            "passing response",
-        ),
-        (
-            {"passed": False, "issues": [], "repairs": []},
-            "failing response",
-        ),
-        (
-            {"passed": False, "issues": ["   "], "repairs": []},
-            "non-empty string",
-        ),
-        (
             {
                 "passed": False,
-                "issues": ["Wrong meaning"],
-                "repairs": [{"id": 4, "translation": "  "}],
+                "suggestions": [
+                    {
+                        "affected_ids": [4, 5],
+                        "kind": "meaning",
+                        "diagnosis": "wrong",
+                        "evidence": [{"affected_ids": [4], "observation": "evidence"}],
+                        "suggested_translations": [{"id": 4, "translation": "正确"}],
+                    }
+                ],
             },
-            "non-empty string",
+            "cover every affected id",
         ),
     ],
 )
 @patch("subretrans.model_agent.build_chat_model")
-def test_rejects_invalid_semantic_qa_output(
-    build_chat_model, payload, match
-) -> None:
-    build_chat_model.return_value.invoke.return_value = AIMessage(
-        content=json.dumps(payload)
-    )
-    qa = build_agent_qa(role_settings(), QA_PROMPT)
-
+def test_qa_rejects_invalid_suggestion_schema(build_chat_model, payload, match) -> None:
+    build_chat_model.return_value.invoke.return_value = AIMessage(content=json.dumps(payload))
+    qa = build_agent_qa(_settings(), "QA prompt")
     with pytest.raises(ValueError, match=match):
-        qa(pairs(), "Structural QA passed.", (), episode_memory())
+        qa(_pairs(), "valid", (), _memory())
 
 
 @patch("subretrans.model_agent.build_chat_model")
-def test_rejects_empty_agent_text_with_stop_reason(build_chat_model) -> None:
-    build_chat_model.return_value.invoke.return_value = AIMessage(
-        content=[{"type": "thinking", "thinking": "still auditing"}],
-        response_metadata={"stop_reason": "max_tokens"},
-    )
-    qa = build_agent_qa(role_settings(), QA_PROMPT)
-
-    with pytest.raises(ValueError, match="no text content.*max_tokens"):
-        qa(pairs(), "Structural QA passed.", (), episode_memory())
-
-
-@patch("subretrans.model_agent.build_chat_model")
-def test_supplies_window_repair_history(build_chat_model) -> None:
-    model = build_chat_model.return_value
-    model.invoke.return_value = AIMessage(
-        content='{"passed":true,"issues":[],"repairs":[]}'
-    )
-    qa = build_agent_qa(role_settings(), QA_PROMPT)
-
-    qa(
-        pairs(),
-        "passed",
-        (AgentRepairHistory(1, 4, "他走了。", "他没有离开。"),),
-        episode_memory(),
-    )
-
-    assert json.loads(model.invoke.call_args.args[0][1][1])["repair_history"] == [
-        {
-            "attempt": 1,
-            "id": 4,
-            "before": "他走了。",
-            "after": "他没有离开。",
-        }
-    ]
-
-
-@patch("subretrans.model_agent.build_chat_model")
-def test_requires_episode_memory(build_chat_model) -> None:
-    qa = build_agent_qa(role_settings(), QA_PROMPT)
-
-    with pytest.raises(TypeError, match="episode_memory"):
-        qa(pairs(), "passed")
+def test_qa_requires_decision_history_type(build_chat_model) -> None:
+    qa = build_agent_qa(_settings(), "QA prompt")
+    with pytest.raises(TypeError, match="decision_history"):
+        qa(_pairs(), "valid", [], _memory())  # type: ignore[arg-type]

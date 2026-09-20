@@ -1,233 +1,150 @@
-from collections.abc import Callable
-from typing import Any
+from pathlib import Path
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from subretrans.pipeline import STAGES, StageHandler, build_pipeline
-from subretrans.state import (
-    MemorylessTranslationState,
-    PipelineState,
-    Stage,
-    TranslationMode,
-)
+from subretrans.pipeline import STAGES, build_pipeline
+from subretrans.run_manifest import commit_manifest, create_manifest, load_manifest, mutable_manifest
+from subretrans.state import PipelineState, Stage
 
 
-def initial_state(
-    translation_mode: TranslationMode = "parallel_initial",
-) -> PipelineState:
-    return {
-        "artifact_path": "/tmp/input.ass",
-        "artifact_hash": "input-hash",
-        "translation_manifest_path": None,
-        "translation_mode": translation_mode,
-        "stage": "preprocess",
-        "refine_chunk_cursor": 0,
-        "memory_checkpoint_path": "/tmp/input.memory.yaml",
-        "memory_hash": "memory-hash",
-        "model_versions": {
-            "primer": "test-primer",
-            "refine": "test-refine",
-            "extraction": "test-extraction",
-            "agent": "test-agent",
+def initial_state(tmp_path: Path, mode: str = "parallel_initial") -> PipelineState:
+    source = tmp_path / ("source.mkv" if mode == "parallel_initial" else "source.ass")
+    source.write_text("source", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("config", encoding="utf-8")
+    return create_manifest(
+        tmp_path / "run.json",
+        run_id=tmp_path.name,
+        translation_mode=mode,  # type: ignore[arg-type]
+        source_path=source,
+        config_path=config,
+        prompt_paths={name: config for name in ("shared", "refine", "qa", "repair")},
+        release_path=tmp_path / "release.ass",
+        budget_limits={
+            "repair_attempts": 2,
+            "tool_steps": 4,
+            "full_sweeps": 1,
+            "glossary_repairs": 0,
+            "research_requests": 0,
         },
-        "prompt_version": "test-prompt-v1",
-        "qa_conclusion": "pending",
-        "qa_passed": False,
-        "qa_repair_applied": False,
-        "agent_repair_attempts": 0,
-    }
+    )
 
 
-def recording_handlers(calls: list[str]) -> dict[Stage, StageHandler]:
-    def make_handler(stage: Stage) -> Callable[[PipelineState], dict[str, Any]]:
-        def handler(state: PipelineState) -> dict[str, Any]:
+def recording_handlers(calls: list[str], *, verify_repairs: int = 0):
+    verify_calls = 0
+
+    def handler(stage: Stage):
+        def run(state: PipelineState) -> PipelineState:
+            nonlocal verify_calls
             calls.append(stage)
-            assert state["stage"] == stage
-            if stage == "preprocess" and state["translation_mode"] == "parallel_initial":
-                return {"translation_manifest_path": "/tmp/translations.json"}
-            if stage == "qa":
-                return {
-                    "qa_conclusion": "passed",
-                    "qa_passed": True,
-                    "qa_repair_applied": False,
-                }
-            return {}
+            checked, manifest = mutable_manifest(state, expected_stage=stage)
+            routes = {
+                "translate_parallel": "merge_ass",
+                "merge_ass": "freeze_manifest",
+                "freeze_manifest": "refine_serial",
+                "refine_serial": "postprocess",
+                "postprocess": "glossary",
+                "glossary": "qa",
+                "qa": "repair",
+                "repair": "qa_verify",
+                "review_export": "human_review",
+                "release": "end",
+            }
+            if stage == "preprocess":
+                next_stage = (
+                    "translate_parallel"
+                    if manifest["translation_mode"] == "parallel_initial"
+                    else "freeze_manifest"
+                )
+            elif stage == "qa_verify":
+                verify_calls += 1
+                next_stage = "repair" if verify_calls <= verify_repairs else "review_export"
+            else:
+                next_stage = routes[stage]
+            return commit_manifest(
+                checked,
+                stage=stage,
+                next_stage=next_stage,  # type: ignore[arg-type]
+                route_reason=f"{stage}_complete",
+                manifest=manifest,
+            )
 
-        return handler
+        return run
 
-    return {stage: make_handler(stage) for stage in STAGES}
+    handlers = {stage: handler(stage) for stage in STAGES if stage != "human_review"}
 
+    def human_review(state: PipelineState, decision: str) -> PipelineState:
+        calls.append("human_review")
+        checked, manifest = mutable_manifest(state, expected_stage="human_review")
+        return commit_manifest(
+            checked,
+            stage="human_review",
+            next_stage="release" if decision == "approve" else "end",
+            route_reason=f"human_{decision}",
+            manifest=manifest,
+        )
 
-def test_parallel_translation_cannot_see_proofreading_memory() -> None:
-    seen_state: MemorylessTranslationState | None = None
-    handlers = recording_handlers([])
-
-    def translate(state: MemorylessTranslationState) -> dict[str, Any]:
-        nonlocal seen_state
-        seen_state = state
-        return {}
-
-    handlers["translate_parallel"] = translate  # type: ignore[assignment]
-    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
-    pipeline.invoke(
-        initial_state(), {"configurable": {"thread_id": "memoryless-translate"}}
-    )
-
-    assert seen_state is not None
-    assert "memory_checkpoint_path" not in seen_state
-    assert "memory_hash" not in seen_state
-    assert "refine_chunk_cursor" not in seen_state
+    handlers["human_review"] = human_review
+    return handlers
 
 
-def run_until_review(calls: list[str], thread_id: str):
-    pipeline = build_pipeline(
-        recording_handlers(calls), checkpointer=InMemorySaver()
-    )
-    config = {"configurable": {"thread_id": thread_id}}
-    result = pipeline.invoke(initial_state(), config)
-    assert result["__interrupt__"]
-    return pipeline, config
-
-
-def test_pipeline_runs_stages_in_fixed_order() -> None:
+def test_parallel_pipeline_runs_complete_second_batch_graph(tmp_path: Path) -> None:
     calls: list[str] = []
-    pipeline, config = run_until_review(calls, "fixed-order")
+    graph = build_pipeline(recording_handlers(calls), checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "parallel"}}
 
-    pipeline.invoke(Command(resume="approve"), config)
+    result = graph.invoke(initial_state(tmp_path), config)
+    assert result["__interrupt__"]
+    graph.invoke(Command(resume="approve"), config)
 
     assert calls == list(STAGES)
 
 
-def test_serial_memory_mode_skips_parallel_translation_and_merge() -> None:
+def test_serial_mode_skips_primer_and_merge(tmp_path: Path) -> None:
     calls: list[str] = []
-    pipeline = build_pipeline(
-        recording_handlers(calls), checkpointer=InMemorySaver()
-    )
-    config = {"configurable": {"thread_id": "serial-memory"}}
+    graph = build_pipeline(recording_handlers(calls), checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "serial"}}
 
-    result = pipeline.invoke(initial_state("serial_memory"), config)
+    result = graph.invoke(initial_state(tmp_path, "serial_memory"), config)
     assert result["__interrupt__"]
-    pipeline.invoke(Command(resume="approve"), config)
+    graph.invoke(Command(resume="reject"), config)
 
-    assert calls == [
-        "preprocess",
-        "refine_serial",
-        "postprocess",
-        "qa",
-        "human_review",
-        "release",
-    ]
-
-
-def test_release_runs_only_after_explicit_approval() -> None:
-    calls: list[str] = []
-    pipeline, config = run_until_review(calls, "approve")
-
-    result = pipeline.invoke(Command(resume="approve"), config)
-
-    assert calls[-2:] == ["human_review", "release"]
-    assert result["stage"] == "release"
-
-
-def test_rejection_terminates_without_release() -> None:
-    calls: list[str] = []
-    pipeline, config = run_until_review(calls, "reject")
-
-    result = pipeline.invoke(Command(resume="reject"), config)
-
-    assert calls[-1] == "human_review"
+    assert "translate_parallel" not in calls
+    assert "merge_ass" not in calls
+    assert calls[:3] == ["preprocess", "freeze_manifest", "refine_serial"]
     assert "release" not in calls
-    assert result["stage"] == "human_review"
 
 
-def test_agent_repair_repeats_postprocess_and_qa_before_review() -> None:
+def test_repair_runs_when_initial_qa_is_empty_and_verify_can_loop(tmp_path: Path) -> None:
     calls: list[str] = []
-    handlers = recording_handlers(calls)
-    qa_calls = 0
-
-    def qa(state: PipelineState) -> dict[str, Any]:
-        nonlocal qa_calls
-        calls.append("qa")
-        qa_calls += 1
-        if qa_calls == 1:
-            return {
-                "qa_conclusion": "repair applied",
-                "qa_passed": False,
-                "qa_repair_applied": True,
-                "agent_repair_attempts": 1,
-            }
-        return {
-            "qa_conclusion": "passed",
-            "qa_passed": True,
-            "qa_repair_applied": False,
-        }
-
-    handlers["qa"] = qa
-    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
-    result = pipeline.invoke(
-        initial_state(), {"configurable": {"thread_id": "agent-repair"}}
+    graph = build_pipeline(
+        recording_handlers(calls, verify_repairs=1), checkpointer=InMemorySaver()
+    )
+    result = graph.invoke(
+        initial_state(tmp_path), {"configurable": {"thread_id": "repair-loop"}}
     )
 
     assert result["__interrupt__"]
-    assert calls[-4:] == ["postprocess", "qa", "postprocess", "qa"]
-
-
-def test_failed_qa_without_repair_goes_to_human_review() -> None:
-    calls: list[str] = []
-    handlers = recording_handlers(calls)
-
-    def qa(state: PipelineState) -> dict[str, Any]:
-        calls.append("qa")
-        return {
-            "qa_conclusion": "failed",
-            "qa_passed": False,
-            "qa_repair_applied": False,
-        }
-
-    handlers["qa"] = qa
-    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
-    result = pipeline.invoke(
-        initial_state(), {"configurable": {"thread_id": "agent-exhausted"}}
-    )
-
-    assert result["__interrupt__"]
-    assert calls[-1] == "qa"
+    assert calls.count("qa") == 1
+    assert calls.count("repair") == 2
+    assert calls.count("qa_verify") == 2
 
 
 def test_missing_handler_fails_when_building_pipeline() -> None:
-    handlers = recording_handlers([])
+    handlers = {stage: (lambda state: state) for stage in STAGES}
     del handlers["qa"]
-
     with pytest.raises(ValueError, match="missing stage handlers: qa"):
         build_pipeline(handlers, checkpointer=InMemorySaver())
 
 
-def test_failed_stage_resumes_without_repeating_completed_stages() -> None:
+def test_manifest_stage_is_authoritative_after_completion(tmp_path: Path) -> None:
     calls: list[str] = []
-    handlers = recording_handlers(calls)
-    attempts = 0
-    original_refine = handlers["refine_serial"]
+    graph = build_pipeline(recording_handlers(calls), checkpointer=InMemorySaver())
+    state = initial_state(tmp_path)
+    graph.invoke(state, {"configurable": {"thread_id": "authority"}})
 
-    def refine(state: PipelineState) -> dict[str, Any]:
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("transient refine failure")
-        return original_refine(state)
-
-    handlers["refine_serial"] = refine
-    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
-    config = {"configurable": {"thread_id": "resume-failure"}}
-
-    with pytest.raises(RuntimeError, match="transient refine failure"):
-        pipeline.invoke(initial_state(), config)
-
-    result = pipeline.invoke(None, config)
-
-    assert result["__interrupt__"]
-    assert calls.count("preprocess") == 1
-    assert calls.count("translate_parallel") == 1
-    assert calls.count("merge_ass") == 1
-    assert attempts == 2
+    manifest = load_manifest(state["manifest_path"], verify_artifacts=False)
+    assert manifest["next_stage"] == "human_review"
+    assert manifest["completed_stage"] == "review_export"

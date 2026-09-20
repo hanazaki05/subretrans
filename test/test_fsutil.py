@@ -11,9 +11,11 @@ from subretrans.fsutil import (
     atomic_write_json,
     atomic_write_text,
     atomic_write_yaml,
+    canonical_json_bytes,
     require_distinct_paths,
     require_exact_fields,
     sha256_file,
+    sha256_json,
 )
 
 
@@ -26,6 +28,13 @@ def test_sha256_file_matches_hashlib(tmp_path: Path) -> None:
     path.write_bytes(b"hello" * 1000)
 
     assert sha256_file(path) == hashlib.sha256(b"hello" * 1000).hexdigest()
+
+
+def test_canonical_json_hash_is_order_independent_and_rejects_nan() -> None:
+    assert canonical_json_bytes({"b": "值", "a": 1}) == '{"a":1,"b":"值"}'.encode()
+    assert sha256_json({"b": "值", "a": 1}) == sha256_json({"a": 1, "b": "值"})
+    with pytest.raises(ValueError, match="Out of range float values"):
+        canonical_json_bytes({"value": float("nan")})
 
 
 def test_atomic_writers_replace_content_without_leftovers(tmp_path: Path) -> None:

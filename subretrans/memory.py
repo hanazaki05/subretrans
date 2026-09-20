@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,6 +13,12 @@ import yaml
 from langchain_core.language_models import BaseChatModel
 
 from .fsutil import atomic_write_yaml, require_exact_fields
+from .glossary_validation import (
+    EffectiveGlossary,
+    build_effective_glossary,
+    normalize_term_key as _normalize_glossary_term_key,
+    validate_learned_candidates,
+)
 from .pairs import SubtitlePair, pairs_to_json_list
 from .prompts import (
     MEMORY_COMPRESSION_SYSTEM_PROMPT,
@@ -34,6 +38,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MEMORY_FIELDS = {"user_glossary", "glossary", "story_description"}
+OPTIONAL_MEMORY_FIELDS = {"glossary_decisions", "glossary_unresolved"}
 _LEGACY_MEMORY_FIELDS = {"style_notes"}
 VALID_TERMINOLOGY_TYPES = {
     "person",
@@ -62,13 +67,39 @@ class GlobalMemory:
     user_glossary: list[dict[str, Any]] = field(default_factory=list)
     glossary: list[dict[str, Any]] = field(default_factory=list)
     story_description: str = ""
+    glossary_decisions: list[dict[str, Any]] = field(default_factory=list)
+    glossary_unresolved: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "user_glossary": self.user_glossary,
             "glossary": self.glossary,
             "story_description": self.story_description,
         }
+        if self.glossary_decisions:
+            payload["glossary_decisions"] = self.glossary_decisions
+        if self.glossary_unresolved:
+            payload["glossary_unresolved"] = self.glossary_unresolved
+        return payload
+
+    def effective_glossary(
+        self,
+        *,
+        episode_replacements: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
+        episode_id: str | None = None,
+        manifest_hash: str | None = None,
+        artifact_hash: str | None = None,
+    ) -> EffectiveGlossary:
+        """Build the frozen glossary shared by prompt and validation callers."""
+
+        return build_effective_glossary(
+            self.user_glossary,
+            self.glossary,
+            episode_replacements,
+            episode_id=episode_id,
+            manifest_hash=manifest_hash,
+            artifact_hash=artifact_hash,
+        )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GlobalMemory:
@@ -80,6 +111,8 @@ class GlobalMemory:
             user_glossary=[dict(entry) for entry in data["user_glossary"]],
             glossary=[dict(entry) for entry in data["glossary"]],
             story_description=data["story_description"],
+            glossary_decisions=[dict(entry) for entry in data.get("glossary_decisions", [])],
+            glossary_unresolved=[dict(entry) for entry in data.get("glossary_unresolved", [])],
         )
 
 
@@ -89,7 +122,7 @@ def validate_memory_structure(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
     keys = set(payload)
-    if not MEMORY_FIELDS <= keys or keys - MEMORY_FIELDS - _LEGACY_MEMORY_FIELDS:
+    if not MEMORY_FIELDS <= keys or keys - MEMORY_FIELDS - _LEGACY_MEMORY_FIELDS - OPTIONAL_MEMORY_FIELDS:
         return False
     if "style_notes" in payload and not isinstance(payload["style_notes"], str):
         return False
@@ -97,6 +130,9 @@ def validate_memory_structure(payload: Any) -> bool:
         return False
     if not isinstance(payload["story_description"], str):
         return False
+    for field_name in OPTIONAL_MEMORY_FIELDS:
+        if field_name in payload and not isinstance(payload[field_name], list):
+            return False
     for entry in (*payload["user_glossary"], *payload["glossary"]):
         if not isinstance(entry, dict):
             return False
@@ -126,10 +162,7 @@ def save_memory_checkpoint(memory: GlobalMemory, path: str | os.PathLike[str]) -
 def normalize_term_key(value: Any) -> str:
     """Normalize an English term for matching: NFKC, no zero-width marks, casefold."""
 
-    if not isinstance(value, str):
-        return ""
-    cleaned = unicodedata.normalize("NFKC", value).replace("\ufeff", "").replace("\u200b", "")
-    return re.sub(r"\s+", " ", cleaned.strip()).casefold()
+    return _normalize_glossary_term_key(value)
 
 
 def prune_learned_glossary_against_user_glossary(
@@ -168,15 +201,25 @@ class TerminologyEntry:
     type: str
     confidence: float
     evidence_ids: tuple[int, ...] = ()
+    episode_id: str | None = None
+    manifest_hash: str | None = None
+    artifact_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "eng": self.eng,
             "zh": self.zh,
             "type": self.type,
             "confidence": self.confidence,
             "evidence_ids": list(self.evidence_ids),
         }
+        if self.episode_id is not None:
+            payload["episode_id"] = self.episode_id
+        if self.manifest_hash is not None:
+            payload["manifest_hash"] = self.manifest_hash
+        if self.artifact_hash is not None:
+            payload["artifact_hash"] = self.artifact_hash
+        return payload
 
 
 def _coerce_evidence_ids(raw_ids: Any) -> tuple[int, ...]:
@@ -184,18 +227,23 @@ def _coerce_evidence_ids(raw_ids: Any) -> tuple[int, ...]:
         return ()
     evidence: list[int] = []
     for item in raw_ids:
-        try:
-            value = int(item)
-        except (TypeError, ValueError):
+        if type(item) is not int:
             continue
-        if value not in evidence:
-            evidence.append(value)
+        if item not in evidence:
+            evidence.append(item)
         if len(evidence) >= _MAX_EVIDENCE_IDS:
             break
     return tuple(evidence)
 
 
-def _parse_terminology_entries(raw_data: Any, min_confidence: float) -> list[TerminologyEntry]:
+def _parse_terminology_entries(
+    raw_data: Any,
+    min_confidence: float,
+    *,
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
+) -> list[TerminologyEntry]:
     """Keep well-formed candidates at or above the confidence threshold."""
 
     if not isinstance(raw_data, list):
@@ -216,7 +264,16 @@ def _parse_terminology_entries(raw_data: Any, min_confidence: float) -> list[Ter
         if term_type not in VALID_TERMINOLOGY_TYPES:
             continue
         entries.append(
-            TerminologyEntry(eng, zh, term_type, confidence, _coerce_evidence_ids(item.get("evidence_ids")))
+            TerminologyEntry(
+                eng,
+                zh,
+                term_type,
+                confidence,
+                _coerce_evidence_ids(item.get("evidence_ids")),
+                episode_id,
+                manifest_hash,
+                artifact_hash,
+            )
         )
     return entries
 
@@ -238,6 +295,9 @@ def extract_memory_update(
     model: BaseChatModel,
     settings: GlossarySettings,
     user_glossary: list[dict[str, Any]],
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
 ) -> tuple[list[TerminologyEntry], str, UsageStats]:
     """Ask the extraction model for new terminology and the updated story."""
 
@@ -262,7 +322,13 @@ def extract_memory_update(
         raise ValueError("memory update glossary must be a list")
     if not isinstance(payload["story_description"], str):
         raise ValueError("memory update story_description must be a string")
-    entries = _parse_terminology_entries(payload["glossary"], settings.terminology_min_confidence)
+    entries = _parse_terminology_entries(
+        payload["glossary"],
+        settings.terminology_min_confidence,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
+    )
     return entries, payload["story_description"].strip(), usage
 
 
@@ -272,6 +338,10 @@ def update_global_memory(
     *,
     model: BaseChatModel,
     settings: GlossarySettings,
+    episode_replacements: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
+    episode_id: str | None = None,
+    manifest_hash: str | None = None,
+    artifact_hash: str | None = None,
 ) -> tuple[GlobalMemory, UsageStats]:
     """Merge one chunk's extracted terminology and story into ``memory`` in place.
 
@@ -289,24 +359,56 @@ def update_global_memory(
         model=model,
         settings=settings,
         user_glossary=memory.user_glossary,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
     )
     memory.story_description = story
 
-    user_keys = {normalize_term_key(entry.get("eng")) for entry in memory.user_glossary}
-    learned_keys = {normalize_term_key(entry.get("eng")) for entry in memory.glossary}
-    added = locked = duplicate = 0
-    for candidate in candidates:
-        key = normalize_term_key(candidate.eng)
-        if key in user_keys:
-            locked += 1
-            logger.debug("Glossary lock: skipped learned term %r -> %r", candidate.eng, candidate.zh)
-            continue
-        if key in learned_keys:
-            duplicate += 1
-            continue
-        memory.glossary.append(candidate.to_dict())
-        learned_keys.add(key)
-        added += 1
+    before_effective = memory.effective_glossary(
+        episode_replacements=episode_replacements,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
+    )
+    # Do not carry learned entries that are shadowed by either authority into
+    # the next prompt or QA payload.  Keep the first occurrence's order.
+    allowed_existing = {term.key for term in before_effective.learned}
+    memory.glossary = [
+        entry for entry in memory.glossary if normalize_term_key(entry.get("eng")) in allowed_existing
+    ]
+    validation = validate_learned_candidates(
+        candidates,
+        corrected_pairs,
+        before_effective,
+        episode_id=episode_id,
+        manifest_hash=manifest_hash,
+        artifact_hash=artifact_hash,
+    )
+    memory.glossary_decisions.extend(
+        decision.to_dict() for decision in (*before_effective.decisions, *validation.decisions)
+    )
+    memory.glossary_unresolved.extend(
+        decision.to_dict() for decision in (*before_effective.unresolved, *validation.unresolved)
+    )
+    for issue in validation.evidence_issues:
+        logger.warning(
+            "Terminology evidence rejected: eng=%r id=%r code=%s detail=%s",
+            issue.eng,
+            issue.evidence_id,
+            issue.code,
+            issue.detail,
+        )
+
+    added = len(validation.accepted)
+    locked = sum(
+        decision.reason == "duplicate-authoritative-key"
+        for decision in validation.decisions
+    )
+    duplicate = sum(
+        decision.reason == "duplicate-learned-key" for decision in validation.decisions
+    )
+    memory.glossary.extend(term.to_dict() for term in validation.accepted)
 
     overflow = len(memory.glossary) - settings.max_entries
     if overflow > 0:
@@ -359,6 +461,8 @@ def compress_memory(
         user_glossary=[dict(entry) for entry in memory.user_glossary],
         glossary=[dict(entry) for entry in payload["glossary"]],
         story_description=payload["story_description"].strip(),
+        glossary_decisions=[dict(entry) for entry in memory.glossary_decisions],
+        glossary_unresolved=[dict(entry) for entry in memory.glossary_unresolved],
     )
     prune_learned_glossary_against_user_glossary(compressed)
     return compressed, usage
