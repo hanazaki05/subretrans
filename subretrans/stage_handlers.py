@@ -24,7 +24,11 @@ from .ass_parser import (
     render_ass_file,
     write_ass_file,
 )
-from .memory import validate_memory_structure
+from .memory import (
+    GlobalMemory,
+    prune_learned_glossary_against_user_glossary,
+    validate_memory_structure,
+)
 from .model_agent import (
     AgentQA,
     AgentQAGlossaryTerm,
@@ -203,6 +207,14 @@ def _load_qa_memory(state: PipelineState) -> tuple[AgentQAMemory, str]:
     payload = yaml.safe_load(memory_path.read_text(encoding="utf-8"))
     if not validate_memory_structure(payload):
         raise ValueError(f"Invalid QA memory checkpoint: {memory_path}")
+    memory = GlobalMemory.from_dict(payload)
+    removed_count, _ = prune_learned_glossary_against_user_glossary(memory)
+    if removed_count:
+        logger.info(
+            "Stage qa: ignored %d learned glossary entries overridden by "
+            "the authoritative user glossary",
+            removed_count,
+        )
 
     def user_terms(values: list[dict[str, Any]]) -> tuple[AgentQATerm, ...]:
         parsed: list[AgentQATerm] = []
@@ -247,9 +259,9 @@ def _load_qa_memory(state: PipelineState) -> tuple[AgentQAMemory, str]:
 
     return (
         AgentQAMemory(
-            story_description=payload["story_description"],
-            user_glossary=user_terms(payload["user_glossary"]),
-            glossary=learned_terms(payload["glossary"]),
+            story_description=memory.story_description,
+            user_glossary=user_terms(memory.user_glossary),
+            glossary=learned_terms(memory.glossary),
         ),
         memory_hash,
     )

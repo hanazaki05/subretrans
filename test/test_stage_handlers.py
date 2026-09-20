@@ -295,6 +295,50 @@ def test_qa_rejects_changed_memory_checkpoint(tmp_path) -> None:
         handlers["qa"](state)
 
 
+def test_qa_user_glossary_overrides_learned_duplicate(tmp_path) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(VALID_ASS, encoding="utf-8")
+    state = state_for(source, "serial_memory")
+    memory_path = Path(state["memory_checkpoint_path"])
+    memory_path.write_text(
+        "user_glossary:\n"
+        "- {eng: Commander, zh: 中校}\n"
+        "glossary:\n"
+        "- {eng: ' commander ', zh: 指挥官, type: title, confidence: 0.9, evidence_ids: [1]}\n"
+        "- {eng: SecNav, zh: 海军部长, type: title, confidence: 0.8, evidence_ids: [2]}\n"
+        "style_notes: ''\n"
+        "story_description: Test episode context.\n",
+        encoding="utf-8",
+    )
+    state["memory_hash"] = sha256(memory_path)
+    seen = []
+
+    def qa(batch, structural_qa, repair_history, episode_memory):
+        seen.append(episode_memory)
+        return AgentQAResult(True, (), ())
+
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            tmp_path / "run",
+            tmp_path / "review.ass",
+            tmp_path / "release.ass",
+            primer_batch_size=1,
+            primer_max_workers=1,
+            agent_max_repair_attempts=1,
+            episode_replacements=(),
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=qa,
+    )
+
+    handlers["qa"](state)
+
+    assert seen[0].user_glossary[0].zh == "中校"
+    assert [entry.eng for entry in seen[0].glossary] == ["SecNav"]
+
+
 def test_qa_runs_overlapping_windows_and_keeps_conflicts_for_review(tmp_path) -> None:
     source = tmp_path / "input.ass"
     source.write_text(
