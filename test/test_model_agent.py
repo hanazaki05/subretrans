@@ -5,7 +5,10 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from subretrans.model_agent import (
+    AgentQAMemory,
+    AgentQAGlossaryTerm,
     AgentQAResult,
+    AgentQATerm,
     AgentRepair,
     AgentRepairHistory,
     build_agent_qa,
@@ -29,6 +32,18 @@ def pairs() -> tuple[SubtitlePair, ...]:
     )
 
 
+def episode_memory() -> AgentQAMemory:
+    return AgentQAMemory(
+        story_description="Harm briefs Mac about the case.",
+        user_glossary=(AgentQATerm("Harm", "哈姆"),),
+        glossary=(
+            AgentQAGlossaryTerm(
+                "SecNav", "海军部长", "title", 0.9, (12, 18)
+            ),
+        ),
+    )
+
+
 @patch("subretrans.model_agent.build_chat_model")
 def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
     model = build_chat_model.return_value
@@ -44,7 +59,12 @@ def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
     settings = role_settings()
 
     qa = build_agent_qa(settings)
-    result = qa(pairs(), "Structural QA passed: all events are paired.")
+    result = qa(
+        pairs(),
+        "Structural QA passed: all events are paired.",
+        (),
+        episode_memory(),
+    )
 
     assert result == AgentQAResult(
         passed=False,
@@ -62,6 +82,19 @@ def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
         ],
         "structural_qa": "Structural QA passed: all events are paired.",
         "repair_history": [],
+        "episode_memory": {
+            "story_description": "Harm briefs Mac about the case.",
+            "user_glossary": [{"eng": "Harm", "zh": "哈姆"}],
+            "glossary": [
+                {
+                    "eng": "SecNav",
+                    "zh": "海军部长",
+                    "type": "title",
+                    "confidence": 0.9,
+                    "evidence_ids": [12, 18],
+                }
+            ],
+        },
     }
     assert model.invoke.call_args.kwargs == {}
 
@@ -132,7 +165,7 @@ def test_rejects_invalid_semantic_qa_output(
     qa = build_agent_qa(role_settings())
 
     with pytest.raises(ValueError, match=match):
-        qa(pairs(), "Structural QA passed.")
+        qa(pairs(), "Structural QA passed.", (), episode_memory())
 
 
 @patch("subretrans.model_agent.build_chat_model")
@@ -144,7 +177,7 @@ def test_rejects_empty_agent_text_with_stop_reason(build_chat_model) -> None:
     qa = build_agent_qa(role_settings())
 
     with pytest.raises(ValueError, match="no text content.*max_tokens"):
-        qa(pairs(), "Structural QA passed.")
+        qa(pairs(), "Structural QA passed.", (), episode_memory())
 
 
 @patch("subretrans.model_agent.build_chat_model")
@@ -159,6 +192,7 @@ def test_supplies_window_repair_history(build_chat_model) -> None:
         pairs(),
         "passed",
         (AgentRepairHistory(1, 4, "他走了。", "他没有离开。"),),
+        episode_memory(),
     )
 
     assert json.loads(model.invoke.call_args.args[0][1][1])["repair_history"] == [
@@ -169,3 +203,11 @@ def test_supplies_window_repair_history(build_chat_model) -> None:
             "after": "他没有离开。",
         }
     ]
+
+
+@patch("subretrans.model_agent.build_chat_model")
+def test_requires_episode_memory(build_chat_model) -> None:
+    qa = build_agent_qa(role_settings())
+
+    with pytest.raises(TypeError, match="episode_memory"):
+        qa(pairs(), "passed")

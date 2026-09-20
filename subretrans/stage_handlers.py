@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import yaml
+
 from .ass_parser import (
     apply_pairs_to_ass_lines,
     build_pairs_from_ass_lines,
@@ -22,7 +24,15 @@ from .ass_parser import (
     render_ass_file,
     write_ass_file,
 )
-from .model_agent import AgentQA, AgentRepair, AgentRepairHistory
+from .memory import validate_memory_structure
+from .model_agent import (
+    AgentQA,
+    AgentQAGlossaryTerm,
+    AgentQAMemory,
+    AgentQATerm,
+    AgentRepair,
+    AgentRepairHistory,
+)
 from .subtitle_processing import (
     POSTPROCESS_OPERATIONS,
     SrtCue,
@@ -125,6 +135,7 @@ def _load_qa_progress(
     batch_size: int,
     window_offsets: tuple[int, ...],
     history_hash: str,
+    memory_hash: str,
 ) -> tuple[int, bool, list[str], list[dict[str, Any]]]:
     if not path.exists():
         return 0, True, [], []
@@ -136,6 +147,7 @@ def _load_qa_progress(
         "batch_size",
         "window_offsets",
         "history_hash",
+        "memory_hash",
         "next_window",
         "agent_passed",
         "issues",
@@ -143,8 +155,8 @@ def _load_qa_progress(
     }
     if type(payload) is not dict or set(payload) != expected:
         raise ValueError("QA progress has invalid fields")
-    if payload["version"] != 3:
-        raise ValueError("QA progress version must be 3")
+    if payload["version"] != 4:
+        raise ValueError("QA progress version must be 4")
     if payload["artifact_path"] != str(artifact_path):
         raise ValueError("QA progress artifact_path does not match")
     if payload["artifact_hash"] != artifact_hash:
@@ -155,6 +167,8 @@ def _load_qa_progress(
         raise ValueError("QA progress window_offsets do not match qa.window_offsets")
     if payload["history_hash"] != history_hash:
         raise ValueError("QA progress history_hash does not match repair history")
+    if payload["memory_hash"] != memory_hash:
+        raise ValueError("QA progress memory_hash does not match episode memory")
     if type(payload["next_window"]) is not int or payload["next_window"] < 0:
         raise ValueError("QA progress next_window must be a non-negative integer")
     if type(payload["agent_passed"]) is not bool:
@@ -173,6 +187,71 @@ def _load_qa_progress(
         payload["agent_passed"],
         payload["issues"],
         payload["repairs"],
+    )
+
+
+def _load_qa_memory(state: PipelineState) -> tuple[AgentQAMemory, str]:
+    memory_path_value = state["memory_checkpoint_path"]
+    if not memory_path_value:
+        raise ValueError("QA requires the refine memory checkpoint")
+    memory_path = Path(memory_path_value)
+    if not memory_path.is_file():
+        raise FileNotFoundError(f"QA memory checkpoint not found: {memory_path}")
+    memory_hash = _sha256(memory_path)
+    if memory_hash != state["memory_hash"]:
+        raise ValueError("QA memory checkpoint hash does not match pipeline state")
+    payload = yaml.safe_load(memory_path.read_text(encoding="utf-8"))
+    if not validate_memory_structure(payload):
+        raise ValueError(f"Invalid QA memory checkpoint: {memory_path}")
+
+    def user_terms(values: list[dict[str, Any]]) -> tuple[AgentQATerm, ...]:
+        parsed: list[AgentQATerm] = []
+        for value in values:
+            if not isinstance(value["eng"], str) or not isinstance(value["zh"], str):
+                raise ValueError("QA memory glossary eng and zh must be strings")
+            parsed.append(AgentQATerm(value["eng"], value["zh"]))
+        return tuple(parsed)
+
+    def learned_terms(
+        values: list[dict[str, Any]],
+    ) -> tuple[AgentQAGlossaryTerm, ...]:
+        parsed: list[AgentQAGlossaryTerm] = []
+        for value in values:
+            eng = value["eng"]
+            zh = value["zh"]
+            term_type = value.get("type")
+            confidence = value.get("confidence")
+            evidence_ids = value.get("evidence_ids", [])
+            if not isinstance(eng, str) or not isinstance(zh, str):
+                raise ValueError("QA memory glossary eng and zh must be strings")
+            if term_type is not None and not isinstance(term_type, str):
+                raise ValueError("QA memory glossary type must be a string or null")
+            if confidence is not None and (
+                isinstance(confidence, bool) or not isinstance(confidence, (int, float))
+            ):
+                raise ValueError("QA memory glossary confidence must be numeric or null")
+            if not isinstance(evidence_ids, list) or not all(
+                type(identifier) is int for identifier in evidence_ids
+            ):
+                raise ValueError("QA memory glossary evidence_ids must be integers")
+            parsed.append(
+                AgentQAGlossaryTerm(
+                    eng,
+                    zh,
+                    term_type,
+                    float(confidence) if confidence is not None else None,
+                    tuple(evidence_ids),
+                )
+            )
+        return tuple(parsed)
+
+    return (
+        AgentQAMemory(
+            story_description=payload["story_description"],
+            user_glossary=user_terms(payload["user_glossary"]),
+            glossary=learned_terms(payload["glossary"]),
+        ),
+        memory_hash,
     )
 
 
@@ -486,6 +565,7 @@ def build_stage_handlers(
         structural_qa = _qa_conclusion(input_path)
         header, ass_lines = parse_ass_file(str(input_path))
         pairs = build_pairs_from_ass_lines(ass_lines)
+        episode_memory, memory_hash = _load_qa_memory(state)
         attempt = state["agent_repair_attempts"]
         repair_history_path = run_dir / "qa-repair-history.json"
         repair_history = _read_repair_history(repair_history_path)
@@ -502,7 +582,7 @@ def build_stage_handlers(
         qa_progress_path = run_dir / (
             f"qa-progress-{state['artifact_hash'][:12]}-"
             f"{settings.qa_batch_size}-{offset_key}-"
-            f"{history_hash[:12] or 'nohistory'}.json"
+            f"{history_hash[:12] or 'nohistory'}-{memory_hash[:12]}.json"
         )
         next_window, agent_passed, issues, raw_repairs = _load_qa_progress(
             qa_progress_path,
@@ -511,6 +591,7 @@ def build_stage_handlers(
             settings.qa_batch_size,
             settings.qa_window_offsets,
             history_hash,
+            memory_hash,
         )
         if next_window > len(windows):
             raise ValueError("QA progress next_window exceeds the window count")
@@ -520,12 +601,13 @@ def build_stage_handlers(
         ]
         logger.info(
             "Stage qa: auditing %d pairs in %d windows across %d passes; "
-            "workers=%d; structural QA=%s",
+            "workers=%d; structural QA=%s; memory=%s",
             len(pairs),
             len(windows),
             len(settings.qa_window_offsets),
             settings.qa_max_workers,
             structural_qa,
+            memory_hash[:12],
         )
         if next_window:
             logger.info(
@@ -555,6 +637,7 @@ def build_stage_handlers(
                             for entry in repair_history
                             if start <= entry.id < end
                         ),
+                        episode_memory,
                     ): (index, round_index, start, end)
                     for index, (round_index, start, end) in enumerate(
                         wave, start=next_window
@@ -586,12 +669,13 @@ def build_stage_handlers(
             _atomic_json(
                 qa_progress_path,
                 {
-                    "version": 3,
+                    "version": 4,
                     "artifact_path": str(input_path),
                     "artifact_hash": state["artifact_hash"],
                     "batch_size": settings.qa_batch_size,
                     "window_offsets": list(settings.qa_window_offsets),
                     "history_hash": history_hash,
+                    "memory_hash": memory_hash,
                     "next_window": next_window,
                     "agent_passed": agent_passed,
                     "issues": issues,

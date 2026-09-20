@@ -91,7 +91,11 @@ postprocess:
             if refine_attempts == 1:
                 raise RuntimeError("transient refine failure")
             output_path.write_bytes(input_path.read_bytes())
-            checkpoint_path.write_text("story_description: test\n", encoding="utf-8")
+            checkpoint_path.write_text(
+                "user_glossary: []\nglossary: []\nstyle_notes: ''\n"
+                "story_description: Test episode context.\n",
+                encoding="utf-8",
+            )
             progress_path.write_text(
                 json.dumps(
                     {
@@ -113,7 +117,7 @@ postprocess:
     )
     monkeypatch.setattr(
         "subretrans.pipeline_cli.build_agent_qa",
-        lambda settings: lambda pairs, structural_qa, repair_history: AgentQAResult(True, (), ()),
+        lambda settings: lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(True, (), ()),
     )
     run_args = argparse.Namespace(
         input=str(source),

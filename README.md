@@ -91,6 +91,10 @@ selected by `refine.intermediate_representation`.
 `qa.batch_size` controls how many bilingual pairs each semantic-QA request
 audits. Pipeline commands report committed refine and QA progress at `INFO`;
 pass `--debug` to expose provider HTTP and raw model-response diagnostics.
+Every QA window receives the final refine `memory.yaml` as read-only structured
+context: cumulative story description, authoritative user glossary, and the
+complete learned glossary including confidence and evidence IDs. QA checkpoints are bound to the memory hash, so
+changing that context invalidates old QA progress instead of silently reusing it.
 
 The run writes the human-review candidate beside the input subtitle, inserting
 `.review` before the output extension (for example,

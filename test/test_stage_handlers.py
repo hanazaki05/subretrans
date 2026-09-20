@@ -26,6 +26,12 @@ def sha256(path: Path) -> str:
 
 
 def state_for(path: Path, mode: str) -> PipelineState:
+    memory = path.parent / "test-memory.yaml"
+    memory.write_text(
+        "user_glossary: []\nglossary: []\nstyle_notes: ''\n"
+        "story_description: Test episode context.\n",
+        encoding="utf-8",
+    )
     return {
         "artifact_path": str(path),
         "artifact_hash": sha256(path),
@@ -33,8 +39,8 @@ def state_for(path: Path, mode: str) -> PipelineState:
         "translation_mode": mode,  # type: ignore[typeddict-item]
         "stage": "preprocess",
         "refine_chunk_cursor": 0,
-        "memory_checkpoint_path": None,
-        "memory_hash": "",
+        "memory_checkpoint_path": str(memory),
+        "memory_hash": sha256(memory),
         "model_versions": {
             "primer": "test-primer",
             "refine": "test-refine",
@@ -62,7 +68,11 @@ def make_refine(*, progress_mutation=None):
         progress_path: Path,
     ) -> None:
         output_path.write_bytes(input_path.read_bytes())
-        checkpoint_path.write_text("story: test\n", encoding="utf-8")
+        checkpoint_path.write_text(
+            "user_glossary: []\nglossary: []\nstyle_notes: ''\n"
+            "story_description: Test episode context.\n",
+            encoding="utf-8",
+        )
         payload = {
             "version": 1,
             "next_pair": 7,
@@ -78,7 +88,7 @@ def make_refine(*, progress_mutation=None):
     return refine
 
 
-def pass_agent_qa(pairs, structural_qa, repair_history):
+def pass_agent_qa(pairs, structural_qa, repair_history, episode_memory):
     return AgentQAResult(True, (), ())
 
 
@@ -222,9 +232,11 @@ def test_qa_runs_configured_batches(tmp_path) -> None:
         encoding="utf-8",
     )
     seen_batches = []
+    seen_memories = []
 
-    def qa(batch, structural_qa, repair_history):
+    def qa(batch, structural_qa, repair_history, episode_memory):
         seen_batches.append(tuple(pair.id for pair in batch))
+        seen_memories.append(episode_memory)
         return AgentQAResult(True, (), ())
 
     handlers = build_stage_handlers(
@@ -247,7 +259,40 @@ def test_qa_runs_configured_batches(tmp_path) -> None:
     update = handlers["qa"](state_for(source, "serial_memory"))
 
     assert seen_batches == [(0,), (1,)]
+    assert all(
+        memory.story_description == "Test episode context."
+        for memory in seen_memories
+    )
     assert update["qa_passed"] is True
+
+
+def test_qa_rejects_changed_memory_checkpoint(tmp_path) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(VALID_ASS, encoding="utf-8")
+    state = state_for(source, "serial_memory")
+    Path(state["memory_checkpoint_path"]).write_text(
+        "user_glossary: []\nglossary: []\nstyle_notes: changed\n"
+        "story_description: Changed context.\n",
+        encoding="utf-8",
+    )
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            tmp_path / "run",
+            tmp_path / "review.ass",
+            tmp_path / "release.ass",
+            primer_batch_size=1,
+            primer_max_workers=1,
+            agent_max_repair_attempts=1,
+            episode_replacements=(),
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=pass_agent_qa,
+    )
+
+    with pytest.raises(ValueError, match="memory checkpoint hash"):
+        handlers["qa"](state)
 
 
 def test_qa_runs_overlapping_windows_and_keeps_conflicts_for_review(tmp_path) -> None:
@@ -259,7 +304,7 @@ def test_qa_runs_overlapping_windows_and_keeps_conflicts_for_review(tmp_path) ->
         encoding="utf-8",
     )
 
-    def qa(batch, structural_qa, repair_history):
+    def qa(batch, structural_qa, repair_history, episode_memory):
         translation = "甲" if batch[0].id == 0 else "乙"
         return AgentQAResult(
             False,
@@ -305,7 +350,7 @@ def test_qa_resumes_after_last_committed_batch(tmp_path) -> None:
     seen_batches = []
     fail_second_batch = True
 
-    def qa(batch, structural_qa, repair_history):
+    def qa(batch, structural_qa, repair_history, episode_memory):
         nonlocal fail_second_batch
         seen_batches.append(tuple(pair.id for pair in batch))
         if batch[0].id == 1 and fail_second_batch:
@@ -394,7 +439,7 @@ def test_qa_failure_reports_counts(tmp_path) -> None:
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa, repair_history: AgentQAResult(
+        agent_qa=lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(
             False, ("Missing translation",), ()
         ),
     )
@@ -422,7 +467,7 @@ def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> N
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa, repair_history: AgentQAResult(
+        agent_qa=lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(
             False,
             ("The Chinese translation is incorrect.",),
             (AgentRepair(0, "你好"),),

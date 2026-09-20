@@ -36,6 +36,34 @@ class AgentRepairHistory:
 
 
 @dataclass(frozen=True)
+class AgentQATerm:
+    """One read-only terminology mapping from refine memory."""
+
+    eng: str
+    zh: str
+
+
+@dataclass(frozen=True)
+class AgentQAGlossaryTerm:
+    """One learned terminology entry from refine memory."""
+
+    eng: str
+    zh: str
+    type: str | None
+    confidence: float | None
+    evidence_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class AgentQAMemory:
+    """Read-only episode context supplied to every semantic-QA window."""
+
+    story_description: str
+    user_glossary: tuple[AgentQATerm, ...]
+    glossary: tuple[AgentQAGlossaryTerm, ...]
+
+
+@dataclass(frozen=True)
 class AgentQAResult:
     """Strict semantic-QA decision returned by the agent model."""
 
@@ -49,6 +77,7 @@ AgentQA = Callable[
         tuple[SubtitlePair, ...] | list[SubtitlePair],
         str,
         tuple[AgentRepairHistory, ...],
+        AgentQAMemory,
     ],
     AgentQAResult,
 ]
@@ -85,13 +114,19 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
         "replacement of an input pair's complete Chinese translation is "
         "needed; preserve its input id exactly.\n"
         "The user message is one JSON object with exactly the keys \"pairs\", "
-        "\"structural_qa\", and \"repair_history\". Each pairs element has exactly the keys "
-        "\"id\", \"english\", and \"chinese\". Return JSON only: one object "
+        "\"structural_qa\", \"repair_history\", and \"episode_memory\". "
+        "Each pairs element has exactly the keys \"id\", \"english\", and "
+        "\"chinese\". episode_memory is read-only context containing the "
+        "cumulative story description, authoritative user glossary, and learned "
+        "glossary from refinement. Enforce those terms and use the "
+        "story to judge names, references, relationships, and cross-window "
+        "consistency. Do not alter or reinterpret the supplied memory. "
         "repair_history contains prior applied changes for pairs in the current "
         "window, with attempt, id, before, and after. Judge the current Chinese "
         "text, use that history to avoid reverting valid repairs, and report a "
         "new repair only when the current text still needs correction. "
-        "with exactly the keys \"passed\", \"issues\", and \"repairs\". "
+        "Return JSON only: one object with exactly the keys \"passed\", "
+        "\"issues\", and \"repairs\". "
         "passed must be a boolean. issues must be an array of non-empty "
         "strings. repairs must be an array whose elements contain exactly "
         "the keys \"id\" and \"translation\", with an integer input id and "
@@ -103,7 +138,8 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
     def agent_qa(
         pairs: tuple[SubtitlePair, ...] | list[SubtitlePair],
         structural_qa: str,
-        repair_history: tuple[AgentRepairHistory, ...] = (),
+        repair_history: tuple[AgentRepairHistory, ...],
+        episode_memory: AgentQAMemory,
     ) -> AgentQAResult:
         if type(pairs) not in (tuple, list):
             raise TypeError("pairs must be a tuple or list")
@@ -115,6 +151,8 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
             not isinstance(entry, AgentRepairHistory) for entry in repair_history
         ):
             raise TypeError("repair_history must contain AgentRepairHistory values")
+        if not isinstance(episode_memory, AgentQAMemory):
+            raise TypeError("episode_memory must be an AgentQAMemory")
 
         input_ids = {pair.id for pair in pairs}
         request_payload = {
@@ -132,6 +170,31 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
                 }
                 for entry in repair_history
             ],
+            "episode_memory": {
+                "story_description": episode_memory.story_description,
+                "user_glossary": [
+                    {"eng": entry.eng, "zh": entry.zh}
+                    for entry in episode_memory.user_glossary
+                ],
+                "glossary": [
+                    {
+                        "eng": entry.eng,
+                        "zh": entry.zh,
+                        **({"type": entry.type} if entry.type is not None else {}),
+                        **(
+                            {"confidence": entry.confidence}
+                            if entry.confidence is not None
+                            else {}
+                        ),
+                        **(
+                            {"evidence_ids": list(entry.evidence_ids)}
+                            if entry.evidence_ids
+                            else {}
+                        ),
+                    }
+                    for entry in episode_memory.glossary
+                ],
+            },
         }
         response = model.invoke(
             [
