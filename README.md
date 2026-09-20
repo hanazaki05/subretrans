@@ -483,36 +483,29 @@ Success rate:  100%
 - Natural phrasing: ~15% of lines
 - All ASS tags preserved: 100%
 
-## Template-Based Prompt System (v0.0.6)
+## Composed Prompt System
 
-The system prompt is now generated from a **single markdown template file** (`main_prompt.md`):
+Refinement and semantic QA use one shared rule file plus a stage-specific task:
+
+- Refine system prompt: `shared_translation_rules.md` + `refine_task.md`
+- QA system prompt: `shared_translation_rules.md` + `qa_task.md`
 
 ### How It Works
 
-1. **Template Structure**: The template uses markdown sections (`### 1. English Subtitle Rules`, etc.)
-2. **Dynamic Injection**: The `### 4. User Terminology (Authoritative Glossary)` section is dynamically updated with:
+1. **Shared rules**: Chinese style, terminology, JAG context, and cross-line alignment are defined once and passed to both stages.
+2. **Stage tasks**: Refine owns editing/output examples; QA owns auditing, repair history, and strict repair JSON.
+3. **Dynamic injection**: The authoritative glossary section is updated with:
    - Template glossary entries (parsed from the file)
    - Runtime `GlobalMemory.user_glossary` entries (merged, runtime takes precedence)
    - Learned terminology (appended as "Learned Terminology (Supplement)")
-3. **Automatic Renumbering**: All sections are renumbered automatically
-
-### Template Sections
-
-```markdown
-### 1. English Subtitle Rules
-### 2. Chinese Subtitle Rules
-### 3. Context & Specific Handling
-### 4. User Terminology (Authoritative Glossary)  ← Dynamic injection point
-### 5. Input/Output Format & Constraint
-### 6. Few-Shot Examples
-```
+4. **Cross-line QA**: A repair that moves or reverses clauses must return coordinated replacements for every affected ID; if the current segmentation cannot represent a natural correction, QA reports the issue without repairing it.
 
 ### Benefits
 
-- **Single source of truth** - All rules in one markdown file
+- **Single source of truth** - Shared rules are not duplicated between refine and QA
 - **Easy customization** - Edit markdown without code changes
 - **Dynamic terminology** - Automatic glossary injection from GlobalMemory
-- **Backward compatible** - Falls back to legacy prompt building if no config provided
+- **Prompt provenance** - New run state hashes the config and all prompt components
 
 ## Configuration
 
@@ -536,6 +529,11 @@ api:
 
 pipeline:
   agent_max_repair_attempts: 2
+
+prompts:
+  shared_path: rm/shared_translation_rules.md
+  refine_path: rm/refine_task.md
+  qa_path: rm/qa_task.md
 
 qa:
   batch_size: 64

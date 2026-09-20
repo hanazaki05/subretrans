@@ -73,6 +73,40 @@ def _strict_section(
     return section
 
 
+@dataclass(frozen=True)
+class PromptPaths:
+    """Prompt components shared and composed by the pipeline stages."""
+
+    shared: Path
+    refine: Path
+    qa: Path
+
+
+def load_prompt_paths(yaml_file_path: str | Path | None = None) -> PromptPaths:
+    """Load strict prompt-component paths relative to the YAML file."""
+
+    path = Path(yaml_file_path or REPOSITORY_ROOT / "config.yaml").resolve()
+    section = _strict_section(
+        load_yaml_config(path),
+        "prompts",
+        {"shared_path", "refine_path", "qa_path"},
+    )
+
+    def resolve(field_name: str) -> Path:
+        prompt_path = Path(
+            _nonempty_string(section[field_name], f"prompts.{field_name}")
+        )
+        if not prompt_path.is_absolute():
+            prompt_path = path.parent / prompt_path
+        return prompt_path.resolve()
+
+    return PromptPaths(
+        shared=resolve("shared_path"),
+        refine=resolve("refine_path"),
+        qa=resolve("qa_path"),
+    )
+
+
 @dataclass
 class RoleModelSettings:
     """Complete provider and generation settings for one model role."""
@@ -208,6 +242,7 @@ class ConfigSDK:
     refine: RoleModelSettings
     extraction: RoleModelSettings
     agent: RoleModelSettings
+    prompt_paths: PromptPaths
     memory_token_limit: int = 4000
     chunk_token_soft_limit: int = 60000
     refine_batch_size: Optional[int] = None
@@ -220,7 +255,6 @@ class ConfigSDK:
     max_chunks: Optional[int] = None
     glossary_max_entries: int = 100
     glossary_policy: str = "lock"
-    refine_prompt_path: str = "main_prompt.md"
     terminology_min_confidence: float = 0.6
     intermediate_representation: str = "json"
 
@@ -247,6 +281,7 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
         "postprocess",
         "subtitle_edit",
         "glossary",
+        "prompts",
     }
     unknown_sections = set(payload) - allowed_sections
     if unknown_sections:
@@ -281,7 +316,6 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
             "chunk_token_soft_limit",
             "memory_token_limit",
             "intermediate_representation",
-            "prompt_path",
         },
     )
     glossary_settings = _strict_section(
@@ -299,12 +333,8 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
         refine_settings["intermediate_representation"],
         "refine.intermediate_representation",
     )
-    prompt_path = Path(
-        _nonempty_string(refine_settings["prompt_path"], "refine.prompt_path")
-    )
     yaml_path = Path(yaml_file_path or REPOSITORY_ROOT / "config.yaml").resolve()
-    if not prompt_path.is_absolute():
-        prompt_path = yaml_path.parent / prompt_path
+    prompt_paths = load_prompt_paths(yaml_path)
     max_entries = glossary_settings["max_entries"]
     if type(max_entries) is not int or max_entries <= 0:
         raise ValueError("glossary.max_entries must be a positive integer")
@@ -324,13 +354,13 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
         refine=roles["refine"],
         extraction=roles["extraction"],
         agent=roles["agent"],
+        prompt_paths=prompt_paths,
         memory_token_limit=refine_settings["memory_token_limit"],
         chunk_token_soft_limit=refine_settings["chunk_token_soft_limit"],
         refine_batch_size=batch_size,
         glossary_max_entries=max_entries,
         glossary_policy=policy,
         terminology_min_confidence=float(confidence),
-        refine_prompt_path=str(prompt_path.resolve()),
         intermediate_representation=representation,
     )
 

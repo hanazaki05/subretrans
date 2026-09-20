@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from .config import RoleModelSettings, load_api_roles
+from .config import PromptPaths, RoleModelSettings, load_api_roles, load_prompt_paths
 from .subtitle_edit import SubtitleEditSettings
 from .subtitle_processing import POSTPROCESS_OPERATIONS
 
@@ -27,6 +27,7 @@ class PipelineSettings:
     user_instruction: str | None
     postprocess_operations: tuple[str, ...]
     episode_replacements: tuple[tuple[str, str], ...]
+    prompt_paths: PromptPaths
 
 
 def _load_section(yaml_path: str | Path, section_name: str) -> tuple[dict[str, Any], Path]:
@@ -116,7 +117,6 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
             "chunk_token_soft_limit",
             "memory_token_limit",
             "intermediate_representation",
-            "prompt_path",
         },
     )
     qa, _ = _load_section(yaml_path, "qa")
@@ -215,6 +215,7 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
         user_instruction=user_instruction,
         postprocess_operations=tuple(postprocess_operations),
         episode_replacements=tuple(episode_replacements),
+        prompt_paths=load_prompt_paths(yaml_path),
     )
 
 

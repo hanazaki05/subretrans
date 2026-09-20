@@ -22,6 +22,7 @@ from .config import load_config_sdk
 from .model_agent import build_agent_qa
 from .model_translation import build_model_translate_batch
 from .pipeline import build_pipeline
+from .prompts import load_qa_prompt_template
 from .stage_handlers import WorkflowSettings, build_stage_handlers
 from .state import PipelineState, TranslationMode
 from .subtitle_edit import preprocess_with_seconv
@@ -89,6 +90,20 @@ def _configured_model_versions(config_path: Path) -> dict[str, str]:
         role: load_role_model_settings(config_path, role).model
         for role in ("primer", "refine", "extraction", "agent")
     }
+
+
+def _prompt_version(config_path: Path, settings: PipelineSettings) -> str:
+    """Hash the config and every composed prompt component."""
+
+    digest = hashlib.sha256()
+    for path in (
+        config_path,
+        settings.prompt_paths.shared,
+        settings.prompt_paths.refine,
+        settings.prompt_paths.qa,
+    ):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def _lazy_translate_batch(
@@ -213,7 +228,10 @@ def _handlers(
         preprocess_subtitle=_subtitle_preprocessor(config_path),
         translate_batch=_lazy_translate_batch(config_path, pipeline_settings),
         refine=_refine_callable(config_path),
-        agent_qa=build_agent_qa(load_role_model_settings(config_path, "agent")),
+        agent_qa=build_agent_qa(
+            load_role_model_settings(config_path, "agent"),
+            load_qa_prompt_template(pipeline_settings.prompt_paths),
+        ),
     )
 
 
@@ -274,7 +292,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "memory_checkpoint_path": None,
         "memory_hash": "",
         "model_versions": model_versions,
-        "prompt_version": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "prompt_version": _prompt_version(config_path, pipeline_settings),
         "qa_conclusion": "pending",
         "qa_passed": False,
         "qa_repair_applied": False,

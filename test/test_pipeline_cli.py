@@ -6,8 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from subretrans.cli import file_sha256
+from subretrans.config import PromptPaths
 from subretrans.model_agent import AgentQAResult
 from subretrans.pipeline_cli import (
+    _prompt_version,
     _refine_callable,
     resume_pipeline,
     review_pipeline,
@@ -25,6 +27,25 @@ Dialogue:  1,0:00:01.00,0:00:02.00,Chinese3,,0,0,0,,你好
 """
 
 
+def test_prompt_version_includes_all_prompt_components(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    shared = tmp_path / "shared.md"
+    refine = tmp_path / "refine.md"
+    qa = tmp_path / "qa.md"
+    config.write_text("config", encoding="utf-8")
+    shared.write_text("shared", encoding="utf-8")
+    refine.write_text("refine", encoding="utf-8")
+    qa.write_text("qa", encoding="utf-8")
+    settings = SimpleNamespace(
+        prompt_paths=PromptPaths(shared=shared, refine=refine, qa=qa)
+    )
+
+    original = _prompt_version(config, settings)
+    qa.write_text("updated qa", encoding="utf-8")
+
+    assert _prompt_version(config, settings) != original
+
+
 def test_serial_pipeline_cli_resumes_failure_and_releases_review(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -33,6 +54,12 @@ def test_serial_pipeline_cli_resumes_failure_and_releases_review(
     release = tmp_path / "release.ass"
     key = tmp_path / "key"
     key.write_text("test-key\n", encoding="utf-8")
+    shared_prompt = tmp_path / "shared.md"
+    refine_prompt = tmp_path / "refine.md"
+    qa_prompt = tmp_path / "qa.md"
+    shared_prompt.write_text("Shared subtitle rules.\n", encoding="utf-8")
+    refine_prompt.write_text("Refine task.\n", encoding="utf-8")
+    qa_prompt.write_text("QA task.\n", encoding="utf-8")
     config = tmp_path / "config.yaml"
     config.write_text(
         f"""api:
@@ -53,6 +80,10 @@ pipeline:
   state_dir: {tmp_path / 'state'}
   checkpoint_db: {tmp_path / 'state/checkpoints.sqlite3'}
   agent_max_repair_attempts: 1
+prompts:
+  shared_path: {shared_prompt}
+  refine_path: {refine_prompt}
+  qa_path: {qa_prompt}
 primer:
   batch_size: 2
   max_workers: 2
@@ -64,7 +95,6 @@ refine:
   chunk_token_soft_limit: 80000
   memory_token_limit: 4000
   intermediate_representation: xml-pair
-  prompt_path: {tmp_path / 'prompt.md'}
 qa:
   batch_size: 10
   max_workers: 2
@@ -117,7 +147,7 @@ postprocess:
     )
     monkeypatch.setattr(
         "subretrans.pipeline_cli.build_agent_qa",
-        lambda settings: lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(True, (), ()),
+        lambda settings, system_prompt: lambda pairs, structural_qa, repair_history, episode_memory: AgentQAResult(True, (), ()),
     )
     run_args = argparse.Namespace(
         input=str(source),

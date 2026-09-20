@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from subretrans.config import RoleModelSettings
+from subretrans.config import PromptPaths, RoleModelSettings
 from subretrans.providers import ModelProtocol
 from subretrans.workflow_config import (
     PipelineSettings,
@@ -27,6 +27,10 @@ def pipeline_yaml(
   state_dir: runtime/state
   checkpoint_db: runtime/checkpoints.sqlite
   agent_max_repair_attempts: 2
+prompts:
+  shared_path: prompts/shared.md
+  refine_path: prompts/refine.md
+  qa_path: prompts/qa.md
 primer:
   batch_size: {primer_batch_size}
   max_workers: 3
@@ -38,7 +42,6 @@ refine:
   chunk_token_soft_limit: 80000
   memory_token_limit: 4000
   intermediate_representation: xml-pair
-  prompt_path: prompt.md
 qa:
   batch_size: 40
   max_workers: 3
@@ -93,6 +96,11 @@ def test_pipeline_loader_resolves_paths_without_reading_translation_key(
         user_instruction="Preserve speaker tone.",
         postprocess_operations=("normalize_style_names", "episode_replacements"),
         episode_replacements=(("old", "new"),),
+        prompt_paths=PromptPaths(
+            shared=(tmp_path / "prompts/shared.md").resolve(),
+            refine=(tmp_path / "prompts/refine.md").resolve(),
+            qa=(tmp_path / "prompts/qa.md").resolve(),
+        ),
     )
     assert not (tmp_path / "missing-key").exists()
     with pytest.raises(FrozenInstanceError):
@@ -109,6 +117,10 @@ def test_pipeline_loader_accepts_absolute_paths_and_optional_instruction(
   state_dir: {absolute_state}
   checkpoint_db: checkpoint.sqlite
   agent_max_repair_attempts: 0
+prompts:
+  shared_path: prompts/shared.md
+  refine_path: prompts/refine.md
+  qa_path: prompts/qa.md
 primer:
   batch_size: 1
   max_workers: 1
@@ -120,7 +132,6 @@ refine:
   chunk_token_soft_limit: 80000
   memory_token_limit: 4000
   intermediate_representation: xml-pair
-  prompt_path: prompt.md
 qa:
   batch_size: 25
   max_workers: 2

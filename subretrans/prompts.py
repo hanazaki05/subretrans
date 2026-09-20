@@ -192,47 +192,45 @@ def build_system_prompt_legacy(global_memory: 'GlobalMemory') -> str:
 # ============================================================================
 
 
-def load_main_prompt_template(config) -> str:
-    """
-    Load the refine prompt template from config.refine_prompt_path.
+def load_prompt_file(path: str | os.PathLike[str]) -> str:
+    """Load one prompt component with process-local caching."""
 
-    Args:
-        config: ConfigSDK-like object with refine_prompt_path attribute
-
-    Returns:
-        Template text as string
-
-    Raises:
-        FileNotFoundError: If template file doesn't exist
-    """
     global _TEMPLATE_CACHE
-
-    prompt_path = getattr(config, "refine_prompt_path", "main_prompt.md")
-
-    # Resolve relative path
-    if not os.path.isabs(prompt_path):
-        # Try relative to current working directory first
-        if os.path.exists(prompt_path):
-            full_path = os.path.abspath(prompt_path)
-        else:
-            # Try relative to the repository root.
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            full_path = os.path.join(base_dir, prompt_path)
-    else:
-        full_path = prompt_path
-
-    # Check cache
+    full_path = os.path.abspath(os.fspath(path))
     if full_path in _TEMPLATE_CACHE:
         return _TEMPLATE_CACHE[full_path]
-
     if not os.path.exists(full_path):
-        raise FileNotFoundError(f"Template file not found: {full_path}")
-
+        raise FileNotFoundError(f"Prompt file not found: {full_path}")
     with open(full_path, "r", encoding="utf-8") as f:
         template = f.read()
-
     _TEMPLATE_CACHE[full_path] = template
     return template
+
+
+def compose_prompt(*components: str) -> str:
+    """Join non-empty prompt components in their declared precedence order."""
+
+    normalized: list[str] = []
+    for index, component in enumerate(components):
+        if not isinstance(component, str) or not component.strip():
+            raise ValueError(f"prompt component {index} must be a non-empty string")
+        normalized.append(component.strip())
+    return "\n\n".join(normalized) + "\n"
+
+
+def load_main_prompt_template(config) -> str:
+    """Compose the shared rules and refine-task prompt components."""
+
+    paths = config.prompt_paths
+    return compose_prompt(load_prompt_file(paths.shared), load_prompt_file(paths.refine))
+
+
+def load_qa_prompt_template(prompt_paths) -> str:
+    """Compose the shared rules and QA-task prompt components."""
+
+    return compose_prompt(
+        load_prompt_file(prompt_paths.shared), load_prompt_file(prompt_paths.qa)
+    )
 
 
 def _normalize_section_title(title: str) -> str:
@@ -631,38 +629,23 @@ def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
     """
     Build complete system prompt with memory injection.
 
-    If config is provided and config.refine_prompt_path exists, uses the new
-    template-based approach from plan3.md. Otherwise falls back to legacy behavior.
+    If config is provided, composes the configured shared rules and refine task.
+    Otherwise it falls back to the legacy in-code prompt.
 
     Args:
         global_memory: GlobalMemory object
-        config: Optional config object with refine_prompt_path
+        config: Optional config object with prompt_paths
 
     Returns:
         Complete system prompt with memory
     """
-    # Try new template-based approach if config is provided
     if config is not None:
-        prompt_path = getattr(config, "refine_prompt_path", None)
-        if prompt_path:
-            try:
-                template = load_main_prompt_template(config)
-                template = inject_memory_into_template(template, global_memory)
-
-                # Convert examples to target format if specified
-                representation = getattr(
-                    config, "intermediate_representation", "json"
-                )
-                if representation and representation.lower() != "json":
-                    template = convert_examples_to_format(template, representation)
-
-                return template
-            except FileNotFoundError as e:
-                print(f"  Warning: {e}")
-                print("  Falling back to legacy prompt construction")
-            except Exception as e:
-                print(f"  Warning: Failed to load template: {e}")
-                print("  Falling back to legacy prompt construction")
+        template = load_main_prompt_template(config)
+        template = inject_memory_into_template(template, global_memory)
+        representation = getattr(config, "intermediate_representation", "json")
+        if representation and representation.lower() != "json":
+            template = convert_examples_to_format(template, representation)
+        return template
 
     # Fallback to legacy behavior
     return build_system_prompt_legacy(global_memory)

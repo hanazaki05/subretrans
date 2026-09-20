@@ -140,6 +140,7 @@ def _load_qa_progress(
     window_offsets: tuple[int, ...],
     history_hash: str,
     memory_hash: str,
+    prompt_version: str,
 ) -> tuple[int, bool, list[str], list[dict[str, Any]]]:
     if not path.exists():
         return 0, True, [], []
@@ -152,6 +153,7 @@ def _load_qa_progress(
         "window_offsets",
         "history_hash",
         "memory_hash",
+        "prompt_version",
         "next_window",
         "agent_passed",
         "issues",
@@ -159,8 +161,8 @@ def _load_qa_progress(
     }
     if type(payload) is not dict or set(payload) != expected:
         raise ValueError("QA progress has invalid fields")
-    if payload["version"] != 4:
-        raise ValueError("QA progress version must be 4")
+    if payload["version"] != 5:
+        raise ValueError("QA progress version must be 5")
     if payload["artifact_path"] != str(artifact_path):
         raise ValueError("QA progress artifact_path does not match")
     if payload["artifact_hash"] != artifact_hash:
@@ -173,6 +175,8 @@ def _load_qa_progress(
         raise ValueError("QA progress history_hash does not match repair history")
     if payload["memory_hash"] != memory_hash:
         raise ValueError("QA progress memory_hash does not match episode memory")
+    if payload["prompt_version"] != prompt_version:
+        raise ValueError("QA progress prompt_version does not match")
     if type(payload["next_window"]) is not int or payload["next_window"] < 0:
         raise ValueError("QA progress next_window must be a non-negative integer")
     if type(payload["agent_passed"]) is not bool:
@@ -594,7 +598,8 @@ def build_stage_handlers(
         qa_progress_path = run_dir / (
             f"qa-progress-{state['artifact_hash'][:12]}-"
             f"{settings.qa_batch_size}-{offset_key}-"
-            f"{history_hash[:12] or 'nohistory'}-{memory_hash[:12]}.json"
+            f"{history_hash[:12] or 'nohistory'}-{memory_hash[:12]}-"
+            f"{state['prompt_version'][:12]}.json"
         )
         next_window, agent_passed, issues, raw_repairs = _load_qa_progress(
             qa_progress_path,
@@ -604,6 +609,7 @@ def build_stage_handlers(
             settings.qa_window_offsets,
             history_hash,
             memory_hash,
+            state["prompt_version"],
         )
         if next_window > len(windows):
             raise ValueError("QA progress next_window exceeds the window count")
@@ -681,13 +687,14 @@ def build_stage_handlers(
             _atomic_json(
                 qa_progress_path,
                 {
-                    "version": 4,
+                    "version": 5,
                     "artifact_path": str(input_path),
                     "artifact_hash": state["artifact_hash"],
                     "batch_size": settings.qa_batch_size,
                     "window_offsets": list(settings.qa_window_offsets),
                     "history_hash": history_hash,
                     "memory_hash": memory_hash,
+                    "prompt_version": state["prompt_version"],
                     "next_window": next_window,
                     "agent_passed": agent_passed,
                     "issues": issues,

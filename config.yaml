@@ -49,6 +49,12 @@ pipeline:
   checkpoint_db: ".subretrans-runs/pipeline.sqlite3"
   agent_max_repair_attempts: 2
 
+# Prompt composition. Shared rules are prepended to each stage-specific task.
+prompts:
+  shared_path: "rm/shared_translation_rules.md"
+  refine_path: "rm/refine_task.md"
+  qa_path: "rm/qa_task.md"
+
 primer:
   batch_size: 60
   max_workers: 4
@@ -61,7 +67,6 @@ refine:
   chunk_token_soft_limit: 85000
   memory_token_limit: 4000
   intermediate_representation: "xml-pair"
-  prompt_path: "rm/prompt_afters6e24.md"
 
 qa:
   batch_size: 64

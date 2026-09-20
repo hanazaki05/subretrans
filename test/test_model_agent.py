@@ -16,6 +16,12 @@ from subretrans.model_agent import (
 from subretrans.pairs import SubtitlePair
 
 
+QA_PROMPT = (
+    "SHARED RULE SENTINEL\n\nQA TASK SENTINEL\n"
+    "For adjacent cross-line sentences, return coordinated complete replacements."
+)
+
+
 def role_settings() -> Mock:
     settings = Mock()
     settings.config = Mock(name="config")
@@ -58,7 +64,7 @@ def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
     )
     settings = role_settings()
 
-    qa = build_agent_qa(settings)
+    qa = build_agent_qa(settings, QA_PROMPT)
     result = qa(
         pairs(),
         "Structural QA passed: all events are paired.",
@@ -73,8 +79,10 @@ def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
     )
     build_chat_model.assert_called_once_with(settings.config)
     messages = model.invoke.call_args.args[0]
-    assert "semantic completeness, accuracy" in messages[0][1]
-    assert "cross-pair consistency" in messages[0][1]
+    assert messages[0][1] == QA_PROMPT
+    assert messages[0][1].count("SHARED RULE SENTINEL") == 1
+    assert messages[0][1].count("QA TASK SENTINEL") == 1
+    assert "coordinated complete replacements" in messages[0][1]
     assert json.loads(messages[1][1]) == {
         "pairs": [
             {"id": 4, "english": "He did not leave.", "chinese": "他走了。"},
@@ -162,7 +170,7 @@ def test_rejects_invalid_semantic_qa_output(
     build_chat_model.return_value.invoke.return_value = AIMessage(
         content=json.dumps(payload)
     )
-    qa = build_agent_qa(role_settings())
+    qa = build_agent_qa(role_settings(), QA_PROMPT)
 
     with pytest.raises(ValueError, match=match):
         qa(pairs(), "Structural QA passed.", (), episode_memory())
@@ -174,7 +182,7 @@ def test_rejects_empty_agent_text_with_stop_reason(build_chat_model) -> None:
         content=[{"type": "thinking", "thinking": "still auditing"}],
         response_metadata={"stop_reason": "max_tokens"},
     )
-    qa = build_agent_qa(role_settings())
+    qa = build_agent_qa(role_settings(), QA_PROMPT)
 
     with pytest.raises(ValueError, match="no text content.*max_tokens"):
         qa(pairs(), "Structural QA passed.", (), episode_memory())
@@ -186,7 +194,7 @@ def test_supplies_window_repair_history(build_chat_model) -> None:
     model.invoke.return_value = AIMessage(
         content='{"passed":true,"issues":[],"repairs":[]}'
     )
-    qa = build_agent_qa(role_settings())
+    qa = build_agent_qa(role_settings(), QA_PROMPT)
 
     qa(
         pairs(),
@@ -207,7 +215,7 @@ def test_supplies_window_repair_history(build_chat_model) -> None:
 
 @patch("subretrans.model_agent.build_chat_model")
 def test_requires_episode_memory(build_chat_model) -> None:
-    qa = build_agent_qa(role_settings())
+    qa = build_agent_qa(role_settings(), QA_PROMPT)
 
     with pytest.raises(TypeError, match="episode_memory"):
         qa(pairs(), "passed")

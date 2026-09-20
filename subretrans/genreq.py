@@ -15,7 +15,13 @@ from .config import load_config_sdk
 from .ass_parser import parse_ass_file, build_pairs_from_ass_lines
 from .chunker import chunk_pairs
 from .memory import init_global_memory, estimate_memory_tokens
-from .prompts import build_system_prompt, build_user_prompt_for_chunk, split_user_prompt_and_glossary, set_user_instruction
+from .prompts import (
+    _find_section_boundaries,
+    _parse_template_glossary,
+    build_system_prompt,
+    build_user_prompt_for_chunk,
+    load_main_prompt_template,
+)
 from .utils import estimate_tokens, estimate_pairs_tokens
 from .serializers import serialize
 
@@ -64,27 +70,16 @@ def generate_prompts(input_path, output_path, refine_batch_size, max_chunks, con
             print("Error: No subtitle pairs found")
             return False
 
-        # Step 3: Initialize global memory and load custom prompt
+        # Step 3: Initialize global memory from the composed refine prompt
         global_memory = init_global_memory()
-
-        # Load custom main prompt (if present)
-        prompt_path_cfg = getattr(config, "refine_prompt_path", "custom_main_prompt.md")
-        if os.path.isabs(prompt_path_cfg):
-            custom_prompt_path = prompt_path_cfg
-        else:
-            custom_prompt_path = str(REPOSITORY_ROOT / prompt_path_cfg)
-
-        if os.path.exists(custom_prompt_path):
-            try:
-                with open(custom_prompt_path, "r", encoding="utf-8") as f:
-                    custom_text = f.read()
-                user_instructions, user_glossary = split_user_prompt_and_glossary(custom_text)
-                if user_instructions:
-                    set_user_instruction(user_instructions)
-                if user_glossary:
-                    global_memory.user_glossary = user_glossary
-            except Exception as e:
-                print(f"  Warning: Failed to load custom_main_prompt.md: {e}")
+        prompt_text = load_main_prompt_template(config)
+        section_start, section_end, _ = _find_section_boundaries(
+            prompt_text, "User Terminology (Authoritative Glossary)"
+        )
+        if section_start is not None:
+            global_memory.user_glossary = _parse_template_glossary(
+                prompt_text[section_start:section_end]
+            )
 
         # Step 4: Chunk pairs
         print("\nStep 3: Splitting into chunks...")
@@ -93,7 +88,7 @@ def generate_prompts(input_path, output_path, refine_batch_size, max_chunks, con
         config.refine_batch_size = refine_batch_size
 
         base_prompt_tokens = estimate_tokens(
-            build_system_prompt(global_memory),
+            build_system_prompt(global_memory, config),
             config.refine.model
         )
         print(f"  Base prompt tokens: {base_prompt_tokens:,}")

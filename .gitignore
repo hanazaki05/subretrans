@@ -227,7 +227,9 @@ plan*.md
 .DS_Store
 key
 key-*
-rm
 rm/*
+!rm/shared_translation_rules.md
+!rm/refine_task.md
+!rm/qa_task.md
 .claude/*
 .claude

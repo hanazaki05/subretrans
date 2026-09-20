@@ -101,39 +101,12 @@ def _exact_object(
     return value
 
 
-def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
+def build_agent_qa(settings: RoleModelSettings, system_prompt: str) -> AgentQA:
     """Build a semantic-QA callable with strict JSON response validation."""
 
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise ValueError("agent QA system prompt must be a non-empty string")
     model = build_chat_model(settings.config)
-    system_prompt = (
-        "Audit the supplied English-Chinese subtitle pairs for semantic "
-        "completeness, accuracy, and cross-pair consistency. Treat the local "
-        "structural QA conclusion as evidence about subtitle structure, not as "
-        "a semantic verdict. Report every material semantic problem as a "
-        "specific, non-empty issue. Propose a repair only when a targeted "
-        "replacement of an input pair's complete Chinese translation is "
-        "needed; preserve its input id exactly.\n"
-        "The user message is one JSON object with exactly the keys \"pairs\", "
-        "\"structural_qa\", \"repair_history\", and \"episode_memory\". "
-        "Each pairs element has exactly the keys \"id\", \"english\", and "
-        "\"chinese\". episode_memory is read-only context containing the "
-        "cumulative story description, authoritative user glossary, and learned "
-        "glossary from refinement. Enforce those terms and use the "
-        "story to judge names, references, relationships, and cross-window "
-        "consistency. Do not alter or reinterpret the supplied memory. "
-        "repair_history contains prior applied changes for pairs in the current "
-        "window, with attempt, id, before, and after. Judge the current Chinese "
-        "text, use that history to avoid reverting valid repairs, and report a "
-        "new repair only when the current text still needs correction. "
-        "Return JSON only: one object with exactly the keys \"passed\", "
-        "\"issues\", and \"repairs\". "
-        "passed must be a boolean. issues must be an array of non-empty "
-        "strings. repairs must be an array whose elements contain exactly "
-        "the keys \"id\" and \"translation\", with an integer input id and "
-        "a non-empty complete Chinese translation. Repair ids must be unique. "
-        "When passed is true, issues and repairs must both be empty. When "
-        "passed is false, issues must be non-empty; repairs may be empty."
-    )
 
     def agent_qa(
         pairs: tuple[SubtitlePair, ...] | list[SubtitlePair],
