@@ -1,210 +1,80 @@
-"""Prompt templates and helpers for LLM interactions.
+"""Prompt composition, glossary/story injection, and memory-maintenance prompts.
 
-Contains system prompts for subtitle refinement, memory compression, and
-terminology extraction, plus utilities to inject user customization.
+The refine and QA system prompts are composed from Markdown components on
+disk (shared rules plus a stage task). The refine prompt additionally has its
+"User Terminology" section rewritten with the runtime glossary and receives an
+"Incremental Story Description" section built from episode memory.
 """
 
+from __future__ import annotations
+
+import json
+import logging
 import os
 import re
-import json
-from typing import TYPE_CHECKING, List, Dict, Tuple, Optional
+from typing import TYPE_CHECKING, Any
+
+from .serializers import convert_json_examples_to_format
 
 if TYPE_CHECKING:
+    from .config import PromptPaths
     from .memory import GlobalMemory
 
 
-_USER_INSTRUCTION: str = ""
+logger = logging.getLogger(__name__)
 
-# Cache for loaded template
-_TEMPLATE_CACHE: Dict[str, str] = {}
+GLOSSARY_SECTION_TITLE = "User Terminology (Authoritative Glossary)"
+STORY_SECTION_TITLE = "Incremental Story Description"
+EMPTY_STORY_PLACEHOLDER = "(No story events revealed yet.)"
 
-
-def set_user_instruction(text: str) -> None:
-    """Set extra user-defined instructions to append after BASE_SYSTEM_PROMPT.
-
-    This is populated early in the run (e.g., from custom_main_prompt.md) and
-    is treated as high-priority guidance for the main model.
-    """
-
-    global _USER_INSTRUCTION
-    _USER_INSTRUCTION = text.strip() if text else ""
-
-
-# Base system prompt for subtitle refinement (split into core and critical tail)
-BASE_SYSTEM_PROMPT_CORE = """You are a professional subtitle editor specializing in bilingual (English-Chinese) subtitle refinement.
-
-Your task is to review and correct subtitle pairs while following these rules:
-
-**English Subtitle Rules:**
-1. Perform recaptioning fixes for words and nouns when they should be capitalized
-2. Fix spacing and ending punctuation
-3. DO NOT modify wording, phrasing, or meaning in any way
-4. Preserve ALL ASS formatting tags (e.g., {\\i1}, {\\b1}, \\N) exactly as they appear
-5. Ensure proper sentence capitalization 
-6. Add missing periods at the end of complete sentences
-7. Fix obvious spacing issues (e.g., "Hello,world" → "Hello, world")
-
-**Chinese Subtitle Rules:**
-Optimized Chinese Subtitle Rules:
-  1.Ensure translation accuracy and natural flow
-  2.Maintain consistency with context and character voices
-  3.Use conversational, natural Chinese (avoid overly formal language)
-  4.Preserve all ASS formatting tags exactly as they appear
-Terminology & Name Handling (Strict Order):
-  5. PRIORITY 1 (Glossary Override): If the terminology glossary explicitly defines a term or name, strictly follow that definition regardless of the language (English or Chinese). This rule overrides all others.
-  6. PRIORITY 2 (Acronyms): Keep initial-based nicknames (e.g., "AJ", "DJ", "CC") in their original English form.
-  7. PRIORITY 3 (Standard Translation): For all other personal names (e.g., Chris, Benny), translate them into standard Mandarin Chinese transliterations (标准普通话音译). Ensure the translation chosen is consistent across all subtitles.
-Other Rules:
-  8. Fix any awkward or unnatural phrasing
-  9. **If a sentence ends with a period or comma, remove that period or comma**
-
-Examples:
-  Input: [
-    {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
-    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我需要走了。"},
-    {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
-    {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"}
-    ]
-  Output: [
-    {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
-    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我得走了"},
-    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
-    {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"}
-   ]
-
-**Important Guidelines:**
-- Maintain the subtitle's original intent and meaning
-- Keep subtitles concise and readable
-- Preserve timing and formatting information
-- DO NOT add explanations or comments
-- Output ONLY valid JSON"""
-
-BASE_SYSTEM_PROMPT_CRITICAL = """STRICT ADHERENCE REQUIRED: You MUST follow the Input/Output format exactly as defined below. 
-**Input/Output Format:**
-You will receive a JSON array of subtitle pairs. Each pair has:
-- "id": unique identifier
-- "eng": English subtitle text (with ASS tags)
-- "chinese": Chinese subtitle text (with ASS tags)
-
-Return a JSON array with the SAME structure, containing your corrections.
-
-Example:
-  Input: [{"id": 0, "eng": "hello world", "chinese": "你好世界"}]
-  Output: [{"id": 0, "eng": "Hello world.", "chinese": "你好，世界"}]
-
-**Additional Few-Shot Examples for Clarification:**
-  Input: [
-    {"id": 1, "eng": "Did you talk to chris?", "chinese": "你克里斯说话了吗。"},
-    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我需要走了。"},
-    {"id": 3, "eng": "we need to check the ios version", "chinese": "我们需要检查ios版本"},
-    {"id": 4, "eng": "i told benny, let's go.", "chinese": "我告诉了本尼，我们走吧。"}
-    ]
-  Output: [
-    {"id": 1, "eng": "Did you talk to Chris?", "chinese": "你和克里斯说话了吗"},
-    {"id": 2, "eng": "AJ is on the phone.{\\i1} I need to go.", "chinese": "AJ在电话上。{\\i1} 我得走了"},
-    {"id": 3, "eng": "We need to check the iOS version.", "chinese": "我们需要检查 iOS 版本"},
-    {"id": 4, "eng": "I told Benny. Let's go.", "chinese": "我告诉了本尼。我们走吧"}
-   ]
-
-**CRITICAL:** Return ONLY the JSON array. No explanations, no markdown, no extra text."""
+_TEMPLATE_CACHE: dict[tuple[str, int, int], str] = {}
+_GLOSSARY_LINE_RE = re.compile(r"^\s*-\s+(.+?):\s*(.+?)\s*$")
+_SECTION_NUMBER_RE = re.compile(r"^\d+\.\s*")
+_JSON_INPUT_SENTENCE_RE = re.compile(r"based on the provided JSON input\.")
+_FORMAT_SECTION_RE = re.compile(
+    r"(###\s*\d+\.\s*Input/Output Format & Constraint.*?)"
+    r"(- \*\*Input:\*\*.*?- \*\*STRICT ADHERENCE REQUIRED:\*\*.*?)(?=###|\Z)",
+    re.DOTALL | re.IGNORECASE,
+)
+_EXAMPLES_SECTION_RE = re.compile(
+    r"(###\s*\d+\.\s*Few-Shot Examples[^\n]*\n)(.*?)(?=###|\Z)", re.DOTALL | re.IGNORECASE
+)
+_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*?\n\]")
+_FORMAT_CONSTRAINTS = {
+    "xml-pair": (
+        "XML-pair input",
+        "- **Input:** Subtitle pairs in XML-pair format with `<pair>` tags containing "
+        "`ID`, `eng`, and `chinese` fields.\n"
+        "- **Output:** The same XML-pair format with corrections applied.\n"
+        "- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the XML-pair format. "
+        "No explanations, no markdown blocks (unless requested), no extra text.\n",
+    ),
+    "pseudo-toml": (
+        "pseudo-TOML input",
+        "- **Input:** Subtitle pairs in pseudo-TOML format with `[pair]` sections containing "
+        "`id`, `eng`, and `chinese` fields.\n"
+        "- **Output:** The same pseudo-TOML format with corrections applied.\n"
+        "- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the pseudo-TOML format. "
+        "No explanations, no markdown blocks (unless requested), no extra text.\n",
+    ),
+}
 
 
-def build_memory_section(global_memory: 'GlobalMemory') -> str:
-    """
-    Build the memory section to append to system prompt.
-
-    Args:
-        global_memory: GlobalMemory object containing glossary and style notes
-
-    Returns:
-        Formatted memory section as string
-    """
-    if not global_memory:
-        return ""
-
-    sections = []
-
-    # Add user glossary first (highest priority)
-    user_glossary = getattr(global_memory, "user_glossary", None)
-    if user_glossary:
-        sections.append("\n\n**User Terminology (authoritative):**")
-        for entry in user_glossary:
-            eng = entry.get("eng", "")
-            zh = entry.get("zh", "")
-            if eng and zh:
-                sections.append(f"- {eng}: {zh}")
-
-    # Add learned glossary if present
-    if global_memory.glossary:
-        sections.append("\n\n**Learned Terminology (supplement):**")
-        for entry in global_memory.glossary:
-            eng = entry.get("eng", "")
-            zh = entry.get("zh", "")
-            entry_type = entry.get("type", "")
-            if eng and zh:
-                type_str = f" ({entry_type})" if entry_type else ""
-                sections.append(f"- {eng}{type_str}: {zh}")
-
-    # Add style notes if present
-    if global_memory.style_notes:
-        sections.append(f"\n\n**Style Guidelines:**\n{global_memory.style_notes}")
-
-    story_description = global_memory.story_description or "(No story events revealed yet.)"
-    sections.append(
-        "\n\n**Incremental Story Description:**\n" + story_description
-    )
-
-    return "".join(sections)
-
-
-def build_system_prompt_legacy(global_memory: 'GlobalMemory') -> str:
-    """
-    Build complete system prompt including memory section (legacy version).
-
-    This is the old implementation kept for backward compatibility.
-    Use build_system_prompt() with config for the new template-based approach.
-
-    Args:
-        global_memory: GlobalMemory object
-
-    Returns:
-        Complete system prompt with memory
-    """
-    # Order: base core rules → user instructions → memory section → CRITICAL tail
-    prompt = BASE_SYSTEM_PROMPT_CORE
-
-    if _USER_INSTRUCTION:
-        prompt += "\n\n" + _USER_INSTRUCTION
-
-    if global_memory:
-        memory_section = build_memory_section(global_memory)
-        if memory_section:
-            prompt += memory_section
-
-    # Ensure the CRITICAL output constraint is always the last part
-    prompt += "\n\n" + BASE_SYSTEM_PROMPT_CRITICAL
-
-    return prompt
-
-
-# ============================================================================
-# NEW TEMPLATE-BASED PROMPT CONSTRUCTION (plan3.md)
-# ============================================================================
+# Composition ----------------------------------------------------------------
 
 
 def load_prompt_file(path: str | os.PathLike[str]) -> str:
-    """Load one prompt component with process-local caching."""
+    """Load one prompt component, cached per file content version."""
 
-    global _TEMPLATE_CACHE
     full_path = os.path.abspath(os.fspath(path))
-    if full_path in _TEMPLATE_CACHE:
-        return _TEMPLATE_CACHE[full_path]
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"Prompt file not found: {full_path}")
-    with open(full_path, "r", encoding="utf-8") as f:
-        template = f.read()
-    _TEMPLATE_CACHE[full_path] = template
-    return template
+    stat = os.stat(full_path)
+    key = (full_path, stat.st_mtime_ns, stat.st_size)
+    if key not in _TEMPLATE_CACHE:
+        with open(full_path, encoding="utf-8") as handle:
+            _TEMPLATE_CACHE[key] = handle.read()
+    return _TEMPLATE_CACHE[key]
 
 
 def compose_prompt(*components: str) -> str:
@@ -218,527 +88,215 @@ def compose_prompt(*components: str) -> str:
     return "\n\n".join(normalized) + "\n"
 
 
-def load_main_prompt_template(config) -> str:
-    """Compose the shared rules and refine-task prompt components."""
-
-    paths = config.prompt_paths
-    return compose_prompt(load_prompt_file(paths.shared), load_prompt_file(paths.refine))
-
-
-def load_qa_prompt_template(prompt_paths) -> str:
-    """Compose the shared rules and QA-task prompt components."""
+def load_refine_prompt_template(prompt_paths: PromptPaths) -> str:
+    """Compose the shared rules and the refine task."""
 
     return compose_prompt(
-        load_prompt_file(prompt_paths.shared), load_prompt_file(prompt_paths.qa)
+        load_prompt_file(prompt_paths.shared), load_prompt_file(prompt_paths.refine)
     )
+
+
+def load_qa_prompt_template(prompt_paths: PromptPaths) -> str:
+    """Compose the shared rules and the semantic-QA task."""
+
+    return compose_prompt(load_prompt_file(prompt_paths.shared), load_prompt_file(prompt_paths.qa))
+
+
+# Section handling -----------------------------------------------------------
 
 
 def _normalize_section_title(title: str) -> str:
-    """
-    Normalize a section title by removing leading number and dot.
-
-    Examples:
-        "### 4. User Terminology (Authoritative Glossary)" -> "User Terminology (Authoritative Glossary)"
-        "### User Terminology (Authoritative Glossary)" -> "User Terminology (Authoritative Glossary)"
-        "### 10. User Terminology (Authoritative Glossary)" -> "User Terminology (Authoritative Glossary)"
-    """
-    # Remove "### " prefix
-    title = title.strip()
-    if title.startswith("###"):
-        title = title[3:].strip()
-
-    # Remove leading number and dot (e.g., "4. " or "10. ")
-    match = re.match(r"^\d+\.\s*", title)
-    if match:
-        title = title[match.end():]
-
-    return title.strip()
+    stripped = title.strip()
+    if stripped.startswith("###"):
+        stripped = stripped[3:].strip()
+    return _SECTION_NUMBER_RE.sub("", stripped, count=1).strip()
 
 
-def _parse_template_glossary(section_content: str) -> List[Dict[str, str]]:
-    """
-    Parse glossary entries from a template section content.
+def _find_section(template: str, title: str) -> tuple[int, int] | None:
+    """Return ``(content_start, content_end)`` for the ``###`` section titled ``title``."""
 
-    Parses lines like:
-        - Term: 术语
-        - Another Term: 另一个术语
+    position = 0
+    content_start: int | None = None
+    for line in template.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("###"):
+            if content_start is not None:
+                return content_start, position
+            if _normalize_section_title(stripped) == title:
+                content_start = position + len(line)
+        position += len(line)
+    if content_start is not None:
+        return content_start, len(template)
+    return None
 
-    Args:
-        section_content: The content of the terminology section
 
-    Returns:
-        List of {"eng": ..., "zh": ...} dictionaries
-    """
-    glossary = []
-    # Match "- eng: zh" pattern
-    pattern = re.compile(r"^\s*-\s+(.+?):\s*(.+?)\s*$")
+def parse_template_glossary(section_content: str) -> list[dict[str, str]]:
+    """Parse ``- Term: 术语`` lines into glossary entries."""
 
+    glossary: list[dict[str, str]] = []
     for line in section_content.splitlines():
-        match = pattern.match(line)
+        match = _GLOSSARY_LINE_RE.match(line)
         if match:
-            eng = match.group(1).strip()
-            zh = match.group(2).strip()
+            eng, zh = match.group(1).strip(), match.group(2).strip()
             if eng and zh:
                 glossary.append({"eng": eng, "zh": zh})
-
     return glossary
 
 
-def _find_section_boundaries(template: str, target_title: str) -> Tuple[Optional[int], Optional[int], Optional[str]]:
-    """
-    Find the start and end positions of a section in the template.
+def parse_authoritative_glossary(template: str) -> list[dict[str, str]]:
+    """Return the template's authoritative glossary; the section is mandatory."""
 
-    Args:
-        template: Full template text
-        target_title: Normalized section title to find (e.g., "User Terminology (Authoritative Glossary)")
-
-    Returns:
-        Tuple of (section_start, section_end, full_header_line)
-        - section_start: Position after the header line (start of content)
-        - section_end: Position of next ### header or end of file
-        - full_header_line: The original header line (e.g., "### 4. User Terminology...")
-        Returns (None, None, None) if not found
-    """
-    lines = template.splitlines(keepends=True)
-    section_start = None
-    section_header = None
-    current_pos = 0
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("###"):
-            normalized = _normalize_section_title(stripped)
-            if normalized == target_title:
-                # Found the target section
-                section_header = stripped
-                section_start = current_pos + len(line)
-            elif section_start is not None:
-                # Found next section header - this is the end
-                return section_start, current_pos, section_header
-
-        current_pos += len(line)
-
-    # If section was found but no next header, end is at file end
-    if section_start is not None:
-        return section_start, len(template), section_header
-
-    return None, None, None
+    bounds = _find_section(template, GLOSSARY_SECTION_TITLE)
+    if bounds is None:
+        raise ValueError(f"prompt template has no '{GLOSSARY_SECTION_TITLE}' section")
+    return parse_template_glossary(template[bounds[0] : bounds[1]])
 
 
-def _merge_glossaries(template_glossary: List[Dict[str, str]],
-                      user_glossary: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Merge template glossary with user glossary.
+def _merge_glossaries(
+    template_glossary: list[dict[str, str]], runtime_glossary: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Template order first, runtime entries override by case-insensitive key."""
 
-    User glossary entries take precedence over template entries (by eng key, case-insensitive).
-
-    Args:
-        template_glossary: Glossary from template file
-        user_glossary: Glossary from GlobalMemory.user_glossary
-
-    Returns:
-        Merged glossary list
-    """
-    # Use casefold for case-insensitive key comparison
-    merged = {}
-
-    # Add template entries first
-    for entry in template_glossary:
-        key = entry["eng"].casefold()
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for entry in (*template_glossary, *runtime_glossary):
+        key = str(entry.get("eng", "")).casefold()
+        if not key:
+            continue
+        if key not in merged:
+            order.append(key)
         merged[key] = entry
-
-    # User entries override template entries
-    for entry in user_glossary:
-        key = entry["eng"].casefold()
-        merged[key] = entry
-
-    # Return in order (template order preserved, then any new user entries)
-    result = []
-    seen_keys = set()
-
-    # First, add entries in template order (with possible user overrides)
-    for entry in template_glossary:
-        key = entry["eng"].casefold()
-        if key not in seen_keys:
-            result.append(merged[key])
-            seen_keys.add(key)
-
-    # Then add any user entries not in template
-    for entry in user_glossary:
-        key = entry["eng"].casefold()
-        if key not in seen_keys:
-            result.append(entry)
-            seen_keys.add(key)
-
-    return result
+    return [merged[key] for key in order]
 
 
-def _build_terminology_section(user_glossary: List[Dict[str, str]],
-                               learned_glossary: List[Dict[str, str]]) -> str:
-    """
-    Build the terminology section content with both user and learned glossaries.
+def render_terminology_section(
+    user_glossary: list[dict[str, Any]], learned_glossary: list[dict[str, Any]]
+) -> str:
+    """Render the glossary section body: authoritative entries then the learned supplement."""
 
-    Args:
-        user_glossary: Merged authoritative glossary (template + runtime user_glossary)
-        learned_glossary: Learned terminology from GlobalMemory.glossary
-
-    Returns:
-        Formatted terminology section content (without header)
-    """
-    lines = []
-
-    # User glossary (authoritative)
-    if user_glossary:
-        for entry in user_glossary:
-            eng = entry.get("eng", "")
-            zh = entry.get("zh", "")
-            if eng and zh:
-                lines.append(f"- {eng}: {zh}")
-
-    # Add learned glossary as supplement if present
+    lines = [
+        f"- {entry['eng']}: {entry['zh']}"
+        for entry in user_glossary
+        if entry.get("eng") and entry.get("zh")
+    ]
     if learned_glossary:
         if lines:
-            lines.append("")  # Blank line before supplement section
+            lines.append("")
         lines.append("**Learned Terminology (Supplement):**")
         for entry in learned_glossary:
-            eng = entry.get("eng", "")
-            zh = entry.get("zh", "")
-            entry_type = entry.get("type", "")
+            eng, zh = entry.get("eng", ""), entry.get("zh", "")
             if eng and zh:
-                type_str = f" ({entry_type})" if entry_type else ""
-                lines.append(f"- {eng}{type_str}: {zh}")
-
+                entry_type = entry.get("type", "")
+                suffix = f" ({entry_type})" if entry_type else ""
+                lines.append(f"- {eng}{suffix}: {zh}")
     return "\n".join(lines)
 
 
-def _renumber_sections(template: str) -> str:
-    """
-    Renumber all ### sections in the template sequentially.
+def render_memory_sections(memory: GlobalMemory) -> str:
+    """Render memory exactly as injected into the refine prompt, for token estimation."""
 
-    Args:
-        template: Template text with potentially non-sequential section numbers
-
-    Returns:
-        Template with sections renumbered 1, 2, 3, ...
-    """
-    lines = template.splitlines()
-    result_lines = []
-    section_num = 0
-
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("###"):
-            section_num += 1
-            # Extract the title part (after any existing number)
-            normalized_title = _normalize_section_title(stripped)
-            # Rebuild with new number
-            result_lines.append(f"### {section_num}. {normalized_title}")
-        else:
-            result_lines.append(line)
-
-    return "\n".join(result_lines)
-
-
-def inject_memory_into_template(template: str, global_memory: 'GlobalMemory') -> str:
-    """
-    Inject GlobalMemory terminology into the template's User Terminology section.
-
-    This implements the plan3.md strategy:
-    1. Find "### X. User Terminology (Authoritative Glossary)" section
-    2. Parse existing glossary entries from template
-    3. Merge with GlobalMemory.user_glossary (runtime entries take precedence)
-    4. Add GlobalMemory.glossary as "Learned Terminology (Supplement)"
-    5. Replace the section content
-    6. Renumber all sections
-
-    Args:
-        template: Main prompt template text
-        global_memory: GlobalMemory object with terminology
-
-    Returns:
-        Template with injected terminology
-    """
-    TARGET_SECTION = "User Terminology (Authoritative Glossary)"
-
-    # Find section boundaries
-    section_start, section_end, header_line = _find_section_boundaries(template, TARGET_SECTION)
-
-    if section_start is None:
-        print(f"  Warning: '{TARGET_SECTION}' section not found in template")
-        new_template = template
-    else:
-        original_content = template[section_start:section_end]
-        template_glossary = _parse_template_glossary(original_content)
-        user_glossary = getattr(global_memory, "user_glossary", []) or []
-        learned_glossary = getattr(global_memory, "glossary", []) or []
-        merged_user_glossary = _merge_glossaries(template_glossary, user_glossary)
-        new_content = _build_terminology_section(
-            merged_user_glossary, learned_glossary
-        )
-        new_template = (
-            template[:section_start]
-            + "\n"
-            + new_content
-            + "\n\n"
-            + template[section_end:].lstrip()
-        )
-
-    new_template = _inject_story_description_block(new_template, global_memory)
-
-    # Renumber sections
-    new_template = _renumber_sections(new_template)
-
-    return new_template
-
-
-def _inject_story_description_block(
-    template: str, global_memory: 'GlobalMemory'
-) -> str:
-    """Insert or replace the template's independent episode-story block."""
-    title = "Incremental Story Description"
-    story = global_memory.story_description or "(No story events revealed yet.)"
-    section_start, section_end, _ = _find_section_boundaries(template, title)
-
-    if section_start is not None:
-        return (
-            template[:section_start]
-            + "\n"
-            + story
-            + "\n\n"
-            + template[section_end:].lstrip()
-        )
-
-    _, terminology_end, _ = _find_section_boundaries(
-        template, "User Terminology (Authoritative Glossary)"
+    story = memory.story_description or EMPTY_STORY_PLACEHOLDER
+    return (
+        f"### {GLOSSARY_SECTION_TITLE}\n"
+        f"{render_terminology_section(memory.user_glossary, memory.glossary)}\n\n"
+        f"### {STORY_SECTION_TITLE}\n{story}\n"
     )
-    block = f"### Incremental Story Description\n{story}\n\n"
-    if terminology_end is None:
+
+
+def _renumber_sections(template: str) -> str:
+    lines: list[str] = []
+    number = 0
+    for line in template.splitlines():
+        if line.strip().startswith("###"):
+            number += 1
+            lines.append(f"### {number}. {_normalize_section_title(line)}")
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _inject_story_block(template: str, story: str) -> str:
+    bounds = _find_section(template, STORY_SECTION_TITLE)
+    if bounds is not None:
+        return template[: bounds[0]] + story + "\n\n" + template[bounds[1] :].lstrip()
+    glossary_bounds = _find_section(template, GLOSSARY_SECTION_TITLE)
+    block = f"### {STORY_SECTION_TITLE}\n{story}\n\n"
+    if glossary_bounds is None:
         return template.rstrip() + "\n\n" + block.rstrip()
-    return template[:terminology_end] + block + template[terminology_end:]
+    end = glossary_bounds[1]
+    return template[:end] + block + template[end:]
+
+
+def inject_memory_into_template(template: str, memory: GlobalMemory) -> str:
+    """Rewrite the glossary section with runtime memory and add the story block.
+
+    The authoritative section is mandatory; template entries are kept and
+    runtime ``user_glossary`` entries override them by key. Learned entries are
+    appended as a supplement and all ``###`` sections are renumbered.
+    """
+
+    bounds = _find_section(template, GLOSSARY_SECTION_TITLE)
+    if bounds is None:
+        raise ValueError(f"prompt template has no '{GLOSSARY_SECTION_TITLE}' section")
+    template_glossary = parse_template_glossary(template[bounds[0] : bounds[1]])
+    merged = _merge_glossaries(template_glossary, memory.user_glossary)
+    content = render_terminology_section(merged, memory.glossary)
+    rewritten = template[: bounds[0]] + content + "\n\n" + template[bounds[1] :].lstrip()
+    story = memory.story_description or EMPTY_STORY_PLACEHOLDER
+    return _renumber_sections(_inject_story_block(rewritten, story))
 
 
 def convert_examples_to_format(template: str, target_format: str) -> str:
-    """
-    Convert JSON examples in Few-Shot Examples section to target format.
-    Also updates format-specific text throughout the template:
-    - Line 2: "JSON input" → "{format} input"
-    - Section 5: "Input/Output Format & Constraint" descriptions
-    - Section 6: Few-Shot Examples
+    """Rewrite format wording and few-shot JSON examples for a non-JSON representation."""
 
-    Args:
-        template: Template text containing JSON examples
-        target_format: Target format (json, xml-pair, pseudo-toml)
+    normalized = target_format.lower()
+    if normalized == "json":
+        return template
+    if normalized not in _FORMAT_CONSTRAINTS:
+        raise ValueError(f"unsupported intermediate representation: {target_format}")
+    input_description, constraint = _FORMAT_CONSTRAINTS[normalized]
 
-    Returns:
-        Template with examples and format constraints converted to target format
-    """
-    # Only convert if not JSON
-    if target_format.lower() == "json":
+    template = _JSON_INPUT_SENTENCE_RE.sub(
+        f"based on the provided {input_description}.", template, count=1
+    )
+    format_match = _FORMAT_SECTION_RE.search(template)
+    if format_match:
+        template = (
+            template[: format_match.start()]
+            + format_match.group(1)
+            + constraint
+            + template[format_match.end() :]
+        )
+    else:
+        logger.warning("Prompt template has no 'Input/Output Format & Constraint' section")
+
+    examples_match = _EXAMPLES_SECTION_RE.search(template)
+    if not examples_match:
+        logger.warning("Prompt template has no 'Few-Shot Examples' section")
         return template
 
-    from .serializers import convert_json_examples_to_format
+    def convert(match: re.Match[str]) -> str:
+        return convert_json_examples_to_format(match.group(0), normalized)
 
-    # Step 0: Update the opening line that mentions "JSON input"
-    format_name_map = {
-        "xml-pair": "XML-pair input",
-        "pseudo-toml": "pseudo-TOML input"
-    }
-    format_description = format_name_map.get(target_format.lower(), "JSON input")
-
-    # Replace "JSON input" with the appropriate format name
-    template = re.sub(
-        r'based on the provided JSON input\.',
-        f'based on the provided {format_description}.',
-        template,
-        count=1
+    converted = _JSON_ARRAY_RE.sub(convert, examples_match.group(2))
+    return (
+        template[: examples_match.start()]
+        + examples_match.group(1)
+        + converted
+        + template[examples_match.end() :]
     )
 
-    # Step 1: Update the "Input/Output Format & Constraint" section
-    format_constraint_pattern = r'(###\s*\d+\.\s*Input/Output Format & Constraint.*?)(- \*\*Input:\*\*.*?- \*\*STRICT ADHERENCE REQUIRED:\*\*.*?)(?=###|\Z)'
-    format_match = re.search(format_constraint_pattern, template, re.DOTALL | re.IGNORECASE)
 
-    if format_match:
-        header = format_match.group(1)
+def build_refine_system_prompt(
+    memory: GlobalMemory, prompt_paths: PromptPaths, representation: str
+) -> str:
+    """Compose, inject memory into, and format-convert the refine system prompt."""
 
-        # Generate format-specific constraint text
-        if target_format.lower() == "xml-pair":
-            new_constraint = """- **Input:** Subtitle pairs in XML-pair format with `<pair>` tags containing `ID`, `eng`, and `chinese` fields.
-- **Output:** The same XML-pair format with corrections applied.
-- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the XML-pair format. No explanations, no markdown blocks (unless requested), no extra text.
-"""
-        elif target_format.lower() == "pseudo-toml":
-            new_constraint = """- **Input:** Subtitle pairs in pseudo-TOML format with `[pair]` sections containing `id`, `eng`, and `chinese` fields.
-- **Output:** The same pseudo-TOML format with corrections applied.
-- **STRICT ADHERENCE REQUIRED:** You MUST **ONLY** return the pseudo-TOML format. No explanations, no markdown blocks (unless requested), no extra text.
-"""
-        else:
-            new_constraint = format_match.group(2)  # Keep original if unknown format
-
-        # Replace in template
-        new_section = header + new_constraint
-        template = template[:format_match.start()] + new_section + template[format_match.end():]
-
-    # Step 2: Find Few-Shot Examples section and convert ALL example blocks
-    # Pattern to find the entire Few-Shot Examples section (from header to end or next ### section)
-    section_pattern = r'(###\s*\d+\.\s*Few-Shot Examples[^\n]*\n)(.*?)(?=###|\Z)'
-    section_match = re.search(section_pattern, template, re.DOTALL | re.IGNORECASE)
-
-    if not section_match:
-        print("  Warning: Few-Shot Examples section not found in template")
-        return template
-
-    section_header = section_match.group(1)
-    section_content = section_match.group(2)
-
-    # Find all JSON arrays in the section and convert them
-    # Pattern matches JSON arrays: [ ... ]
-    json_array_pattern = r'\[[\s\S]*?\n\]'
-
-    def convert_json_array(match):
-        """Convert a single JSON array match to target format."""
-        json_text = match.group(0)
-        try:
-            converted = convert_json_examples_to_format(json_text, target_format)
-            return converted
-        except Exception as e:
-            print(f"  Warning: Failed to convert JSON array: {e}")
-            return json_text  # Return original on failure
-
-    try:
-        # Replace all JSON arrays in the section content
-        converted_content = re.sub(json_array_pattern, convert_json_array, section_content)
-
-        # Also update "Input:" label references if needed (for clarity in non-JSON formats)
-        # Keep the Input:/Output: labels as they are format-agnostic
-
-        # Rebuild the section
-        new_section = section_header + converted_content
-
-        # Replace in template
-        new_template = template[:section_match.start()] + new_section + template[section_match.end():]
-
-        return new_template
-
-    except Exception as e:
-        print(f"  Warning: Failed to convert examples: {e}")
-        print("  Returning template with JSON examples unchanged")
-        return template
+    template = inject_memory_into_template(load_refine_prompt_template(prompt_paths), memory)
+    return convert_examples_to_format(template, representation)
 
 
-def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
-    """
-    Build complete system prompt with memory injection.
-
-    If config is provided, composes the configured shared rules and refine task.
-    Otherwise it falls back to the legacy in-code prompt.
-
-    Args:
-        global_memory: GlobalMemory object
-        config: Optional config object with prompt_paths
-
-    Returns:
-        Complete system prompt with memory
-    """
-    if config is not None:
-        template = load_main_prompt_template(config)
-        template = inject_memory_into_template(template, global_memory)
-        representation = getattr(config, "intermediate_representation", "json")
-        if representation and representation.lower() != "json":
-            template = convert_examples_to_format(template, representation)
-        return template
-
-    # Fallback to legacy behavior
-    return build_system_prompt_legacy(global_memory)
-
-
-# System prompt for memory compression
-MEMORY_COMPRESSION_SYSTEM_PROMPT = """You compress episode memory used for subtitle refinement.
-
-Your task is to:
-1. Preserve user_glossary exactly; it is authoritative and must not be compressed or changed
-2. Keep all unique learned terminology mappings while merging duplicates
-3. Keep style notes concise
-4. Shorten story_description without inventing events, identities, relationships, or states
-5. Return exactly the four fields shown below
-
-Return a compressed version in the same JSON format:
-{
-  "user_glossary": [{"eng": "...", "zh": "..."}],
-  "glossary": [{"eng": "...", "zh": "...", "type": "..."}],
-  "style_notes": "...",
-  "story_description": "..."
-}
-
-Be aggressive in compression but preserve all unique terminology mappings."""
-
-
-def build_memory_compression_prompt(global_memory: 'GlobalMemory', target_tokens: int) -> str:
-    """
-    Build user prompt for memory compression.
-
-    Args:
-        global_memory: Current GlobalMemory object
-        target_tokens: Target token count for compressed memory
-
-    Returns:
-        User prompt for compression task
-    """
-    import json
-
-    memory_dict = {
-        "user_glossary": global_memory.user_glossary,
-        "glossary": global_memory.glossary,
-        "style_notes": global_memory.style_notes,
-        "story_description": global_memory.story_description,
-    }
-
-    prompt = f"""Current memory is too large. Please compress it to approximately {target_tokens} tokens or less.
-
-Current memory:
-{json.dumps(memory_dict, ensure_ascii=False, indent=2)}
-
-Return ONLY the compressed JSON object, no explanations."""
-
-    return prompt
-
-
-def build_user_prompt_for_chunk(pairs_json: str) -> str:
-    """
-    Build user prompt containing subtitle pairs to refine.
-
-    Args:
-        pairs_json: JSON string of subtitle pairs
-
-    Returns:
-        User prompt (just the JSON for simplicity)
-    """
-    # For subtitle refinement, we just pass the JSON directly
-    return pairs_json
-
-
-def validate_response_format(response: str) -> bool:
-    """
-    Validate that LLM response is in expected JSON format.
-
-    Args:
-        response: Raw response from LLM
-
-    Returns:
-        True if format appears valid, False otherwise
-    """
-    import json
-
-    try:
-        data = json.loads(response)
-        if not isinstance(data, list):
-            return False
-        if not data:  # Empty list is valid
-            return True
-        # Check first item has required fields
-        first_item = data[0]
-        return "id" in first_item and "eng" in first_item and "chinese" in first_item
-    except (json.JSONDecodeError, KeyError, IndexError):
-        return False
+# Memory maintenance prompts -------------------------------------------------
 
 
 MEMORY_UPDATE_SYSTEM_PROMPT_TEMPLATE = """You update episode memory from paired English and Chinese subtitles.
@@ -759,7 +317,6 @@ Update both the learned glossary and the incremental story description. Follow t
 {{"glossary": [{{"eng": "...", "zh": "...", "type": "...", "confidence": 0.0, "evidence_ids": [1]}}], "story_description": "..."}}
 """
 
-
 MEMORY_UPDATE_USER_TEMPLATE = """Update the episode memory from the corrected subtitle pairs below.
 
 You will also receive an optional "user glossary" that already defines some eng→zh mappings.
@@ -767,99 +324,61 @@ You will also receive an optional "user glossary" that already defines some eng�
 - Do NOT output any entry whose zh conflicts with the user glossary for the same eng.
 
 Previous story description:
-{{PREVIOUS_STORY_DESCRIPTION}}
+{previous_story_description}
 
 Corrected subtitle pairs (JSON):
-{{PAIRS_JSON}}
+{pairs_json}
 
 User glossary (JSON array, may be empty):
-{{USER_GLOSSARY_JSON}}
+{user_glossary_json}
 
 Return ONLY the JSON object specified by the system instructions.
 """
 
+MEMORY_COMPRESSION_SYSTEM_PROMPT = """You compress episode memory used for subtitle refinement.
+
+Your task is to:
+1. Keep all unique learned terminology mappings while merging duplicates
+2. Shorten story_description without inventing events, identities, relationships, or states
+3. Return exactly the two fields shown below
+
+Return a compressed version in the same JSON format:
+{
+  "glossary": [{"eng": "...", "zh": "...", "type": "..."}],
+  "story_description": "..."
+}
+
+Be aggressive in compression but preserve all unique terminology mappings."""
+
 
 def build_memory_update_system_prompt(min_confidence: float) -> str:
-    """Build the system prompt for an incremental episode-memory update.
+    """System prompt for one incremental memory update, showing the confidence threshold."""
 
-    The numerical threshold shown to the model is kept in sync with the
-    post-filtering threshold used in memory.py via ConfigSDK.terminology_min_confidence.
-    """
-
-    # Keep a short, human-friendly representation (e.g., 0.6 rather than 0.600000)
-    if min_confidence is None:
-        min_confidence = 0.6
     return MEMORY_UPDATE_SYSTEM_PROMPT_TEMPLATE.format(min_conf=min_confidence)
-def split_user_prompt_and_glossary(text: str) -> Tuple[str, List[Dict[str, str]]]:
-    """Split a custom main prompt into instructions and a simple eng→zh glossary.
 
-    Lines like "* Term -> 术语" or "- Term -> 术语" are parsed into glossary entries
-    and removed from the instruction text.
-    """
-    import re
 
-    instructions: List[str] = []
-    glossary: List[Dict[str, str]] = []
+def build_memory_update_user_prompt(
+    *,
+    pairs_json: str,
+    user_glossary_json: str,
+    previous_story_description: str,
+) -> str:
+    """User prompt carrying the corrected pairs, the user glossary, and the prior story."""
 
-    pattern = re.compile(r"^\s*[-*]\s+(.+?)\s*->\s*(.+?)\s*$")
+    return MEMORY_UPDATE_USER_TEMPLATE.format(
+        pairs_json=pairs_json,
+        user_glossary_json=user_glossary_json,
+        previous_story_description=previous_story_description,
+    )
 
-    skip_prefixes = {
-        "Use the following name translations consistently:",
-        "Use the following institutional correspondences:"
-    }
 
-    in_comment = False
+def build_memory_compression_prompt(memory: GlobalMemory, target_tokens: int) -> str:
+    """User prompt asking the model to compress learned glossary and story only."""
 
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip("\n")
-
-        # Handle multi-line HTML comments <!-- ... -->
-        working = line
-        while True:
-            if in_comment:
-                end_idx = working.find("-->")
-                if end_idx == -1:
-                    # Entire line is inside a comment block; drop it
-                    working = ""
-                    break
-                # Strip comment block and continue scanning remainder
-                working = working[end_idx + 3 :]
-                in_comment = False
-                continue
-            else:
-                start_idx = working.find("<!--")
-                if start_idx == -1:
-                    break
-                end_idx = working.find("-->", start_idx + 4)
-                if end_idx == -1:
-                    # Comment starts here and continues on later lines
-                    working = working[:start_idx]
-                    in_comment = True
-                    break
-                # Remove inline comment and keep surrounding text
-                before = working[:start_idx]
-                after = working[end_idx + 3 :]
-                working = before + after
-                # Loop again in case there are multiple comment blocks
-
-        line = working
-
-        # Drop section headers that only introduce the glossary list
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped in skip_prefixes:
-            continue
-
-        match = pattern.match(line)
-        if match:
-            eng = match.group(1).strip()
-            zh = match.group(2).strip()
-            if eng and zh:
-                glossary.append({"eng": eng, "zh": zh})
-            # Skip adding this line to instructions
-            continue
-        instructions.append(line)
-
-    instructions_text = "\n".join(instructions).strip()
-    return instructions_text, glossary
+    payload = {"glossary": memory.glossary, "story_description": memory.story_description}
+    return (
+        f"Current memory is too large. Please compress it to approximately {target_tokens} "
+        "tokens or less.\n\nCurrent memory:\n"
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+        "Return ONLY the compressed JSON object, no explanations."
+    )

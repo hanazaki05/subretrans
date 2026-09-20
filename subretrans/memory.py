@@ -1,93 +1,40 @@
-"""Global memory management for subtitle refinement."""
+"""Episode memory: authoritative glossary, learned terminology, and story description."""
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from __future__ import annotations
+
 import json
+import logging
+import os
 import re
 import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from .config import ConfigSDK
+import yaml
+from langchain_core.language_models import BaseChatModel
+
+from .fsutil import atomic_write_yaml, require_exact_fields
 from .pairs import SubtitlePair, pairs_to_json_list
+from .prompts import (
+    MEMORY_COMPRESSION_SYSTEM_PROMPT,
+    build_memory_compression_prompt,
+    build_memory_update_system_prompt,
+    build_memory_update_user_prompt,
+    render_memory_sections,
+)
+from .providers import clean_response_text, invoke_text
+from .stats import UsageStats
 from .utils import estimate_tokens
 
-
-@dataclass
-class GlobalMemory:
-    """
-    Global memory structure for cross-chunk information.
-
-    Attributes:
-        user_glossary: High-priority user-defined terminology entries (authoritative)
-        glossary: LLM-learned terminology entries (supplementary)
-        style_notes: Style and tone guidelines
-        story_description: Incremental description of the episode so far
-    """
-
-    user_glossary: List[Dict[str, str]] = field(default_factory=list)
-    glossary: List[Dict[str, str]] = field(default_factory=list)
-    style_notes: str = ""
-    story_description: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "user_glossary": self.user_glossary,
-            "glossary": self.glossary,
-            "style_notes": self.style_notes,
-            "story_description": self.story_description,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'GlobalMemory':
-        """Create GlobalMemory from dictionary."""
-        return cls(
-            user_glossary=data.get("user_glossary", []),
-            glossary=data.get("glossary", []),
-            style_notes=data.get("style_notes", ""),
-            story_description=data.get("story_description", ""),
-        )
-
-    def to_json(self) -> str:
-        """Convert to JSON string."""
-        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+if TYPE_CHECKING:
+    from .config import GlossarySettings
 
 
-def init_global_memory() -> GlobalMemory:
-    """
-    Initialize empty global memory.
+logger = logging.getLogger(__name__)
 
-    Returns:
-        New GlobalMemory instance
-    """
-    return GlobalMemory(
-        user_glossary=[],
-        glossary=[],
-        style_notes="",
-        story_description="",
-    )
-
-
-@dataclass
-class TerminologyEntry:
-    """Structured terminology item returned by the extractor."""
-
-    eng: str
-    zh: str
-    type: str
-    confidence: float
-    evidence_ids: List[int] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to serializable dictionary."""
-        return {
-            "eng": self.eng,
-            "zh": self.zh,
-            "type": self.type,
-            "confidence": self.confidence,
-            "evidence_ids": self.evidence_ids
-        }
-
-
+MEMORY_FIELDS = {"user_glossary", "glossary", "story_description"}
+_LEGACY_MEMORY_FIELDS = {"style_notes"}
 VALID_TERMINOLOGY_TYPES = {
     "person",
     "place",
@@ -98,399 +45,320 @@ VALID_TERMINOLOGY_TYPES = {
     "ship",
     "project",
     "law",
-    "other"
+    "other",
 }
+_MAX_EVIDENCE_IDS = 5
 
 
-def _normalize_glossary_key(value: Any) -> str:
+@dataclass
+class GlobalMemory:
+    """Cross-chunk memory carried through serial refinement.
+
+    ``user_glossary`` is authoritative and only ever set from the prompt
+    template; ``glossary`` holds model-learned terminology; ``story_description``
+    is the cumulative account of the episode so far.
     """
-    Normalize a glossary English term for stable matching across sources.
 
-    Handles:
-    - unicode normalization (NFKC)
-    - BOM / zero-width artifacts
-    - whitespace normalization
-    - case-insensitive matching
-    """
+    user_glossary: list[dict[str, Any]] = field(default_factory=list)
+    glossary: list[dict[str, Any]] = field(default_factory=list)
+    story_description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "user_glossary": self.user_glossary,
+            "glossary": self.glossary,
+            "story_description": self.story_description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GlobalMemory:
+        """Build memory from a validated mapping; a legacy ``style_notes`` key is dropped."""
+
+        if not validate_memory_structure(data):
+            raise ValueError("invalid memory structure")
+        return cls(
+            user_glossary=[dict(entry) for entry in data["user_glossary"]],
+            glossary=[dict(entry) for entry in data["glossary"]],
+            story_description=data["story_description"],
+        )
+
+
+def validate_memory_structure(payload: Any) -> bool:
+    """Check the checkpoint shape; tolerates an old ``style_notes`` string key."""
+
+    if not isinstance(payload, dict):
+        return False
+    keys = set(payload)
+    if not MEMORY_FIELDS <= keys or keys - MEMORY_FIELDS - _LEGACY_MEMORY_FIELDS:
+        return False
+    if "style_notes" in payload and not isinstance(payload["style_notes"], str):
+        return False
+    if not isinstance(payload["user_glossary"], list) or not isinstance(payload["glossary"], list):
+        return False
+    if not isinstance(payload["story_description"], str):
+        return False
+    for entry in (*payload["user_glossary"], *payload["glossary"]):
+        if not isinstance(entry, dict):
+            return False
+        if not isinstance(entry.get("eng"), str) or not isinstance(entry.get("zh"), str):
+            return False
+    return True
+
+
+def load_memory_checkpoint(path: str | os.PathLike[str]) -> GlobalMemory | None:
+    """Load a YAML memory checkpoint, or ``None`` when the file does not exist."""
+
+    checkpoint = Path(path)
+    if not checkpoint.exists():
+        return None
+    payload = yaml.safe_load(checkpoint.read_text(encoding="utf-8"))
+    if not validate_memory_structure(payload):
+        raise ValueError(f"Invalid memory checkpoint: {checkpoint}")
+    return GlobalMemory.from_dict(payload)
+
+
+def save_memory_checkpoint(memory: GlobalMemory, path: str | os.PathLike[str]) -> Path:
+    """Atomically persist the complete memory as YAML."""
+
+    return atomic_write_yaml(path, memory.to_dict())
+
+
+def normalize_term_key(value: Any) -> str:
+    """Normalize an English term for matching: NFKC, no zero-width marks, casefold."""
+
     if not isinstance(value, str):
         return ""
-    cleaned = unicodedata.normalize("NFKC", value)
-    cleaned = cleaned.replace("\ufeff", "")
-    cleaned = cleaned.replace("\u200b", "")
-    cleaned = cleaned.strip()
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned.casefold()
+    cleaned = unicodedata.normalize("NFKC", value).replace("\ufeff", "").replace("\u200b", "")
+    return re.sub(r"\s+", " ", cleaned.strip()).casefold()
 
 
 def prune_learned_glossary_against_user_glossary(
-    memory: "GlobalMemory",
-) -> Tuple[int, List[Dict[str, Any]]]:
-    """
-    Remove learned glossary entries that are already defined in the user glossary.
+    memory: GlobalMemory,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Drop learned entries whose term is defined by the authoritative glossary."""
 
-    This keeps prompts clean and prevents redundant/conflicting entries from older
-    checkpoints from being injected into the system prompt.
-
-    Returns:
-        (removed_count, removed_entries)
-    """
-    if not memory or not memory.glossary or not memory.user_glossary:
-        return 0, []
-
-    user_keys = {
-        _normalize_glossary_key(entry.get("eng", ""))
-        for entry in memory.user_glossary
-        if isinstance(entry, dict)
-    }
+    user_keys = {normalize_term_key(entry.get("eng")) for entry in memory.user_glossary}
     user_keys.discard("")
-    if not user_keys:
+    if not user_keys or not memory.glossary:
         return 0, []
-
-    kept: List[Dict[str, Any]] = []
-    removed: List[Dict[str, Any]] = []
-
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
     for entry in memory.glossary:
-        if not isinstance(entry, dict):
-            continue
-        eng_key = _normalize_glossary_key(entry.get("eng", ""))
-        if eng_key and eng_key in user_keys:
-            removed.append(entry)
-            continue
-        kept.append(entry)
-
+        key = normalize_term_key(entry.get("eng"))
+        (removed if key and key in user_keys else kept).append(entry)
     if removed:
         memory.glossary = kept
-
     return len(removed), removed
 
 
-def _coerce_evidence_ids(raw_ids: Any) -> List[int]:
-    """Normalize evidence id list coming from LLM output."""
-    if not isinstance(raw_ids, list):
-        return []
+def set_user_glossary(memory: GlobalMemory, entries: list[dict[str, str]]) -> int:
+    """Replace the authoritative glossary and prune learned collisions; returns the prune count."""
 
-    evidence: List[int] = []
+    memory.user_glossary = [dict(entry) for entry in entries]
+    removed_count, _ = prune_learned_glossary_against_user_glossary(memory)
+    return removed_count
+
+
+@dataclass(frozen=True)
+class TerminologyEntry:
+    """Structured terminology item accepted from the extraction model."""
+
+    eng: str
+    zh: str
+    type: str
+    confidence: float
+    evidence_ids: tuple[int, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "eng": self.eng,
+            "zh": self.zh,
+            "type": self.type,
+            "confidence": self.confidence,
+            "evidence_ids": list(self.evidence_ids),
+        }
+
+
+def _coerce_evidence_ids(raw_ids: Any) -> tuple[int, ...]:
+    if not isinstance(raw_ids, list):
+        return ()
+    evidence: list[int] = []
     for item in raw_ids:
         try:
-            idx = int(item)
+            value = int(item)
         except (TypeError, ValueError):
             continue
-        if idx not in evidence:
-            evidence.append(idx)
-        if len(evidence) >= 5:
+        if value not in evidence:
+            evidence.append(value)
+        if len(evidence) >= _MAX_EVIDENCE_IDS:
             break
-    return evidence
+    return tuple(evidence)
 
 
-def _parse_terminology_entries(raw_data: Any, min_confidence: float) -> List[TerminologyEntry]:
-    """Validate and convert raw JSON array to TerminologyEntry objects."""
+def _parse_terminology_entries(raw_data: Any, min_confidence: float) -> list[TerminologyEntry]:
+    """Keep well-formed candidates at or above the confidence threshold."""
+
     if not isinstance(raw_data, list):
         return []
-
-    entries: List[TerminologyEntry] = []
+    entries: list[TerminologyEntry] = []
     for item in raw_data:
         if not isinstance(item, dict):
             continue
-
         eng = str(item.get("eng", "")).strip()
         zh = str(item.get("zh", "")).strip()
-        type_value = str(item.get("type", "")).strip().lower()
-        confidence_raw = item.get("confidence")
-
+        term_type = str(item.get("type", "")).strip().lower()
         try:
-            confidence = float(confidence_raw)
+            confidence = float(item.get("confidence"))
         except (TypeError, ValueError):
             continue
-
-        if not eng or not zh:
+        if not eng or not zh or confidence < min_confidence:
             continue
-        if confidence < min_confidence:
+        if term_type not in VALID_TERMINOLOGY_TYPES:
             continue
-        if type_value not in VALID_TERMINOLOGY_TYPES:
-            continue
-
-        evidence_ids = _coerce_evidence_ids(item.get("evidence_ids", []))
         entries.append(
-            TerminologyEntry(
-                eng=eng,
-                zh=zh,
-                type=type_value,
-                confidence=confidence,
-                evidence_ids=evidence_ids
-            )
+            TerminologyEntry(eng, zh, term_type, confidence, _coerce_evidence_ids(item.get("evidence_ids")))
         )
-
     return entries
 
 
-def extract_memory_update_from_chunk(
-    pairs: List[SubtitlePair],
+def _parse_json_object(text: str, *, location: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(clean_response_text(text))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{location} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{location} must be a JSON object")
+    return payload
+
+
+def extract_memory_update(
+    pairs: list[SubtitlePair],
     previous_story_description: str,
-    config: ConfigSDK,
-    user_glossary: Optional[List[Dict[str, str]]] = None,
-) -> Dict[str, Any]:
-    """Extract glossary entries and update the episode story description once."""
-    if not pairs:
-        return {
-            "glossary": [],
-            "story_description": previous_story_description,
-        }
-
-    # Local import avoids the memory <-> LLM module import cycle.
-    from .llm import call_role_api_sdk
-    from .prompts import build_memory_update_system_prompt, MEMORY_UPDATE_USER_TEMPLATE
-
-    pairs_json = json.dumps(pairs_to_json_list(pairs), ensure_ascii=False, indent=2)
-
-    # User glossary is injected as a JSON array (may be empty)
-    user_glossary_payload = user_glossary or []
-    user_glossary_json = json.dumps(user_glossary_payload, ensure_ascii=False, indent=2)
-
-    user_prompt = (
-        MEMORY_UPDATE_USER_TEMPLATE
-        .replace("{{PAIRS_JSON}}", pairs_json)
-        .replace("{{USER_GLOSSARY_JSON}}", user_glossary_json)
-        .replace("{{PREVIOUS_STORY_DESCRIPTION}}", previous_story_description)
-    )
-
-    # Use configured confidence threshold for both prompt and post-filtering
-    min_conf = getattr(config, "terminology_min_confidence", 0.6)
-
-    system_prompt = build_memory_update_system_prompt(min_conf)
+    *,
+    model: BaseChatModel,
+    settings: GlossarySettings,
+    user_glossary: list[dict[str, Any]],
+) -> tuple[list[TerminologyEntry], str, UsageStats]:
+    """Ask the extraction model for new terminology and the updated story."""
 
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
+        ("system", build_memory_update_system_prompt(settings.terminology_min_confidence)),
+        (
+            "human",
+            build_memory_update_user_prompt(
+                pairs_json=json.dumps(pairs_to_json_list(pairs), ensure_ascii=False, indent=2),
+                user_glossary_json=json.dumps(user_glossary, ensure_ascii=False, indent=2),
+                previous_story_description=previous_story_description,
+            ),
+        ),
     ]
-
-    response_text, _ = call_role_api_sdk(messages, config, config.extraction)
-    if getattr(config, "very_verbose", False):
-        print("\n  [Memory update raw response]:\n")
-        print(response_text.rstrip() if response_text else "[Empty response]")
-        print()
-
-    raw_update = json.loads(response_text.strip())
-    if not isinstance(raw_update, dict) or set(raw_update) != {"glossary", "story_description"}:
-        raise ValueError(
-            "Memory update must be an object with exactly glossary and story_description"
-        )
-    if not isinstance(raw_update["glossary"], list):
-        raise ValueError("Memory update glossary must be a list")
-    if not isinstance(raw_update["story_description"], str):
-        raise ValueError("Memory update story_description must be a string")
-
-    parsed_entries = _parse_terminology_entries(
-        raw_update["glossary"], min_confidence=min_conf
+    text, usage = invoke_text(model, messages)
+    payload = require_exact_fields(
+        _parse_json_object(text, location="memory update response"),
+        {"glossary", "story_description"},
+        location="memory update response",
     )
-
-    if getattr(config, "verbose", False):
-        print(f"  Memory updater parsed {len(parsed_entries)} candidate term(s)")
-
-    return {
-        "glossary": [entry.to_dict() for entry in parsed_entries],
-        "story_description": raw_update["story_description"].strip(),
-    }
+    if not isinstance(payload["glossary"], list):
+        raise ValueError("memory update glossary must be a list")
+    if not isinstance(payload["story_description"], str):
+        raise ValueError("memory update story_description must be a string")
+    entries = _parse_terminology_entries(payload["glossary"], settings.terminology_min_confidence)
+    return entries, payload["story_description"].strip(), usage
 
 
 def update_global_memory(
     memory: GlobalMemory,
-    corrected_pairs: List[SubtitlePair],
-    config: ConfigSDK
-) -> GlobalMemory:
+    corrected_pairs: list[SubtitlePair],
+    *,
+    model: BaseChatModel,
+    settings: GlossarySettings,
+) -> tuple[GlobalMemory, UsageStats]:
+    """Merge one chunk's extracted terminology and story into ``memory`` in place.
+
+    The authoritative glossary is locked: candidates whose term it defines are
+    skipped whether or not the translation agrees. Learned entries are deduped
+    by normalized term and capped at ``settings.max_entries`` (most recent kept).
     """
-    Update global memory with information from corrected pairs.
 
-    Args:
-        memory: Current GlobalMemory object
-        corrected_pairs: List of corrected SubtitlePair objects
-        config: Runtime configuration (provides API/model info)
-
-    Returns:
-        Updated GlobalMemory object
-    """
-    removed_count, removed_entries = prune_learned_glossary_against_user_glossary(memory)
-    if removed_count and getattr(config, "verbose", False):
-        examples = [e.get("eng", "") for e in removed_entries[:5] if isinstance(e, dict)]
-        examples_str = ", ".join([x for x in examples if x]) or "(unavailable)"
-        print(f"  Glossary prune: removed {removed_count} learned entr(y/ies) covered by user glossary (e.g., {examples_str})")
-
-    # Extract terminology and update the episode story in one model call.
-    memory_update = extract_memory_update_from_chunk(
+    if not corrected_pairs:
+        return memory, UsageStats()
+    prune_learned_glossary_against_user_glossary(memory)
+    candidates, story, usage = extract_memory_update(
         corrected_pairs,
         memory.story_description,
-        config,
+        model=model,
+        settings=settings,
         user_glossary=memory.user_glossary,
     )
-    new_terms = memory_update["glossary"]
-    memory.story_description = memory_update["story_description"]
+    memory.story_description = story
 
-    # Build lookup for user glossary (case-insensitive) for lock policy
-    user_map = {entry.get("eng", "").strip().casefold(): entry for entry in memory.user_glossary}
-
-    # Get existing English terms for deduplication (learned glossary only)
-    existing_terms = {entry.get("eng", "") for entry in memory.glossary}
-
-    # Add only new terms, respecting glossary_policy
-    policy = getattr(config, "glossary_policy", "lock")
-
-    added = 0
-    skipped_conflict = 0
-    skipped_user_dup = 0
-    skipped_existing = 0
-
-    for term in new_terms:
-        eng = term.get("eng", "").strip()
-        zh = term.get("zh", "").strip()
-        if not eng or not zh:
+    user_keys = {normalize_term_key(entry.get("eng")) for entry in memory.user_glossary}
+    learned_keys = {normalize_term_key(entry.get("eng")) for entry in memory.glossary}
+    added = locked = duplicate = 0
+    for candidate in candidates:
+        key = normalize_term_key(candidate.eng)
+        if key in user_keys:
+            locked += 1
+            logger.debug("Glossary lock: skipped learned term %r -> %r", candidate.eng, candidate.zh)
             continue
-
-        eng_key = eng.casefold()
-
-        if policy == "lock" and eng_key in user_map:
-            user_zh = user_map[eng_key].get("zh", "").strip()
-            if user_zh and user_zh != zh:
-                # Conflict: learned translation differs from user glossary; log and skip
-                print(f"  [Glossary lock] Skip learned term '{eng}' -> '{zh}' (conflicts with user '{user_zh}')")
-                skipped_conflict += 1
-            else:
-                skipped_user_dup += 1
-            # Either way, do not add if user glossary already defines this term
+        if key in learned_keys:
+            duplicate += 1
             continue
-
-        if eng in existing_terms:
-            skipped_existing += 1
-            continue
-
-        memory.glossary.append(term)
-        existing_terms.add(eng)
+        memory.glossary.append(candidate.to_dict())
+        learned_keys.add(key)
         added += 1
 
-    # Limit glossary size to prevent unbounded growth
-    # Keep most recent entries if we exceed limit
-    max_glossary_entries = getattr(config, "glossary_max_entries", 100)
-    if max_glossary_entries and max_glossary_entries > 0:
-        if len(memory.glossary) > max_glossary_entries:
-            memory.glossary = memory.glossary[-max_glossary_entries:]
-
-    if getattr(config, "verbose", False) and new_terms:
-        locked_total = skipped_conflict + skipped_user_dup
-        print(
-            f"  Terminology merge: {len(new_terms)} candidate(s), "
-            f"added {added}, user-locked {locked_total} (conflicts {skipped_conflict}, duplicates {skipped_user_dup}), "
-            f"already in learned glossary {skipped_existing}"
+    overflow = len(memory.glossary) - settings.max_entries
+    if overflow > 0:
+        dropped = [entry.get("eng") for entry in memory.glossary[:overflow]]
+        memory.glossary = memory.glossary[-settings.max_entries :]
+        logger.warning(
+            "Learned glossary exceeded %d entries; dropped oldest: %s", settings.max_entries, dropped
         )
-
-    return memory
-
-
-def estimate_memory_tokens(memory: GlobalMemory, model_name: str = "gpt-4") -> int:
-    """
-    Estimate token count for global memory.
-
-    Args:
-        memory: GlobalMemory object
-        model_name: Model name for token estimation
-
-    Returns:
-        Estimated token count
-    """
-    # Convert to the format that will be included in prompt
-    from .prompts import build_memory_section
-
-    memory_text = build_memory_section(memory)
-    return estimate_tokens(memory_text, model_name)
-
-
-def compress_memory_simple(memory: GlobalMemory, max_entries: int = 50) -> GlobalMemory:
-    """
-    Simple memory compression by limiting glossary size.
-
-    Args:
-        memory: GlobalMemory to compress
-        max_entries: Maximum number of glossary entries to keep
-
-    Returns:
-        Compressed GlobalMemory
-    """
-    compressed = GlobalMemory(
-        user_glossary=list(memory.user_glossary),
-        glossary=memory.glossary[-max_entries:] if memory.glossary else [],
-        style_notes=memory.style_notes[:500] if memory.style_notes else "",  # Truncate to 500 chars
-        story_description=(
-            memory.story_description[:500] if memory.story_description else ""
-        ),
+    logger.info(
+        "Terminology merge: %d candidate(s); added %d, user-locked %d, already learned %d",
+        len(candidates),
+        added,
+        locked,
+        duplicate,
     )
-
-    return compressed
-
-
-def merge_glossary_entries(glossary: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Merge duplicate glossary entries.
-
-    Args:
-        glossary: List of glossary entries
-
-    Returns:
-        Deduplicated glossary
-    """
-    seen = {}
-    merged = []
-
-    for entry in glossary:
-        eng = entry.get("eng", "")
-        if not eng:
-            continue
-
-        if eng not in seen:
-            seen[eng] = entry
-            merged.append(entry)
-        else:
-            # Update existing entry if new one has more info
-            existing = seen[eng]
-            if not existing.get("zh") and entry.get("zh"):
-                existing["zh"] = entry["zh"]
-            if not existing.get("type") and entry.get("type"):
-                existing["type"] = entry["type"]
-
-    return merged
+    return memory, usage
 
 
-def validate_memory_structure(memory_dict: Dict[str, Any]) -> bool:
-    """
-    Validate that memory dictionary has correct structure.
+def estimate_memory_tokens(memory: GlobalMemory, model_name: str) -> int:
+    """Estimate the tokens memory adds to the refine prompt, as actually rendered."""
 
-    Args:
-        memory_dict: Dictionary to validate
+    return estimate_tokens(render_memory_sections(memory), model_name)
 
-    Returns:
-        True if valid, False otherwise
-    """
-    if not isinstance(memory_dict, dict):
-        return False
 
-    required_fields = {
-        "user_glossary",
-        "glossary",
-        "style_notes",
-        "story_description",
-    }
-    if set(memory_dict) != required_fields:
-        return False
+def compress_memory(
+    memory: GlobalMemory, *, model: BaseChatModel, target_tokens: int
+) -> tuple[GlobalMemory, UsageStats]:
+    """Compress learned glossary and story with the model; the user glossary is kept verbatim."""
 
-    if not isinstance(memory_dict["user_glossary"], list):
-        return False
-    if not isinstance(memory_dict["glossary"], list):
-        return False
-    if not isinstance(memory_dict["style_notes"], str):
-        return False
-    if not isinstance(memory_dict["story_description"], str):
-        return False
-
-    for entry in memory_dict["user_glossary"] + memory_dict["glossary"]:
-        if not isinstance(entry, dict):
-            return False
-        if "eng" not in entry or "zh" not in entry:
-            return False
-
-    return True
+    messages = [
+        ("system", MEMORY_COMPRESSION_SYSTEM_PROMPT),
+        ("human", build_memory_compression_prompt(memory, target_tokens)),
+    ]
+    text, usage = invoke_text(model, messages)
+    payload = require_exact_fields(
+        _parse_json_object(text, location="memory compression response"),
+        {"glossary", "story_description"},
+        location="memory compression response",
+    )
+    if not isinstance(payload["glossary"], list) or not all(
+        isinstance(entry, dict)
+        and isinstance(entry.get("eng"), str)
+        and isinstance(entry.get("zh"), str)
+        for entry in payload["glossary"]
+    ):
+        raise ValueError("compressed glossary must be a list of eng/zh entries")
+    if not isinstance(payload["story_description"], str):
+        raise ValueError("compressed story_description must be a string")
+    compressed = GlobalMemory(
+        user_glossary=[dict(entry) for entry in memory.user_glossary],
+        glossary=[dict(entry) for entry in payload["glossary"]],
+        story_description=payload["story_description"].strip(),
+    )
+    prune_learned_glossary_against_user_glossary(compressed)
+    return compressed, usage

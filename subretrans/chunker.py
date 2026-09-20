@@ -1,137 +1,74 @@
-"""
-Chunk splitting module for subtitle pairs.
+"""Split subtitle pairs into model-sized chunks."""
 
-Splits subtitle pairs into manageable chunks that fit within token limits
-while preserving logical groupings.
-"""
+from __future__ import annotations
 
-from typing import List
+from collections.abc import Sequence
+
 from .pairs import SubtitlePair
 from .utils import estimate_pair_tokens, estimate_pairs_tokens
-from .config import ConfigSDK
+
+
+_TOKEN_SAFETY_MARGIN = 1000
 
 
 def chunk_pairs(
-    pairs: List[SubtitlePair],
-    config: ConfigSDK,
-    base_prompt_tokens: int
-) -> List[List[SubtitlePair]]:
-    """
-    Split subtitle pairs into chunks that fit within token limits or pair count.
+    pairs: Sequence[SubtitlePair],
+    *,
+    batch_size: int | None,
+    token_soft_limit: int,
+    base_prompt_tokens: int,
+    model_name: str,
+) -> list[list[SubtitlePair]]:
+    """Chunk by fixed pair count when ``batch_size`` is set, else by token budget."""
 
-    Each chunk will be processed separately by the LLM. The function can chunk
-    either by token limits (default) or by fixed pair count (if refine_batch_size is set).
-
-    Args:
-        pairs: List of all SubtitlePair objects to chunk
-        config: Configuration object with token limits and pair count
-        base_prompt_tokens: Estimated tokens for system prompt and memory
-
-    Returns:
-        List of chunks, where each chunk is a list of SubtitlePair objects
-    """
     if not pairs:
         return []
+    if batch_size is not None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        return chunk_pairs_by_count(pairs, batch_size)
 
-    # If refine_batch_size is set, use simple pair-count-based chunking
-    if config.refine_batch_size is not None and config.refine_batch_size > 0:
-        return chunk_pairs_by_count(pairs, config.refine_batch_size)
-
-    # Otherwise, use token-based chunking (original behavior)
-    chunks = []
-    current_chunk = []
-    current_chunk_tokens = 0
-
-    # Calculate available tokens for pair data
-    # Reserve some tokens for output and safety margin
-    available_tokens = config.chunk_token_soft_limit - base_prompt_tokens
-    safety_margin = 1000  # Reserve for JSON formatting overhead
-    max_chunk_tokens = available_tokens - safety_margin
-
-    current_model = config.refine.model
-
+    max_chunk_tokens = token_soft_limit - base_prompt_tokens - _TOKEN_SAFETY_MARGIN
+    chunks: list[list[SubtitlePair]] = []
+    current: list[SubtitlePair] = []
+    current_tokens = 0
     for pair in pairs:
-        pair_tokens = estimate_pair_tokens(pair, current_model)
-
-        # Check if adding this pair would exceed the limit
-        if current_chunk and (current_chunk_tokens + pair_tokens > max_chunk_tokens):
-            # Save current chunk and start a new one
-            chunks.append(current_chunk)
-            current_chunk = [pair]
-            current_chunk_tokens = pair_tokens
+        pair_tokens = estimate_pair_tokens(pair, model_name)
+        if current and current_tokens + pair_tokens > max_chunk_tokens:
+            chunks.append(current)
+            current = [pair]
+            current_tokens = pair_tokens
         else:
-            # Add pair to current chunk
-            current_chunk.append(pair)
-            current_chunk_tokens += pair_tokens
-
-    # Don't forget the last chunk
-    if current_chunk:
-        chunks.append(current_chunk)
-
+            current.append(pair)
+            current_tokens += pair_tokens
+    if current:
+        chunks.append(current)
     return chunks
 
 
 def chunk_pairs_by_count(
-    pairs: List[SubtitlePair],
-    pairs_per_chunk: int
-) -> List[List[SubtitlePair]]:
-    """
-    Split subtitle pairs into chunks by fixed pair count.
+    pairs: Sequence[SubtitlePair], pairs_per_chunk: int
+) -> list[list[SubtitlePair]]:
+    """Split ``pairs`` into consecutive chunks of at most ``pairs_per_chunk``."""
 
-    Args:
-        pairs: List of all SubtitlePair objects to chunk
-        pairs_per_chunk: Number of pairs per chunk
-
-    Returns:
-        List of chunks, where each chunk is a list of SubtitlePair objects
-    """
-    chunks = []
-    for i in range(0, len(pairs), pairs_per_chunk):
-        chunk = pairs[i:i + pairs_per_chunk]
-        chunks.append(chunk)
-    return chunks
+    return [
+        list(pairs[start : start + pairs_per_chunk])
+        for start in range(0, len(pairs), pairs_per_chunk)
+    ]
 
 
-def estimate_chunk_tokens(chunk: List[SubtitlePair], model_name: str) -> int:
-    """
-    Estimate total tokens for a chunk of subtitle pairs.
+def chunk_statistics(
+    chunks: Sequence[Sequence[SubtitlePair]], model_name: str
+) -> dict[str, float]:
+    """Summarize chunk sizes in pairs and estimated tokens."""
 
-    Args:
-        chunk: List of SubtitlePair objects in this chunk
-        model_name: Model name for token estimation
-
-    Returns:
-        Estimated token count
-    """
-    return estimate_pairs_tokens(chunk, model_name)
-
-
-def get_chunk_statistics(chunks: List[List[SubtitlePair]], model_name: str) -> dict:
-    """
-    Calculate statistics about chunk distribution.
-
-    Args:
-        chunks: List of chunks
-        model_name: Model name for token estimation
-
-    Returns:
-        Dictionary with statistics (num_chunks, total_pairs, tokens_per_chunk, etc.)
-    """
     if not chunks:
-        return {
-            "num_chunks": 0,
-            "total_pairs": 0,
-            "avg_pairs_per_chunk": 0,
-            "avg_tokens_per_chunk": 0,
-            "min_pairs": 0,
-            "max_pairs": 0,
-            "min_tokens": 0,
-            "max_tokens": 0
-        }
-
+        return {key: 0 for key in (
+            "num_chunks", "total_pairs", "avg_pairs_per_chunk", "avg_tokens_per_chunk",
+            "min_pairs", "max_pairs", "min_tokens", "max_tokens",
+        )}
     pair_counts = [len(chunk) for chunk in chunks]
-    token_counts = [estimate_chunk_tokens(chunk, model_name) for chunk in chunks]
-
+    token_counts = [estimate_pairs_tokens(chunk, model_name) for chunk in chunks]
     return {
         "num_chunks": len(chunks),
         "total_pairs": sum(pair_counts),
@@ -140,55 +77,20 @@ def get_chunk_statistics(chunks: List[List[SubtitlePair]], model_name: str) -> d
         "min_pairs": min(pair_counts),
         "max_pairs": max(pair_counts),
         "min_tokens": min(token_counts),
-        "max_tokens": max(token_counts)
+        "max_tokens": max(token_counts),
     }
 
 
-def print_chunk_statistics(chunks: List[List[SubtitlePair]], model_name: str) -> None:
-    """
-    Print human-readable chunk statistics.
+def format_chunk_statistics(
+    chunks: Sequence[Sequence[SubtitlePair]], model_name: str
+) -> str:
+    """One-line human-readable chunk summary for logs."""
 
-    Args:
-        chunks: List of chunks
-        model_name: Model name for token estimation
-    """
-    stats = get_chunk_statistics(chunks, model_name)
-
-    print(f"\n=== Chunk Statistics ===")
-    print(f"Number of chunks: {stats['num_chunks']}")
-    print(f"Total pairs: {stats['total_pairs']}")
-    print(f"Average pairs per chunk: {stats['avg_pairs_per_chunk']:.1f}")
-    print(f"Pair range: {stats['min_pairs']} - {stats['max_pairs']}")
-    print(f"Average tokens per chunk: {stats['avg_tokens_per_chunk']:.0f}")
-    print(f"Token range: {stats['min_tokens']} - {stats['max_tokens']}")
-    print(f"========================\n")
-
-
-def validate_chunks(
-    original_pairs: List[SubtitlePair],
-    chunks: List[List[SubtitlePair]]
-) -> bool:
-    """
-    Validate that chunks contain all original pairs exactly once.
-
-    Args:
-        original_pairs: Original list of pairs before chunking
-        chunks: List of chunks after chunking
-
-    Returns:
-        True if validation passes, False otherwise
-    """
-    # Flatten chunks
-    chunked_pairs = []
-    for chunk in chunks:
-        chunked_pairs.extend(chunk)
-
-    # Check counts match
-    if len(chunked_pairs) != len(original_pairs):
-        return False
-
-    # Check IDs match (order may differ)
-    original_ids = sorted([p.id for p in original_pairs])
-    chunked_ids = sorted([p.id for p in chunked_pairs])
-
-    return original_ids == chunked_ids
+    stats = chunk_statistics(chunks, model_name)
+    return (
+        f"{stats['num_chunks']} chunks, {stats['total_pairs']} pairs; "
+        f"pairs/chunk avg={stats['avg_pairs_per_chunk']:.1f} "
+        f"range={stats['min_pairs']}-{stats['max_pairs']}; "
+        f"tokens/chunk avg={stats['avg_tokens_per_chunk']:.0f} "
+        f"range={stats['min_tokens']}-{stats['max_tokens']}"
+    )

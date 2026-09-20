@@ -1,22 +1,21 @@
 #!/bin/bash
 #
-# Wrapper script to run the subtitle refiner or prompt generator from any directory
+# Wrapper script to run the refinement CLI, the prompt generator, or the agent pipeline from any directory.
 #
 # Usage:
-#   ./run.sh input.ass output.ass [options]             # Run subretrans.cli
-#   ./run.sh genreq input.ass --refine-batch-size 120   # Run subretrans.genreq
-#   ./run.sh pipeline run input.srt output.ass [...]     # Run agent pipeline
+#   ./run.sh input.ass output.ass [options]                       # subretrans.cli (standalone refinement)
+#   ./run.sh genreq input.ass --refine-batch-size 120             # subretrans.genreq (prompt dump, no API calls)
+#   ./run.sh pipeline run input.srt output.ass --mode ... --thread-id ...   # subretrans.pipeline_cli
+#   ./run.sh pipeline status|resume|review <thread-id> [...]
 #
 # Examples:
-#   ./run.sh ~/files/input.ass ~/files/output.ass --stream -v
+#   ./run.sh ~/files/input.ass ~/files/output.ass --checkpoint --stream -v
 #   ./run.sh input.ass output.ass --dry-run
-#   ./run.sh genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120
-#   cd /tmp && /path/to/subretrans/run.sh input.ass output.ass
+#   ./run.sh pipeline run source.en.srt release.ass --mode parallel_initial --thread-id episode-s07e01
 #
 # Works with symlinks:
 #   ln -s /path/to/subretrans/run.sh ~/bin/subretrans
-#   subretrans input.ass output.ass --stream -v
-#   subretrans genreq input.ass --refine-batch-size 120
+#   subretrans input.ass output.ass --checkpoint -v
 #
 
 # Resolve the real path of this script, even if it's a symlink

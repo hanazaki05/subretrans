@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from langchain_core.messages import AIMessage
-
 from .config import RoleModelSettings
+from .fsutil import require_exact_fields
 from .pairs import SubtitlePair
-from .providers import build_chat_model
-
-
-logger = logging.getLogger(__name__)
+from .providers import build_chat_model, clean_response_text, invoke_text
 
 
 @dataclass(frozen=True)
@@ -83,22 +78,15 @@ AgentQA = Callable[
 ]
 
 
-def _exact_object(
-    value: object, expected_fields: set[str], *, location: str
-) -> dict[str, object]:
-    if type(value) is not dict:
-        raise ValueError(f"{location} must be a JSON object")
-    fields = set(value)
-    if fields != expected_fields:
-        missing = sorted(expected_fields - fields)
-        unknown = sorted(fields - expected_fields)
-        details = []
-        if missing:
-            details.append(f"missing fields: {', '.join(missing)}")
-        if unknown:
-            details.append(f"unknown fields: {', '.join(unknown)}")
-        raise ValueError(f"{location} has invalid fields ({'; '.join(details)})")
-    return value
+def _glossary_payload(entry: AgentQAGlossaryTerm) -> dict[str, object]:
+    payload: dict[str, object] = {"eng": entry.eng, "zh": entry.zh}
+    if entry.type is not None:
+        payload["type"] = entry.type
+    if entry.confidence is not None:
+        payload["confidence"] = entry.confidence
+    if entry.evidence_ids:
+        payload["evidence_ids"] = list(entry.evidence_ids)
+    return payload
 
 
 def build_agent_qa(settings: RoleModelSettings, system_prompt: str) -> AgentQA:
@@ -150,49 +138,19 @@ def build_agent_qa(settings: RoleModelSettings, system_prompt: str) -> AgentQA:
                     for entry in episode_memory.user_glossary
                 ],
                 "glossary": [
-                    {
-                        "eng": entry.eng,
-                        "zh": entry.zh,
-                        **({"type": entry.type} if entry.type is not None else {}),
-                        **(
-                            {"confidence": entry.confidence}
-                            if entry.confidence is not None
-                            else {}
-                        ),
-                        **(
-                            {"evidence_ids": list(entry.evidence_ids)}
-                            if entry.evidence_ids
-                            else {}
-                        ),
-                    }
-                    for entry in episode_memory.glossary
+                    _glossary_payload(entry) for entry in episode_memory.glossary
                 ],
             },
         }
-        response = model.invoke(
+        response_text, _ = invoke_text(
+            model,
             [
                 ("system", system_prompt),
                 ("human", json.dumps(request_payload, ensure_ascii=False)),
-            ]
+            ],
         )
-        if not isinstance(response, AIMessage):
-            raise TypeError("model response must be an AIMessage")
-        response_text = response.text
-        if not isinstance(response_text, str):
-            raise TypeError("AIMessage text must be a string")
-        logger.debug(
-            "Agent QA raw response: content=%r metadata=%r",
-            response.content,
-            response.response_metadata,
-        )
-        if not response_text.strip():
-            stop_reason = response.response_metadata.get("stop_reason", "unknown")
-            raise ValueError(
-                f"agent QA returned no text content (stop_reason={stop_reason})"
-            )
-
-        payload = _exact_object(
-            json.loads(response_text),
+        payload = require_exact_fields(
+            json.loads(clean_response_text(response_text)),
             {"passed", "issues", "repairs"},
             location="response",
         )
@@ -209,18 +167,14 @@ def build_agent_qa(settings: RoleModelSettings, system_prompt: str) -> AgentQA:
         issues: list[str] = []
         for index, issue in enumerate(raw_issues):
             if type(issue) is not str or not issue.strip():
-                raise ValueError(
-                    f"response.issues[{index}] must be a non-empty string"
-                )
+                raise ValueError(f"response.issues[{index}] must be a non-empty string")
             issues.append(issue)
 
         repairs: list[AgentRepair] = []
         repair_ids: set[int] = set()
         for index, raw_repair in enumerate(raw_repairs):
-            repair = _exact_object(
-                raw_repair,
-                {"id", "translation"},
-                location=f"response.repairs[{index}]",
+            repair = require_exact_fields(
+                raw_repair, {"id", "translation"}, location=f"response.repairs[{index}]"
             )
             repair_id = repair["id"]
             translation = repair["translation"]
@@ -234,8 +188,7 @@ def build_agent_qa(settings: RoleModelSettings, system_prompt: str) -> AgentQA:
                 raise ValueError("response repair ids must be unique")
             if type(translation) is not str or not translation.strip():
                 raise ValueError(
-                    f"response.repairs[{index}].translation must be a "
-                    "non-empty string"
+                    f"response.repairs[{index}].translation must be a non-empty string"
                 )
             repair_ids.add(repair_id)
             repairs.append(AgentRepair(repair_id, translation))

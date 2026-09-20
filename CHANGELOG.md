@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **One refine engine.** The legacy CLI engine (`cli.process_subtitles` and `llm.py`) is replaced by `subretrans/refine.py`; the agent pipeline and the standalone CLI call the same `refine_serial()`. Output, memory, and progress are written atomically after every chunk (the `--per-block-update` switch is gone because per-chunk commits are always on).
+- **One provider layer.** Every role, including OpenAI Responses and OpenAI-compatible chat endpoints, is called through LangChain via `providers.build_chat_model()` and `providers.invoke_text()`. Retries are the provider SDK's `max_retries`; the hand-rolled string-matching retry loops are removed. Streaming works for every protocol.
+- **One configuration loader.** `workflow_config.py` and the old `ConfigSDK` are merged into `config.load_config()`, which returns an immutable `AppConfig`; command-line overrides use `dataclasses.replace`. `glossary.policy` is removed because the user glossary is always locked.
+- **Prompts moved to `prompts/`.** `rm/` no longer holds tracked files and needs no `.gitignore` exceptions. The stale `main_prompt.md` (whose glossary conflicted with the shared rules) and `walkthrough.md` are deleted.
+- Shared helpers live in `fsutil.py` (atomic writes, hashing, strict field validation) instead of seven private copies.
+- Style detection for English/Chinese events is defined once in `ass_parser` and reused by merge, postprocess, and structural QA.
+- `pipeline status <thread-id>` reports where a run stopped.
+- Library modules log through `logging`; `print` is limited to the final CLI summaries. `--debug`/`-vv` now also covers the refine stage.
+- Default `timeout` for the primer and agent roles in the shipped configs is 1800 seconds (was 30000).
+
+### Fixed
+- A failed cost lookup no longer fails a completed refinement.
+- `memory.yaml` is written atomically, so an interrupted run cannot leave a checkpoint whose hash mismatches `refine-progress.json`.
+- Memory compression can no longer alter the authoritative user glossary; only learned terminology and the story description are compressed.
+- A missing glossary section in the prompt template is a configuration error instead of a printed warning.
+- Glossary keys are normalized the same way for pruning, locking, and deduplication.
+
+### Removed
+- Dead code: legacy in-code prompts, `split_user_prompt_and_glossary`, `compress_memory_simple`, `merge_glossary_entries`, `validate_chunks`, unused pair/stat/util helpers, and the vestigial `style_notes` memory field (old checkpoints containing it are still readable).
+- Direct `openai` and `python-dotenv` dependencies.
+
 ## [0.1.0] - 2026-09-20
 
 ### Added

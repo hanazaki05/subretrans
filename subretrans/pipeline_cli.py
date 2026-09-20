@@ -6,37 +6,33 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import re
-import tempfile
 import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from .ass_parser import build_pairs_from_ass_lines, parse_ass_file
-from .cli import file_sha256, process_subtitles
-from .config import load_config_sdk
+from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from .fsutil import atomic_write_json, sha256_file
 from .model_agent import build_agent_qa
 from .model_translation import build_model_translate_batch
-from .pipeline import build_pipeline
+from .pipeline import STAGES, build_pipeline
 from .prompts import load_qa_prompt_template
-from .stage_handlers import WorkflowSettings, build_stage_handlers
+from .refine import RefineOptions, load_refine_progress, refine_serial
+from .stage_handlers import Refine, WorkflowSettings, build_stage_handlers
 from .state import PipelineState, TranslationMode
 from .subtitle_edit import preprocess_with_seconv
 from .translation import TranslateBatch, TranslationBatch
-from .workflow_config import (
-    PipelineSettings,
-    load_pipeline_settings,
-    load_role_model_settings,
-    load_subtitle_edit_settings,
-)
 
 
 logger = logging.getLogger(__name__)
 
+RUN_METADATA_VERSION = 2
 RUN_METADATA_FIELDS = {
     "version",
     "config_path",
@@ -46,20 +42,20 @@ RUN_METADATA_FIELDS = {
 }
 
 
-def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, path)
-    finally:
-        if os.path.exists(temporary_name):
-            os.unlink(temporary_name)
+@dataclass(frozen=True)
+class RunContext:
+    """One persisted pipeline run: its thread, configuration, and artifact paths."""
+
+    thread_id: str
+    config: AppConfig
+    run_dir: Path
+    review_path: Path
+    release_path: Path
+    translation_mode: TranslationMode
+
+    @property
+    def graph_config(self) -> dict[str, Any]:
+        return {"configurable": {"thread_id": self.thread_id}}
 
 
 def _validate_thread_id(value: str) -> str:
@@ -75,8 +71,8 @@ def _load_run_metadata(path: Path) -> dict[str, Any]:
         payload = json.load(handle)
     if type(payload) is not dict or set(payload) != RUN_METADATA_FIELDS:
         raise ValueError(f"invalid run metadata: {path}")
-    if payload["version"] != 2:
-        raise ValueError("run metadata version must be 2")
+    if payload["version"] != RUN_METADATA_VERSION:
+        raise ValueError(f"run metadata version must be {RUN_METADATA_VERSION}")
     if payload["translation_mode"] not in {"parallel_initial", "serial_memory"}:
         raise ValueError("invalid run translation mode")
     for field in ("config_path", "review_path", "release_path"):
@@ -85,30 +81,18 @@ def _load_run_metadata(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _configured_model_versions(config_path: Path) -> dict[str, str]:
-    return {
-        role: load_role_model_settings(config_path, role).model
-        for role in ("primer", "refine", "extraction", "agent")
-    }
-
-
-def _prompt_version(config_path: Path, settings: PipelineSettings) -> str:
-    """Hash the config and every composed prompt component."""
+def _prompt_version(config: AppConfig) -> str:
+    """Hash the configuration file and every composed prompt component."""
 
     digest = hashlib.sha256()
-    for path in (
-        config_path,
-        settings.prompt_paths.shared,
-        settings.prompt_paths.refine,
-        settings.prompt_paths.qa,
-    ):
-        digest.update(path.read_bytes())
+    for path in (config.path, config.prompts.shared, config.prompts.refine, config.prompts.qa):
+        digest.update(Path(path).read_bytes())
     return digest.hexdigest()
 
 
-def _lazy_translate_batch(
-    config_path: Path, settings: PipelineSettings
-) -> TranslateBatch:
+def _lazy_translate_batch(config: AppConfig) -> TranslateBatch:
+    """Construct the primer model on first use so serial runs never touch it."""
+
     lock = threading.Lock()
     translator: TranslateBatch | None = None
 
@@ -117,127 +101,118 @@ def _lazy_translate_batch(
         if translator is None:
             with lock:
                 if translator is None:
-                    model = load_role_model_settings(config_path, "primer")
                     translator = build_model_translate_batch(
-                        model.config,
-                        source_language=settings.source_language,
-                        target_language=settings.target_language,
-                        user_instruction=settings.user_instruction,
+                        config.api.primer.config,
+                        source_language=config.primer.source_language,
+                        target_language=config.primer.target_language,
+                        user_instruction=config.primer.user_instruction,
                     )
         return translator(batch)
 
     return translate
 
 
-def _load_resume_index(progress_path: Path, output_path: Path, memory_path: Path) -> int:
-    if not progress_path.exists():
-        return 0
-    with progress_path.open(encoding="utf-8") as handle:
-        payload = json.load(handle)
-    expected = {
-        "version",
-        "next_pair",
-        "artifact_path",
-        "artifact_hash",
-        "memory_checkpoint_path",
-        "memory_hash",
-    }
-    if type(payload) is not dict or set(payload) != expected or payload["version"] != 1:
-        raise ValueError("invalid refine progress manifest")
-    if payload["artifact_path"] != str(output_path):
-        raise ValueError("refine progress artifact path mismatch")
-    if payload["memory_checkpoint_path"] != str(memory_path):
-        raise ValueError("refine progress memory path mismatch")
-    if payload["artifact_hash"] != file_sha256(str(output_path)):
-        raise ValueError("refine progress artifact hash mismatch")
-    if payload["memory_hash"] != file_sha256(str(memory_path)):
-        raise ValueError("refine progress memory hash mismatch")
-    next_pair = payload["next_pair"]
-    if type(next_pair) is not int or next_pair < 0:
-        raise ValueError("refine progress next_pair must be a non-negative integer")
-    return next_pair
-
-
-def _refine_callable(config_path: Path):
+def _refine_callable(config: AppConfig) -> Refine:
     def refine(
-        input_path: Path,
-        output_path: Path,
-        checkpoint_path: Path,
-        progress_path: Path,
+        input_path: Path, output_path: Path, checkpoint_path: Path, progress_path: Path
     ) -> None:
-        resume_index = _load_resume_index(progress_path, output_path, checkpoint_path)
-        processing_input = input_path
-        if resume_index:
-            _, lines = parse_ass_file(str(output_path))
-            if resume_index == len(build_pairs_from_ass_lines(lines)):
-                return
-            processing_input = output_path
-
-        config = load_config_sdk(yaml_file_path=str(config_path))
-        config.per_block_update = True
-        use_stream = (
-            config.use_stream
-            if config.refine.protocol.value == "openai-chat-compatible"
-            else False
-        )
-        success = process_subtitles(
-            str(processing_input),
-            str(output_path),
+        options = RefineOptions()
+        if progress_path.exists():
+            progress = load_refine_progress(progress_path, output_path, checkpoint_path)
+            options = RefineOptions(resume_index=progress.next_pair)
+        refine_serial(
+            input_path,
+            output_path,
             config,
-            use_stream=use_stream,
-            resume_index=resume_index or None,
-            enable_checkpoint=True,
-            checkpoint_path_override=str(checkpoint_path),
-            progress_manifest_path=str(progress_path),
+            checkpoint_path=checkpoint_path,
+            progress_path=progress_path,
+            options=options,
         )
-        if not success:
-            raise RuntimeError("serial refinement failed")
 
     return refine
 
 
-def _subtitle_preprocessor(config_path: Path):
+def _subtitle_preprocessor(config: AppConfig):
     def preprocess(input_path: Path, output_path: Path) -> Path:
-        settings = load_subtitle_edit_settings(config_path)
-        return preprocess_with_seconv(settings, input_path, output_path)
+        return preprocess_with_seconv(config.subtitle_edit, input_path, output_path)
 
     return preprocess
 
 
-def _handlers(
-    pipeline_settings: PipelineSettings,
-    config_path: Path,
-    run_dir: Path,
-    review_path: Path,
-    release_path: Path,
-):
+def _handlers(context: RunContext):
+    config = context.config
     return build_stage_handlers(
         WorkflowSettings(
-            run_dir=run_dir,
-            review_path=review_path,
-            release_path=release_path,
-            primer_batch_size=pipeline_settings.primer_batch_size,
-            primer_max_workers=pipeline_settings.primer_max_workers,
-            qa_batch_size=pipeline_settings.qa_batch_size,
-            qa_max_workers=pipeline_settings.qa_max_workers,
-            qa_window_offsets=pipeline_settings.qa_window_offsets,
-            agent_max_repair_attempts=pipeline_settings.agent_max_repair_attempts,
-            postprocess_operations=pipeline_settings.postprocess_operations,
-            episode_replacements=pipeline_settings.episode_replacements,
+            run_dir=context.run_dir,
+            review_path=context.review_path,
+            release_path=context.release_path,
+            primer_batch_size=config.primer.batch_size,
+            primer_max_workers=config.primer.max_workers,
+            qa_batch_size=config.qa.batch_size,
+            qa_max_workers=config.qa.max_workers,
+            qa_window_offsets=config.qa.window_offsets,
+            agent_max_repair_attempts=config.pipeline.agent_max_repair_attempts,
+            postprocess_operations=config.postprocess.operations,
+            episode_replacements=config.postprocess.episode_replacements,
         ),
-        preprocess_subtitle=_subtitle_preprocessor(config_path),
-        translate_batch=_lazy_translate_batch(config_path, pipeline_settings),
-        refine=_refine_callable(config_path),
-        agent_qa=build_agent_qa(
-            load_role_model_settings(config_path, "agent"),
-            load_qa_prompt_template(pipeline_settings.prompt_paths),
-        ),
+        preprocess_subtitle=_subtitle_preprocessor(config),
+        translate_batch=_lazy_translate_batch(config),
+        refine=_refine_callable(config),
+        agent_qa=build_agent_qa(config.api.agent, load_qa_prompt_template(config.prompts)),
     )
+
+
+def _inspection_handlers():
+    """No-op handlers: enough to compile the graph and read persisted state."""
+
+    return {stage: (lambda state: {}) for stage in STAGES}
+
+
+@contextmanager
+def _open_graph(context: RunContext, handlers) -> Iterator[Any]:
+    with SqliteSaver.from_conn_string(str(context.config.pipeline.checkpoint_db)) as saver:
+        yield build_pipeline(handlers, checkpointer=saver)
+
+
+def _existing_run(args: argparse.Namespace, command: str) -> RunContext:
+    thread_id = _validate_thread_id(args.thread_id)
+    config = load_config(args.config)
+    run_dir = config.pipeline.state_dir / thread_id
+    metadata_path = run_dir / "run.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(
+            f"no pipeline run named '{thread_id}' under {config.pipeline.state_dir}"
+        )
+    metadata = _load_run_metadata(metadata_path)
+    if Path(metadata["config_path"]) != config.path:
+        raise ValueError(f"{command} config does not match the run config")
+    return RunContext(
+        thread_id=thread_id,
+        config=config,
+        run_dir=run_dir,
+        review_path=Path(metadata["review_path"]),
+        release_path=Path(metadata["release_path"]),
+        translation_mode=metadata["translation_mode"],
+    )
+
+
+def _report_review_wait(context: RunContext, result: Mapping[str, Any]) -> int:
+    if "__interrupt__" not in result:
+        raise RuntimeError("pipeline did not stop for human review")
+    print(f"Pipeline '{context.thread_id}' is awaiting human review.")
+    print(f"Review artifact: {result['artifact_path']}")
+    print(f"QA: {result['qa_conclusion']}")
+    print(f"Agent repair attempts: {result['agent_repair_attempts']}")
+    print(
+        "Next: ./run.sh pipeline review "
+        f"{context.thread_id} approve --config {context.config.path}"
+    )
+    return 0
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
     thread_id = _validate_thread_id(args.thread_id)
-    config_path = Path(args.config).resolve()
+    config = load_config(args.config)
     source_path = Path(args.input).resolve()
     release_path = Path(args.output).resolve()
     review_path = source_path.parent / f"{release_path.stem}.review{release_path.suffix}"
@@ -245,14 +220,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
         raise FileNotFoundError(f"input artifact not found: {source_path}")
     release_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pipeline_settings = load_pipeline_settings(config_path)
-    pipeline_settings.state_dir.mkdir(parents=True, exist_ok=True)
-    pipeline_settings.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
-    run_dir = pipeline_settings.state_dir / thread_id
+    config.pipeline.state_dir.mkdir(parents=True, exist_ok=True)
+    config.pipeline.checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = config.pipeline.state_dir / thread_id
     run_dir.mkdir(parents=False, exist_ok=False)
-    metadata_path = run_dir / "run.json"
     mode: TranslationMode = args.mode
-    model_versions = _configured_model_versions(config_path)
+    context = RunContext(thread_id, config, run_dir, review_path, release_path, mode)
+    model_versions = config.model_versions
     logger.info("Pipeline %s starting in %s mode", thread_id, mode)
     logger.info("Input: %s", source_path)
     logger.info("Run state: %s", run_dir)
@@ -267,15 +241,15 @@ def run_pipeline(args: argparse.Namespace) -> int:
     )
     logger.info(
         "Batching: primer=%d cues, primer_workers=%d, refine=%s",
-        pipeline_settings.primer_batch_size,
-        pipeline_settings.primer_max_workers,
-        pipeline_settings.refine_batch_size or "token-based",
+        config.primer.batch_size,
+        config.primer.max_workers,
+        config.refine.batch_size or "token-based",
     )
-    _atomic_json(
-        metadata_path,
+    atomic_write_json(
+        run_dir / "run.json",
         {
-            "version": 2,
-            "config_path": str(config_path),
+            "version": RUN_METADATA_VERSION,
+            "config_path": str(config.path),
             "review_path": str(review_path),
             "release_path": str(release_path),
             "translation_mode": mode,
@@ -284,7 +258,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     initial_state: PipelineState = {
         "artifact_path": str(source_path),
-        "artifact_hash": file_sha256(str(source_path)),
+        "artifact_hash": sha256_file(source_path),
         "translation_manifest_path": None,
         "translation_mode": mode,
         "stage": "preprocess",
@@ -292,97 +266,73 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "memory_checkpoint_path": None,
         "memory_hash": "",
         "model_versions": model_versions,
-        "prompt_version": _prompt_version(config_path, pipeline_settings),
+        "prompt_version": _prompt_version(config),
         "qa_conclusion": "pending",
         "qa_passed": False,
         "qa_repair_applied": False,
         "agent_repair_attempts": 0,
     }
-    graph_config = {"configurable": {"thread_id": thread_id}}
-    with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
-        graph = build_pipeline(
-            _handlers(
-                pipeline_settings, config_path, run_dir, review_path, release_path
-            ),
-            checkpointer=saver,
-        )
-        result = graph.invoke(initial_state, graph_config)
-    if "__interrupt__" not in result:
-        raise RuntimeError("pipeline did not stop for human review")
-    print(f"Pipeline '{thread_id}' is awaiting human review.")
-    print(f"Review artifact: {result['artifact_path']}")
-    print(f"QA: {result['qa_conclusion']}")
-    print(f"Agent repair attempts: {result['agent_repair_attempts']}")
-    print(
-        "Next: ./run.sh pipeline review "
-        f"{thread_id} approve --config {config_path}"
-    )
-    return 0
+    with _open_graph(context, _handlers(context)) as graph:
+        result = graph.invoke(initial_state, context.graph_config)
+    return _report_review_wait(context, result)
 
 
 def review_pipeline(args: argparse.Namespace) -> int:
-    thread_id = _validate_thread_id(args.thread_id)
-    config_path = Path(args.config).resolve()
-    pipeline_settings = load_pipeline_settings(config_path)
-    run_dir = pipeline_settings.state_dir / thread_id
-    metadata = _load_run_metadata(run_dir / "run.json")
-    if Path(metadata["config_path"]) != config_path:
-        raise ValueError("review config does not match the run config")
-    release_path = Path(metadata["release_path"])
-    review_path = Path(metadata["review_path"])
+    context = _existing_run(args, "review")
     logger.info(
         "Pipeline %s review decision=%s; review artifact=%s",
-        thread_id,
+        context.thread_id,
         args.decision,
-        review_path,
+        context.review_path,
     )
-    graph_config = {"configurable": {"thread_id": thread_id}}
-    with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
-        graph = build_pipeline(
-            _handlers(
-                pipeline_settings, config_path, run_dir, review_path, release_path
-            ),
-            checkpointer=saver,
-        )
-        result = graph.invoke(Command(resume=args.decision), graph_config)
-    print(f"Pipeline '{thread_id}' review decision: {args.decision}")
+    with _open_graph(context, _handlers(context)) as graph:
+        result = graph.invoke(Command(resume=args.decision), context.graph_config)
+    print(f"Pipeline '{context.thread_id}' review decision: {args.decision}")
     if args.decision == "approve":
         print(f"Released artifact: {result['artifact_path']}")
     else:
-        print(f"Not released: {release_path}")
+        print(f"Not released: {context.release_path}")
     return 0
 
 
 def resume_pipeline(args: argparse.Namespace) -> int:
-    thread_id = _validate_thread_id(args.thread_id)
-    config_path = Path(args.config).resolve()
-    pipeline_settings = load_pipeline_settings(config_path)
-    run_dir = pipeline_settings.state_dir / thread_id
-    metadata = _load_run_metadata(run_dir / "run.json")
-    if Path(metadata["config_path"]) != config_path:
-        raise ValueError("resume config does not match the run config")
-    review_path = Path(metadata["review_path"])
-    release_path = Path(metadata["release_path"])
-    logger.info("Pipeline %s resuming from its latest checkpoint", thread_id)
-    graph_config = {"configurable": {"thread_id": thread_id}}
-    with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
-        graph = build_pipeline(
-            _handlers(
-                pipeline_settings, config_path, run_dir, review_path, release_path
-            ),
-            checkpointer=saver,
+    context = _existing_run(args, "resume")
+    logger.info("Pipeline %s resuming from its latest checkpoint", context.thread_id)
+    with _open_graph(context, _handlers(context)) as graph:
+        result = graph.invoke(None, context.graph_config)
+    return _report_review_wait(context, result)
+
+
+def status_pipeline(args: argparse.Namespace) -> int:
+    context = _existing_run(args, "status")
+    with _open_graph(context, _inspection_handlers()) as graph:
+        snapshot = graph.get_state(context.graph_config)
+    values = snapshot.values
+    print(f"Pipeline '{context.thread_id}' ({context.translation_mode})")
+    print(f"Config: {context.config.path}")
+    print(f"Run state: {context.run_dir}")
+    print(f"Review artifact: {context.review_path}")
+    print(f"Release artifact: {context.release_path}")
+    if not values:
+        print("Status: no checkpoint recorded")
+        return 0
+    print(f"Stage: {values['stage']}")
+    print(f"Artifact: {values['artifact_path']}")
+    print(f"QA: {values['qa_conclusion']} (passed={values['qa_passed']})")
+    print(f"Agent repair attempts: {values['agent_repair_attempts']}")
+    if snapshot.interrupts:
+        status = "awaiting human review; run `pipeline review <thread_id> approve|reject`"
+    elif snapshot.next:
+        status = (
+            f"stopped before {', '.join(snapshot.next)}; run `pipeline resume <thread_id>`"
         )
-        result = graph.invoke(None, graph_config)
-    if "__interrupt__" not in result:
-        raise RuntimeError("pipeline did not stop for human review")
-    print(f"Pipeline '{thread_id}' is awaiting human review.")
-    print(f"Review artifact: {result['artifact_path']}")
-    print(f"QA: {result['qa_conclusion']}")
-    print(f"Agent repair attempts: {result['agent_repair_attempts']}")
-    print(
-        "Next: ./run.sh pipeline review "
-        f"{thread_id} approve --config {config_path}"
-    )
+    elif values["stage"] == "release":
+        status = "released"
+    elif values["stage"] == "human_review":
+        status = "rejected at human review"
+    else:
+        status = "finished"
+    print(f"Status: {status}")
     return 0
 
 
@@ -390,31 +340,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Persistent subtitle agent pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run = subparsers.add_parser("run")
+    def add_common(subparser: argparse.ArgumentParser) -> None:
+        subparser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
+        subparser.add_argument("--debug", action="store_true")
+
+    run = subparsers.add_parser("run", help="start a new run and stop at human review")
     run.add_argument("input")
     run.add_argument("output")
-    run.add_argument(
-        "--mode",
-        choices=("parallel_initial", "serial_memory"),
-        required=True,
-    )
+    run.add_argument("--mode", choices=("parallel_initial", "serial_memory"), required=True)
     run.add_argument("--thread-id", required=True)
-    run.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
-    run.add_argument("--debug", action="store_true")
+    add_common(run)
     run.set_defaults(func=run_pipeline)
 
-    review = subparsers.add_parser("review")
+    review = subparsers.add_parser("review", help="approve or reject the review artifact")
     review.add_argument("thread_id")
     review.add_argument("decision", choices=("approve", "reject"))
-    review.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
-    review.add_argument("--debug", action="store_true")
+    add_common(review)
     review.set_defaults(func=review_pipeline)
 
-    resume = subparsers.add_parser("resume")
+    resume = subparsers.add_parser("resume", help="continue a failed run from its checkpoint")
     resume.add_argument("thread_id")
-    resume.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
-    resume.add_argument("--debug", action="store_true")
+    add_common(resume)
     resume.set_defaults(func=resume_pipeline)
+
+    status = subparsers.add_parser("status", help="show where a run currently stands")
+    status.add_argument("thread_id")
+    add_common(status)
+    status.set_defaults(func=status_pipeline)
     return parser
 
 

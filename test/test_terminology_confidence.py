@@ -1,49 +1,28 @@
-#!/usr/bin/env python
-"""
-Quick sanity check for terminology confidence wiring.
-
-Verifies that:
-- The system prompt shows the same confidence threshold as config.terminology_min_confidence
-- The local filtering in memory._parse_terminology_entries uses the same threshold
-"""
-
+from subretrans.memory import TerminologyEntry, _parse_terminology_entries
 from subretrans.prompts import build_memory_update_system_prompt
-from subretrans.memory import _parse_terminology_entries, TerminologyEntry
 
 
-def extract_threshold_line(prompt: str) -> str:
-    """Return the line that contains the confidence threshold text."""
-    for line in prompt.splitlines():
-        if "Only keep entries with confidence >=" in line:
-            return line.strip()
-    return ""
+RAW = [
+    {"eng": "Bryer", "zh": "布赖尔", "type": "person", "confidence": 0.8, "evidence_ids": [20, 20, "21", "x"]},
+    {"eng": "Chris", "zh": "克里斯", "type": "person", "confidence": 0.5, "evidence_ids": [2]},
+    {"eng": "Bad", "zh": "坏", "type": "unknown-type", "confidence": 0.9},
+    {"eng": "", "zh": "空", "type": "person", "confidence": 0.9},
+    {"eng": "NoConf", "zh": "无", "type": "person", "confidence": "high"},
+]
 
 
-def demo_prompt_threshold():
-    min_conf = 0.6
-    prompt = build_memory_update_system_prompt(min_conf)
-    line = extract_threshold_line(prompt)
-    print("terminology_min_confidence:", min_conf)
-    print("Prompt threshold line:", line)
+def test_system_prompt_shows_configured_threshold() -> None:
+    prompt = build_memory_update_system_prompt(0.6)
+
+    assert "Only keep entries with confidence >= 0.6" in prompt
+    assert '{"glossary": [{"eng": "..."' in prompt
 
 
-def demo_filtering():
-    raw = [
-        {"eng": "Bryer", "zh": "布赖尔", "type": "person", "confidence": 0.8, "evidence_ids": [20]},
-        {"eng": "Chris", "zh": "克里斯", "type": "person", "confidence": 0.5, "evidence_ids": [2]},
-    ]
+def test_parsing_filters_by_threshold_type_and_shape() -> None:
+    high = _parse_terminology_entries(RAW, min_confidence=0.6)
+    low = _parse_terminology_entries(RAW, min_confidence=0.4)
 
-    print("\nFiltering with min_confidence = 0.6:")
-    parsed_high = _parse_terminology_entries(raw, min_confidence=0.6)
-    for e in parsed_high:
-        print("  kept:", TerminologyEntry.to_dict(e))
-
-    print("\nFiltering with min_confidence = 0.4:")
-    parsed_low = _parse_terminology_entries(raw, min_confidence=0.4)
-    for e in parsed_low:
-        print("  kept:", TerminologyEntry.to_dict(e))
-
-
-if __name__ == "__main__":
-    demo_prompt_threshold()
-    demo_filtering()
+    assert high == [TerminologyEntry("Bryer", "布赖尔", "person", 0.8, (20, 21))]
+    assert [entry.eng for entry in low] == ["Bryer", "Chris"]
+    assert high[0].to_dict()["evidence_ids"] == [20, 21]
+    assert _parse_terminology_entries("not a list", min_confidence=0.6) == []

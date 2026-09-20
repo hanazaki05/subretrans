@@ -1,11 +1,18 @@
-"""Claude Code Hub model-pricing lookup and cost calculation."""
+"""Claude Code Hub model-pricing lookup and best-effort cost estimation."""
 
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
 
+from .stats import UsageStats
+
+
+logger = logging.getLogger(__name__)
 
 CCH_PRICING_URL = "https://cch-plus.com/pricing/v1/models.json"
 CCH_PRICING_SCHEMA = "cchp.pricing-table/v1"
@@ -19,6 +26,12 @@ class ModelPricing:
     refreshed_at: str
     prompt_per_million: Decimal
     completion_per_million: Decimal
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    pricing: ModelPricing
+    cost: Decimal
 
 
 def _required_string(value: Any, field: str) -> str:
@@ -67,11 +80,7 @@ def parse_model_pricing(payload: Any, model_name: str) -> ModelPricing | None:
         if not isinstance(variants, list) or not variants:
             raise ValueError(f"CCH pricing model {model_name} has no variants")
         variant = next(
-            (
-                item
-                for item in variants
-                if isinstance(item, dict) and item.get("official") is True
-            ),
+            (item for item in variants if isinstance(item, dict) and item.get("official") is True),
             variants[0],
         )
         if not isinstance(variant, dict):
@@ -82,9 +91,7 @@ def parse_model_pricing(payload: Any, model_name: str) -> ModelPricing | None:
             version=version,
             refreshed_at=refreshed_at,
             prompt_per_million=_per_million_charge(variant.get("charges"), "prompt"),
-            completion_per_million=_per_million_charge(
-                variant.get("charges"), "completion"
-            ),
+            completion_per_million=_per_million_charge(variant.get("charges"), "completion"),
         )
     return None
 
@@ -109,3 +116,20 @@ def calculate_cost(
         Decimal(prompt_tokens) * pricing.prompt_per_million
         + Decimal(completion_tokens) * pricing.completion_per_million
     ) / million
+
+
+def estimate_cost(model_name: str, usage: UsageStats) -> CostEstimate | None:
+    """Best-effort cost report: any lookup failure is logged and yields ``None``."""
+
+    try:
+        pricing = load_model_pricing(model_name)
+    except Exception as error:
+        logger.warning("CCH pricing unavailable for %s: %s", model_name, error)
+        return None
+    if pricing is None:
+        logger.info("CCH pricing has no exact match for %s", model_name)
+        return None
+    cost = calculate_cost(
+        pricing, prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens
+    )
+    return CostEstimate(pricing, cost)

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import re
-import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Sequence
+
+from .ass_parser import is_chinese_style, is_english_style
+from .fsutil import atomic_write_text
 
 
 SCRIPT_INFO_BLOCK = """[Script Info]
@@ -36,8 +37,6 @@ _SRT_TIME_RE = re.compile(
 _ASS_TIME_RE = re.compile(
     r"^(?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2})\.(?P<centiseconds>\d{2})$"
 )
-_ENGLISH_STYLES = {"English3", "E3"}
-_CHINESE_STYLES = {"Chinese3", "C3"}
 
 
 @dataclass(frozen=True)
@@ -69,27 +68,6 @@ class AssAudit:
     non_monotonic_events: int
     parse_errors: int
     passed: bool
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path = Path(path)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            delete=False,
-        ) as temporary:
-            temporary.write(content)
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, path)
-    except BaseException:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise
 
 
 def _srt_timestamp_to_ass(timestamp: str, *, path: Path, block_number: int) -> str:
@@ -166,9 +144,7 @@ def read_srt(path: Path) -> list[SrtCue]:
             raise ValueError(f"Malformed SRT block {block_number} in {path}: invalid timing")
 
         start_raw, end_raw = (part.strip() for part in lines[0].split("-->", 1))
-        start_ass = _srt_timestamp_to_ass(
-            start_raw, path=path, block_number=block_number
-        )
+        start_ass = _srt_timestamp_to_ass(start_raw, path=path, block_number=block_number)
         end_ass = _srt_timestamp_to_ass(end_raw, path=path, block_number=block_number)
         if _ass_time_to_seconds(end_ass) < _ass_time_to_seconds(start_ass):
             raise ValueError(f"Malformed SRT block {block_number} in {path}: end before start")
@@ -199,12 +175,8 @@ def write_srt(cues: Sequence[SrtCue], path: Path) -> Path:
         ):
             raise ValueError(f"Malformed SRT cue {block_number}: invalid cue index")
         seen_indices.add(cue.index)
-        start_ass = _srt_timestamp_to_ass(
-            cue.start, path=output, block_number=block_number
-        )
-        end_ass = _srt_timestamp_to_ass(
-            cue.end, path=output, block_number=block_number
-        )
+        start_ass = _srt_timestamp_to_ass(cue.start, path=output, block_number=block_number)
+        end_ass = _srt_timestamp_to_ass(cue.end, path=output, block_number=block_number)
         if _ass_time_to_seconds(end_ass) < _ass_time_to_seconds(start_ass):
             raise ValueError(f"Malformed SRT cue {block_number}: end before start")
         if "\r" in cue.text or re.search(r"\n[ \t]*\n", cue.text):
@@ -218,19 +190,15 @@ def write_srt(cues: Sequence[SrtCue], path: Path) -> Path:
     content = "\n\n".join(blocks)
     if blocks:
         content += "\n"
-    _atomic_write(output, content)
+    atomic_write_text(output, content)
     return output
 
 
 def _read_ass_cues(path: Path) -> list[_AssCue]:
     return [
         _AssCue(
-            start=_srt_timestamp_to_ass(
-                cue.start, path=Path(path), block_number=position
-            ),
-            end=_srt_timestamp_to_ass(
-                cue.end, path=Path(path), block_number=position
-            ),
+            start=_srt_timestamp_to_ass(cue.start, path=Path(path), block_number=position),
+            end=_srt_timestamp_to_ass(cue.end, path=Path(path), block_number=position),
             text_lines=tuple(cue.text.split("\n")) if cue.text else (),
         )
         for position, cue in enumerate(read_srt(path), start=1)
@@ -335,13 +303,7 @@ def merge_srt_to_ass(en_path: Path, zh_path: Path, out_path: Path) -> Path:
                 else ""
             )
             lines.append(
-                _dialogue(
-                    1,
-                    canonical.start,
-                    canonical.end,
-                    "Chinese3",
-                    chinese_text,
-                )
+                _dialogue(1, canonical.start, canonical.end, "Chinese3", chinese_text)
             )
         elif chinese_cue is not None and chinese_cue.text_lines:
             lines.append(
@@ -355,7 +317,7 @@ def merge_srt_to_ass(en_path: Path, zh_path: Path, out_path: Path) -> Path:
             )
 
     output = Path(out_path)
-    _atomic_write(output, "\n".join((*lines, "")))
+    atomic_write_text(output, "\n".join((*lines, "")))
     return output
 
 
@@ -399,10 +361,7 @@ def _strip_dot(content: str) -> str:
             continue
         tag, remainder = line.split(":", 1)
         parts = remainder.lstrip().split(",", field_count - 1)
-        if len(parts) < field_count or parts[style_index].strip() not in {
-            "Chinese3",
-            "C3",
-        }:
+        if len(parts) < field_count or not is_chinese_style(parts[style_index]):
             continue
         updated = parts[text_index].replace("。", " ")
         updated = updated.replace(r"{\i1}", "").replace(r"{\i0}", "")
@@ -454,6 +413,14 @@ POSTPROCESS_OPERATIONS = (
     "episode_replacements",
 )
 
+_OPERATION_HANDLERS = {
+    "clean_chinese_dialogue": _strip_dot,
+    "normalize_punctuation": _normalize_punctuation,
+    "normalize_style_names": _normalize_style_names,
+    "normalize_event_fields": _normalize_event_fields,
+    "normalize_italics": _normalize_italics,
+}
+
 
 def postprocess_ass(
     input_path: Path,
@@ -464,13 +431,6 @@ def postprocess_ass(
     """Apply the configured deterministic operations in order."""
 
     content = Path(input_path).read_text(encoding="utf-8-sig")
-    operation_handlers = {
-        "clean_chinese_dialogue": _strip_dot,
-        "normalize_punctuation": _normalize_punctuation,
-        "normalize_style_names": _normalize_style_names,
-        "normalize_event_fields": _normalize_event_fields,
-        "normalize_italics": _normalize_italics,
-    }
     for operation in operations:
         if operation == "episode_replacements":
             for old, new in episode_replacements:
@@ -479,12 +439,12 @@ def postprocess_ass(
                 content = content.replace(old, new)
             continue
         try:
-            handler = operation_handlers[operation]
+            handler = _OPERATION_HANDLERS[operation]
         except KeyError as exc:
             raise ValueError(f"unsupported postprocess operation: {operation}") from exc
         content = handler(content)
     output = Path(output_path)
-    _atomic_write(output, content)
+    atomic_write_text(output, content)
     return output
 
 
@@ -518,8 +478,7 @@ def audit_ass(path: Path) -> AssAudit:
     for index in range(events_start + 1, events_end):
         if lines[index].startswith("Format:"):
             format_fields = [
-                field.strip().lower()
-                for field in lines[index].split(":", 1)[1].split(",")
+                field.strip().lower() for field in lines[index].split(":", 1)[1].split(",")
             ]
             format_index = index
             break
@@ -541,14 +500,14 @@ def audit_ass(path: Path) -> AssAudit:
             parse_errors += 1
             continue
 
-        style = parts[style_index].strip()
+        style = parts[style_index]
         language_index: int | None = None
-        if style in _ENGLISH_STYLES:
+        if is_english_style(style):
             english_events += 1
             language_index = 0
             if not parts[text_index].strip():
                 empty_english_events += 1
-        elif style in _CHINESE_STYLES:
+        elif is_chinese_style(style):
             chinese_events += 1
             language_index = 1
             if not parts[text_index].strip():

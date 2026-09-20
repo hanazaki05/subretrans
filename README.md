@@ -1,100 +1,141 @@
 # Subtitle Refinement Tool
 
-A Python tool for refining bilingual (currently English-Chinese) ASS subtitles using Large Language Models (LLMs). With a basic level **memory** support, it allows you to resume progress via the checkpoint file. This implementation is especially suitable when you're looking for translation quality over batch speed. 
+A Python tool for producing and refining bilingual (English-Chinese) ASS
+subtitles with large language models. The persistent agent pipeline turns an
+English source subtitle into a reviewed bilingual release; the standalone CLI
+refines an existing bilingual ASS file. Both share one engine, one
+configuration file, and one provider layer, and both are resumable from
+committed on-disk state.
 
 ## Features
 
-**Code** lives in `subretrans/`; run the tool with `./run.sh`.
+- **One refine engine** (`subretrans/refine.py`): serial, memory-aware
+  refinement with an incremental episode story description, a locked user
+  glossary, learned terminology, per-chunk atomic output, and strict progress
+  manifests. The pipeline and the CLI call the same function.
+- **One provider layer** (`subretrans/providers.py`): every role talks to its
+  model through LangChain, whichever of `openai-responses`,
+  `openai-chat-compatible`, `anthropic-messages`, or `google-gemini` it uses.
+  Retries are the provider SDK's `max_retries`; streaming works for every
+  protocol.
+- **One configuration** (`subretrans/config.py`): `config.yaml` is loaded and
+  validated exactly once into an immutable `AppConfig`; unknown or missing
+  sections and fields are errors.
+- **Agent pipeline**: Subtitle Edit preprocessing, memoryless parallel
+  initial translation, SRT-to-ASS merge, serial refinement, deterministic
+  postprocessing, structural plus semantic QA with bounded targeted repairs,
+  and an explicit human-review gate. Every stage is checkpointed with
+  LangGraph and bound to artifact, memory, and prompt hashes.
+- **Robust response handling**: `<think>` blocks and code fences are stripped,
+  malformed intermediate representations are salvaged pair by pair, duplicate
+  ids are deduplicated, and renumbered ids are remapped or refused.
+- **ASS tag preservation** and **token usage reporting** with best-effort cost
+  lookup that never fails a run.
 
-- **Smart ASS Parsing**: Parses `.ass` subtitle files and matches English-Chinese pairs by timestamp
-- **Intelligent Chunking**: Splits subtitles into chunks that fit within LLM token limits
-- **Bilingual Refinement**:
-  - **English**: Fixes capitalization, spacing, and punctuation only (preserves meaning)
-  - **Chinese**: Improves translation quality, naturalness, and consistency
-- **Episode Memory**: Maintains terminology, style notes, and a cumulative `Incremental Story Description` across chunks; the complete memory can be resumed from a checkpoint.
-- **Agent Pipeline**: Supports two checkpointable modes: `parallel_initial` uses memoryless parallel first-pass translation followed by serial memory-aware proofreading; `serial_memory` uses that same serial flow to translate and proofread directly. An agent model then performs semantic QA and applies bounded, targeted repairs before human review.
-- **ASS Tag Preservation**: Keeps all formatting tags (e.g., `{\i1}`, `{\b1}`, `\N`) intact
-- **Token Tracking**: Monitors API usage and estimates costs in real-time
-- **Robust Error Handling**: Automatic retries with exponential backoff
-- **Progress Reporting**: Real-time progress updates during processing
+## Requirements
+
+- Python 3.11 or newer.
+- API keys for the configured roles, each in its own file (for example
+  `key`, `key-zenmux`); `key*` files are ignored by Git.
+- .NET 10 SDK/runtime, only for `parallel_initial` mode, which builds Subtitle
+  Edit's headless `seconv` from the pinned revision on first use.
 
 ## Quick Start
 
-<details>
-<summary>(no longer suggested as it's the old version) - Click to expand</summary>
-
 ```bash
-# 1. Create virtual environment
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 2. Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Set the role key_file paths in config.yaml
-
-# 4. Process subtitles (not suggested)
-./run.sh example_input.ass output.ass
-
-# 5. Test with sample (first 10 pairs)(not suggested)
-./run.sh example_input.ass output.ass --dry-run
-```
-
-</details>
-
-We recommend using the executable script in the repository root:
-```bash
-# 1. Create virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. (IMPORTANT) Set you key in a file, and set its path in ./config.yaml
+# Put each provider token in the key file named by config.yaml
 echo "YOUR_KEY" > key
 
-# 4. Process subtitles (not suggested)
-./run.sh example_input.ass output.ass \
---stream --refine-batch-size 105 \
---checkpoint --per-block-update -vvv
+# Produce a bilingual release from an English source subtitle
+./run.sh pipeline run source.en.srt release.ass \
+  --mode parallel_initial --thread-id episode-s07e01
+
+# Or refine an existing bilingual ASS file directly
+./run.sh input.ass output.ass --checkpoint -v
 ```
 
-### Current limit:
-The ASS subtitle pairs are detected accorading to `example_input.ass` file, so you need to follow this format.
+The ASS subtitle pairs are detected the way `example_input.ass` is laid out:
+one English event and one Chinese event sharing the same timestamps. Follow
+that format for standalone refinement.
 
 ## Agent Pipeline
 
-The persistent pipeline has two modes:
-
 ```bash
-# Subtitle Edit preprocessing -> parallel initial translation -> serial proofreading
+# Subtitle Edit preprocessing -> parallel initial translation -> serial refinement -> QA
 ./run.sh pipeline run source.en.srt release.ass \
   --mode parallel_initial --thread-id episode-s07e01 --config config.yaml
 
-# Existing ASS -> serial translation/proofreading with incremental episode memory
+# Existing bilingual ASS -> serial refinement -> QA
 ./run.sh pipeline run bilingual.ass release.ass \
   --mode serial_memory --thread-id episode-s07e02 --config config.yaml
 
-# Resume the final human-review gate
-./run.sh pipeline review episode-s07e01 approve --config config.yaml
+# Where did a run stop?
+./run.sh pipeline status episode-s07e01 --config config.yaml
 
-# Resume a failed pipeline from its latest checkpoint
+# Resume a failed run from its latest checkpoint
 ./run.sh pipeline resume episode-s07e01 --config config.yaml
+
+# Approve (publish the review file, including manual edits) or reject
+./run.sh pipeline review episode-s07e01 approve --config config.yaml
 ```
 
-`primer.batch_size` controls the number of source cues in each parallel
-initial-translation request. `refine.batch_size` independently controls the
-serial refinement chunk size; set it to `null` to retain token-based chunking.
-`primer.max_workers` applies only to primer requests. Refine serialization is
-selected by `refine.intermediate_representation`.
-`qa.batch_size` controls how many bilingual pairs each semantic-QA request
-audits. Pipeline commands report committed refine and QA progress at `INFO`;
-pass `--debug` to expose provider HTTP and raw model-response diagnostics.
-Every QA window receives the final refine `memory.yaml` as read-only structured
-context: cumulative story description, authoritative user glossary, and the
-complete learned glossary including confidence and evidence IDs. QA checkpoints are bound to the memory hash, so
-changing that context invalidates old QA progress instead of silently reusing it.
+Pass `--debug` to any pipeline command to expose provider HTTP traffic and raw
+model responses.
+
+### Modes and stages
+
+`parallel_initial` wraps Subtitle Edit's official headless `seconv`. On first
+use it clones the configured repository revision, builds `seconv`, and runs
+two passes over the English source: `first_pass_operations` applies the full
+configured cleanup together with the multiple-replace template, then
+`second_pass_operations` runs only `FixUnneededSpaces` on that first-pass SRT.
+The cleaned SRT is translated in memoryless parallel batches
+(`primer.batch_size`, `primer.max_workers`), merged with the English cues into
+a bilingual ASS, and handed to serial refinement.
+
+`serial_memory` skips preprocessing and initial translation and refines an
+existing bilingual ASS directly.
+
+Serial refinement (`refine.batch_size` pairs per request, or token-based
+chunking when it is `null`) keeps an episode memory: the authoritative user
+glossary from the prompt template, learned terminology with confidence and
+evidence ids, and a cumulative story description. After every chunk the
+subtitle artifact, then `memory.yaml`, then `refine-progress.json` are written
+atomically, so a resumed run can never advance memory beyond the saved output.
+
+Deterministic cleanup is the ordered allowlist under
+`postprocess.operations`; show-specific replacements live under
+`postprocess.episode_replacements` and run only when the
+`episode_replacements` operation is enabled.
+
+QA first audits structure (paired events, empty text, timing order), then the
+`agent` role audits `qa.batch_size`-pair windows at every offset in
+`qa.window_offsets` with `qa.max_workers` concurrent requests. Each window
+receives the final refine memory as read-only context. A failed audit may
+return targeted Chinese replacements; conflicting repairs from overlapping
+windows are dropped and reported. Each applied repair produces a new artifact
+that is postprocessed and audited again, bounded by
+`pipeline.agent_max_repair_attempts`. QA progress is committed per wave and is
+keyed by artifact hash, batch layout, repair history, memory hash, and prompt
+hash, so a changed input invalidates old progress instead of reusing it.
+
+The review candidate is written beside the input as
+`<release stem>.review<ext>` (for example `JAG.S07E07.en-cn.review.ass`).
+Approval publishes that file, including manual edits, to the release path.
+
+### Run state
+
+Each run lives in `pipeline.state_dir/<thread-id>/` with `run.json`, the
+stage artifacts (`preprocessed.en.srt`, `translation.json`,
+`translated.zh.srt`, `merged.ass`, `refined.ass`, `memory.yaml`,
+`refine-progress.json`, `postprocessed*.ass`, `qa-progress-*.json`,
+`qa-repair-*.ass`, `qa-repair-history.json`), and the shared LangGraph
+SQLite checkpoint at `pipeline.checkpoint_db`. A thread id can be started only
+once; use `resume` to continue it.
 
 ### TODO: Rank-aware name verification
 
@@ -106,646 +147,154 @@ relevant military or episode context. Add a learned term only when both passes
 agree. Conflicting or insufficient evidence must remain a human-review item and
 must not override `user_glossary`.
 
-The run writes the human-review candidate beside the input subtitle, inserting
-`.review` before the output extension (for example,
-`JAG.S07E07.en-cn.review.ass`). Approval publishes that review file, including
-any manual edits, to the requested output path.
-
-`parallel_initial` wraps Subtitle Edit's official headless `seconv` project.
-On first use it clones the configured repository revision, builds `seconv`, and
-converts/cleans the source into the run's UTF-8 SRT artifact. Before primer,
-the English subtitle passes through Subtitle Edit twice: `first_pass_operations`
-runs the full configured cleanup together with the multiple-replace template,
-then `second_pass_operations` runs only `FixUnneededSpaces` on that first-pass
-SRT. The second pass does not load the first-pass settings file or repeat the
-multiple-replace template. Building the
-pinned source requires the .NET 10 SDK/runtime. The generic ASS normalization
-and structural QA live in `subtitle_processing.py`. Deterministic cleanup is an
-ordered allowlist under `postprocess.operations`; removing an operation disables
-it. Show/episode replacements are configured separately under
-`postprocess.episode_replacements` and run only when the `episode_replacements`
-operation is enabled. The default `subtitle_edit` section reproduces the checked options
-from Subtitle Edit's Batch convert window through
-`subtitle_edit_settings.json`, `subtitle_edit_multiple_replace.template`, and
-the explicit `first_pass_operations` and `second_pass_operations` lists.
-
-`parallel_initial` never receives glossary or story memory, so its batches can
-run independently. The following serial refinement stage maintains the
-incremental story description. `serial_memory` skips initial translation and
-uses that same serial refinement path directly on an existing ASS artifact.
-
-After deterministic structural checks, the `agent` API audits semantic
-completeness, accuracy, and consistency. A failed audit may return targeted
-Chinese replacements. Each repair is written to a new run artifact,
-normalized, and audited again. `pipeline.agent_max_repair_attempts` bounds
-this loop; a failure without repairs or an exhausted budget proceeds to human
-review rather than restarting the entire pipeline.
-
-## Installation
-
-### Prerequisites
-- Python 3.10 or higher
-- OpenAI API key (or compatible API endpoint)
-
-### Step-by-Step Installation
-
-1. **Clone or download this repository**
-
-2. **Create a virtual environment** (recommended):
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-3. **Install dependencies**:
-```bash
-pip install -r requirements.txt
-```
-
-4. **Configure the four API roles in [config.yaml](config.yaml)**. Each role points to its own key file:
-   ```yaml
-   api:
-     primer:
-       key_file: "key"
-     refine:
-       key_file: "key"
-     extraction:
-       key_file: "key"
-     agent:
-       key_file: "key"
-   ```
-
-5. **Test the installation**:
-```bash
-./run.sh --test-connection input.ass output.ass
-```
-
-## Usage
-
-### Basic Usage
+## Standalone Refinement CLI
 
 ```bash
-./run.sh input.ass output.ass
+./run.sh input.ass output.ass [options]
 ```
 
-This will:
-1. Parse the input `.ass` file
-2. Extract English-Chinese subtitle pairs
-3. Process them through the LLM for refinement
-4. Write the refined subtitles to `output.ass`
-5. Display token usage and cost estimation
+| Option | Effect |
+| --- | --- |
+| `--config PATH` | YAML configuration (default: repository `config.yaml`) |
+| `--checkpoint` | Persist episode memory to `<input>.memory.yaml` and load it on later runs |
+| `--checkpoint-path PATH` | Explicit memory checkpoint path (implies `--checkpoint`) |
+| `--progress-manifest PATH` | Write the strict `refine-progress.json` after every chunk (requires a memory checkpoint) |
+| `--resume INDEX` | Continue from pair INDEX, preserving earlier pairs from the existing output |
+| `--refine-batch-size N` | Pairs per request (overrides token-based chunking) |
+| `--max-chunks N` | Stop after N chunks |
+| `--dry-run` | Process only the first 10 pairs |
+| `--memory-limit N` | Memory token limit before compression |
+| `--model NAME` | Override the refine role's model name |
+| `--intermediate-representation {json,xml-pair,pseudo-toml}` | Override the request format |
+| `--stream` | Stream model output to the terminal |
+| `-v` / `-vv` | Progress logging is on by default; `-vv` switches to DEBUG (prompts, raw responses, provider traffic) |
+| `--test-connection` | Send a one-line request to the refine role and exit |
 
-### Command Line Options
+Output is written after every chunk, so an interrupted run leaves a complete,
+valid ASS file containing the pairs refined so far. A token usage report and,
+when the model is listed in the
+[Claude Code Hub price table](https://cch-plus.com/pricing/v1/models.json), an
+estimated cost are printed at the end; a failed price lookup is logged and
+ignored.
 
+`./run.sh genreq input.ass --refine-batch-size N` writes the exact system and
+user prompts for every chunk to a Markdown file without calling any API.
+
+## Configuration
+
+All settings live in [config.yaml](config.yaml); every section is required and
+paths are relative to the YAML file.
+
+```yaml
+api:                    # four roles: primer, refine, extraction, agent
+  refine:
+    protocol: google-gemini          # openai-responses | openai-chat-compatible | anthropic-messages | google-gemini
+    model: gemini-3.8-flash
+    key_file: key-openlux
+    base_url: https://api.openlux.ai
+    timeout: 800                     # seconds, or null
+    max_retries: 2                   # provider SDK retries
+    max_output_tokens: 27000
+    reasoning_effort: high           # or null
+    temperature: 0.6                 # or null
+pipeline:
+  state_dir: .subretrans-runs
+  checkpoint_db: .subretrans-runs/pipeline.sqlite3
+  agent_max_repair_attempts: 2
+prompts:
+  shared_path: prompts/shared_translation_rules.md
+  refine_path: prompts/refine_task.md
+  qa_path: prompts/qa_task.md
+primer:     { batch_size, max_workers, source_language, target_language, user_instruction }
+refine:     { batch_size, chunk_token_soft_limit, memory_token_limit, intermediate_representation }
+qa:         { batch_size, max_workers, window_offsets }
+postprocess: { operations, episode_replacements }
+subtitle_edit: { repository_url, revision, source_dir, build_dir, dotnet_executable,
+                 settings_file, multiple_replace_file, first_pass_operations, second_pass_operations }
+glossary:   { max_entries, terminology_min_confidence }
 ```
-usage: ./run.sh [-h] [--model MODEL] [--dry-run] [--max-chunks MAX_CHUNKS]
-               [--memory-limit MEMORY_LIMIT] [--refine-batch-size PAIRS_PER_CHUNK]
-               [-v] [--test-connection]
-               input output
 
-positional arguments:
-  input                 Input .ass subtitle file
-  output                Output .ass subtitle file
+- **Roles** share the same strict fields; to point one role at another
+  endpoint change only its `protocol`, `model`, `key_file`, and `base_url`.
+- **Glossary**: the user glossary parsed from the prompt template is always
+  authoritative. Learned terms never override it, are pruned when they collide
+  with it, and are kept only above `terminology_min_confidence`.
+- `config_gpt55.yaml` is an alternative profile using OpenAI-compatible
+  endpoints; select it with `--config`.
 
-optional arguments:
-  -h, --help            Show this help message and exit
-  --model MODEL         Model name (default: gpt-5.1)
-  --dry-run             Process only first 10 pairs for testing
-  --max-chunks N        Process only first N chunks
-  --memory-limit N      Memory token limit (default: 2000)
-  --refine-batch-size N   Number of subtitle pairs per chunk (overrides token-based chunking)
-  -v, --verbose         Enable verbose output with timing and preview
-  --test-connection     Test API connection and exit
-```
+## Prompt System
 
-### Examples
+Prompts are Markdown files under `prompts/`:
 
-```bash
-# 1. Basic processing (token-based chunking)
-./run.sh input.ass output.ass
+- Refine system prompt = `shared_translation_rules.md` + `refine_task.md`
+- QA system prompt = `shared_translation_rules.md` + `qa_task.md`
 
-# 2. Quick test with sample data (recommended for first use)
-./run.sh input.ass output.ass --dry-run
-
-# 3. Process with fixed chunk size (50 pairs per chunk)
-./run.sh input.ass output.ass --refine-batch-size 50
-
-# 4. Process only first 3 chunks
-./run.sh input.ass output.ass --max-chunks 3
-
-# 5. Combine chunk size with max chunks (30 pairs per chunk, max 2 chunks)
-./run.sh input.ass output.ass --refine-batch-size 30 --max-chunks 2
-
-# 6. Use a different model
-./run.sh input.ass output.ass --model gpt-4o
-
-# 7. Increase memory limit for better context
-./run.sh input.ass output.ass --memory-limit 3000
-
-# 8. Test API connection before processing
-./run.sh input.ass output.ass --test-connection
-
-# 9. Enable verbose mode with timing and response preview
-./run.sh input.ass output.ass -v
-
-```
-
-### Running the Example Script
-
-```bash
-chmod +x example_usage.sh
-./example_usage.sh
-```
+The shared file holds the Chinese style rules, JAG-specific context, the
+`### User Terminology (Authoritative Glossary)` list, and the cross-line
+alignment rules. At run time the glossary section is rebuilt from the template
+entries plus the learned terminology, an `### Incremental Story Description`
+block is inserted after it, sections are renumbered, and the few-shot examples
+are converted to the configured intermediate representation. A template
+without the glossary section is a configuration error. New pipeline runs hash
+the config file and all three prompt files into `prompt_version`, so editing a
+prompt invalidates old QA progress instead of silently reusing it.
 
 ## Project Structure
 
 ```
 .
-├── run.sh                   # CLI entry point and workflow orchestration
-├── config.yaml              # Unified pipeline and model-role configuration
+├── run.sh                          # Entry point: cli, genreq, pipeline
+├── config.yaml                     # Single strict configuration
+├── prompts/                        # Shared rules, refine task, QA task
+├── subtitle_edit_settings.json     # Subtitle Edit batch-convert profile
+├── subtitle_edit_multiple_replace.template
 ├── subretrans/
-│   ├── cli.py               # CLI implementation and workflow orchestration
-│   ├── config.py            # Configuration loading and settings
-│   ├── ass_parser.py        # ASS file parsing and generation
-│   ├── pairs.py             # SubtitlePair data structure
-│   ├── chunker.py           # Smart chunk splitting with token limits
-│   ├── llm.py               # OpenAI API client with retry logic
-│   ├── providers.py          # OpenAI Responses, Anthropic, Gemini, and legacy adapters
-│   ├── pipeline.py           # Checkpointable agent workflow graph
-│   ├── state.py              # Persistent pipeline state schema
-│   ├── memory.py             # Glossary and incremental episode story memory
-│   ├── prompts.py           # System and user prompt templates
-│   ├── stats.py             # Token usage statistics and cost tracking
-│   └── utils.py             # Utility functions (token estimation, etc.)
-├── requirements.txt         # Python dependencies
-├── README.md                # This file
-├── example_usage.sh         # Example usage script
-├── IMPLEMENTATION_SUMMARY.md # Detailed implementation notes
-└── venv/                    # Virtual environment (created during setup)
+│   ├── config.py                   # AppConfig loader
+│   ├── providers.py                # LangChain model construction and invoke_text
+│   ├── fsutil.py                   # Atomic writes, hashing, strict field checks
+│   ├── refine.py                   # Serial refine engine and progress manifests
+│   ├── prompts.py                  # Prompt composition and memory injection
+│   ├── memory.py                   # Episode memory, glossary lock, compression
+│   ├── serializers.py              # json / xml-pair / pseudo-toml representations
+│   ├── chunker.py, utils.py, pairs.py, stats.py, pricing.py
+│   ├── ass_parser.py               # ASS parsing, pairing, rendering
+│   ├── subtitle_processing.py      # SRT/ASS merge, postprocess, structural QA
+│   ├── subtitle_edit.py            # Pinned seconv build and two-pass cleanup
+│   ├── translation.py, model_translation.py   # Memoryless parallel first pass
+│   ├── model_agent.py              # Semantic QA and targeted repairs
+│   ├── pipeline.py, state.py       # LangGraph graph and checkpointed state
+│   ├── stage_handlers.py           # Filesystem stage implementations
+│   ├── pipeline_cli.py             # run / status / resume / review
+│   ├── cli.py                      # Standalone refinement CLI
+│   └── genreq.py                   # Prompt dump without API calls
+├── test/                           # pytest suite
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
-## How It Works
-
-### Processing Workflow
-
-1. **Parse ASS File**
-   - Reads `.ass` file with UTF-8-sig encoding
-   - Preserves header section ([Script Info], [V4+ Styles])
-   - Extracts all Dialogue lines from [Events] section
-
-2. **Build Subtitle Pairs**
-   - Matches English and Chinese lines by timestamp
-   - Identifies lines by style name (e.g., "English3", "Chinese3")
-   - Preserves all metadata (timing, style, margins, effects)
-
-3. **Split into Chunks**
-   - Two chunking strategies available:
-     - **Token-based** (default): Uses tiktoken to fit chunks within context window
-     - **Pair-based** (with `--refine-batch-size`): Fixed number of pairs per chunk
-   - Accounts for system prompt and memory overhead
-
-4. **Process Each Chunk**
-   - Builds system prompt with refinement rules + global memory
-   - Sends subtitle pairs as JSON to LLM
-   - Parses and validates LLM response
-   - Updates terminology and the cumulative episode story description
-
-5. **Memory Management**
-   - Extracts proper nouns and terminology
-   - Maintains a concise, evidence-only story description of the episode so far
-   - Saves the complete memory to `.memory.yaml` when checkpointing is enabled
-   - Automatically compresses if memory exceeds limit
-
-6. **Generate Output**
-   - Applies corrections back to original structure
-   - Preserves all ASS formatting and tags
-   - Writes complete `.ass` file with refined subtitles
-
-### Chunking Strategies
-
-The tool supports two chunking strategies:
-
-#### 1. Token-Based Chunking (Default)
-- **How it works**: Automatically calculates optimal chunk size based on token limits
-- **Advantages**: Maximizes context window usage, reduces API calls
-- **Best for**: Most use cases, especially with varying subtitle lengths
-- **Usage**: Default behavior (no flag needed)
+## Testing
 
 ```bash
-./run.sh input.ass output.ass
+pip install -r requirements-dev.txt
+python -m pytest -q test
 ```
 
-#### 2. Pair-Based Chunking
-- **How it works**: Splits subtitles into fixed-size chunks by pair count
-- **Advantages**: Predictable chunk sizes, easier cost estimation
-- **Best for**: Consistent processing, testing, batch operations
-- **Usage**: Specify with `--refine-batch-size N`
-
-```bash
-# Process 50 pairs at a time
-./run.sh input.ass output.ass --refine-batch-size 50
-
-# Smaller chunks for testing
-./run.sh input.ass output.ass --refine-batch-size 10
-```
-
-**Tip**: Combine with `--max-chunks` to limit processing:
-```bash
-# Process first 100 pairs only (50 pairs/chunk × 2 chunks)
-./run.sh input.ass output.ass --refine-batch-size 50 --max-chunks 2
-```
-
-### Verbose Mode
-
-The tool supports verbose mode for detailed progress tracking:
-
-#### Enabling Verbose Mode
-```bash
-# Basic verbose mode (timing + preview)
-./run.sh input.ass output.ass -v
-
-# Very verbose (-vv) dumps full API responses after each chunk
-./run.sh input.ass output.ass -vv
-
-# Ultra verbose (-vvv) also prints the full system prompt/memory sent to the model
-./run.sh input.ass output.ass -vvv
-
-```
-
-#### Verbose Output Includes:
-1. **Chunk Processing Time**: Shows elapsed time for each chunk
-   - Example: `Time: 16.51s`
-
-2. **Response Preview + Reasoning Tokens**: Real-time preview of LLM output
-   - Line 1-2: First two lines of returned subtitle pairs (JSON flattened to plain-text)
-   - Line 3: Reasoning tokens consumed (from API usage data)
-
-3. **Token Statistics**: Standard token usage per chunk
-4. **Full API Response (optional)**: Use `-vv` to print the entire raw API response after each chunk (useful for debugging JSON issues)
-5. **System Prompt & Memory (optional)**: Use `-vvv` to print the exact system prompt (including memory) sent to the model for each chunk
-
-**Example Verbose Output:**
-```
-Processing chunk 1/2 (30 pairs)...
-
-  [Chunk 1/2] (50.0% complete)
-    Tokens used: 3,092 (prompt: 1,726, completion: 1,366)
-    Time: 16.51s
-
-  Response: [
-            {
-  Reasoning tokens: 8
-
-```
-
-**When to use:**
-- Debugging processing issues
-- Monitoring long-running jobs
-- Analyzing response patterns
-- Performance optimization
-
-## Refinement Rules
-
-### English Subtitles
-
-The tool applies minimal changes to English subtitles:
-
-- ✅ **Fix capitalization**: First letter of sentences capitalized
-  - Before: `"tonight, on JAG..."`
-  - After: `"Tonight, on JAG..."`
-
-- ✅ **Fix spacing**: Proper spacing around punctuation
-  - Before: `"Hello,world"`
-  - After: `"Hello, world"`
-
-- ✅ **Fix ending punctuation**: Add periods to complete sentences
-  - Before: `"Good evening"`
-  - After: `"Good evening."`
-
-- ❌ **Do NOT change**: Words, meanings, or phrasing
-- ✅ **Preserve**: All ASS tags (`{\i1}`, `{\b1}`, `\N`, etc.)
-
-### Chinese Subtitles
-
-The tool applies comprehensive improvements to Chinese subtitles:
-
-- ✅ **Translation quality**: Improve accuracy and clarity
-  - Before: `"军法署"`
-  - After: `"《JAG军法官》节目中"`
-
-- ✅ **Natural language**: Make text more conversational
-  - Before: `"报告"`
-  - After: `"报道"`
-
-- ✅ **Punctuation**: Add proper Chinese punctuation (。、！？等)
-  - Before: `"晚上好，我是诺曼·德拉波特"`
-  - After: `"晚上好，我是诺曼·德拉波特。"`
-
-- ✅ **Consistency**: Maintain terminology and style across chunks
-- ✅ **Awkward phrasing**: Fix unnatural expressions
-- ❌ **Do NOT change**: ASS formatting tags
-
-## Testing & Performance
-
-### Test Results
-
-Tested with first 152 subtitle pairs from `JAG.S04E08.zh-cn.ass`:
-
-```
-Input:         152 pairs (304 dialogue lines)
-Model:         GPT-5.1
-Processing:    ~30 seconds
-Chunks:        1 chunk
-Tokens used:   12,993 total
-  - Prompt:    6,604 tokens
-  - Completion: 6,389 tokens
-Estimated cost: $0.58 USD
-Success rate:  100%
-```
-
-### Performance Metrics
-
-- **Average tokens per pair**: ~85 tokens
-- **Cost per pair**: ~$0.0038 USD
-- **Processing speed**: ~5 pairs/second
-- **Estimated cost for 1000 pairs**: ~$3.80 USD
-
-### Quality Improvements Observed
-
-**English refinements:**
-- Capitalization fixes: ~30% of lines
-- Punctuation additions: ~40% of lines
-- Spacing fixes: ~5% of lines
-
-**Chinese refinements:**
-- Translation improvements: ~20% of lines
-- Punctuation additions: ~90% of lines
-- Natural phrasing: ~15% of lines
-- All ASS tags preserved: 100%
-
-## Composed Prompt System
-
-Refinement and semantic QA use one shared rule file plus a stage-specific task:
-
-- Refine system prompt: `shared_translation_rules.md` + `refine_task.md`
-- QA system prompt: `shared_translation_rules.md` + `qa_task.md`
-
-### How It Works
-
-1. **Shared rules**: Chinese style, terminology, JAG context, and cross-line alignment are defined once and passed to both stages.
-2. **Stage tasks**: Refine owns editing/output examples; QA owns auditing, repair history, and strict repair JSON.
-3. **Dynamic injection**: The authoritative glossary section is updated with:
-   - Template glossary entries (parsed from the file)
-   - Runtime `GlobalMemory.user_glossary` entries (merged, runtime takes precedence)
-   - Learned terminology (appended as "Learned Terminology (Supplement)")
-4. **Cross-line QA**: A repair that moves or reverses clauses must return coordinated replacements for every affected ID; if the current segmentation cannot represent a natural correction, QA reports the issue without repairing it.
-
-### Benefits
-
-- **Single source of truth** - Shared rules are not duplicated between refine and QA
-- **Easy customization** - Edit markdown without code changes
-- **Dynamic terminology** - Automatic glossary injection from GlobalMemory
-- **Prompt provenance** - New run state hashes the config and all prompt components
-
-## Configuration
-
-All model endpoints live in one strict suite in [config.yaml](config.yaml):
-
-```yaml
-api:
-  primer: &role
-    protocol: openai-responses
-    model: gpt-5.5
-    key_file: key
-    base_url: https://api.openai.com/v1
-    timeout: 800
-    max_retries: 0
-    max_output_tokens: 27000
-    reasoning_effort: high
-    temperature: null
-  refine: *role
-  extraction: *role
-  agent: *role
-
-pipeline:
-  agent_max_repair_attempts: 2
-
-prompts:
-  shared_path: rm/shared_translation_rules.md
-  refine_path: rm/refine_task.md
-  qa_path: rm/qa_task.md
-
-qa:
-  batch_size: 64
-  max_workers: 4
-  window_offsets: [0, 32]
-```
-
-- **API roles**: `primer`, `refine`, `extraction`, and `agent` are mandatory and use the same strict fields. Key paths are relative to the selected YAML file.
-- **Protocols**: Choose `openai-responses`, `openai-chat-compatible`, `anthropic-messages`, or `google-gemini`. Model calls use the provider-neutral adapters; streaming refinement is limited to OpenAI chat-compatible endpoints.
-- **Reasoning and temperature**: Configure these independently for each role; use `null` when the endpoint does not accept the option.
-- **Glossary policy**: `glossary.policy: lock` means learned terminology can add entries but cannot override user-defined mappings.
-- **Terminology confidence**: `glossary.terminology_min_confidence` controls both the extraction prompt threshold and local filtering.
-
-To use a different endpoint for one role, change only that role's `protocol`,
-`model`, `key_file`, and `base_url` while retaining the remaining required
-fields. Put only the provider token in the referenced `key_file`; `key-*` files
-are ignored by Git.
-
-## Error Handling
-
-The tool includes robust error handling:
-
-- **API Errors**
-  - Automatic retry with exponential backoff up to each role's configured `max_retries`
-  - Wait times: 1s, 2s, 4s between retries
-  - Graceful failure with error messages
-
-- **Chunk Processing Failures**
-  - Failed chunks are skipped (not discarded)
-  - Processing continues with remaining chunks
-  - Original subtitles preserved for failed chunks
-
-- **Memory Overflow**
-  - Automatically compresses memory when limit exceeded
-  - LLM-based compression to preserve important terms
-  - Fallback to simple truncation if compression fails
-
-- **JSON Parsing Errors**
-  - Attempts to extract JSON from markdown code blocks
-  - Validates structure before processing
-  - Clear error messages for debugging
-
-- **File I/O Errors**
-  - Checks file existence before processing
-  - Validates UTF-8 encoding
-  - Creates output directory if needed
-
-## Cost Estimation
-
-The tool provides real-time cost tracking:
-
-```
-==================================================
-TOKEN USAGE REPORT
-==================================================
-Prompt tokens:          6,604
-Completion tokens:      6,389
-Total tokens:          12,993
---------------------------------------------------
-Estimated cost:    $    0.5815 USD
-==================================================
-```
-
-Pricing is resolved by exact model name, slug, or alias from the
-[Claude Code Hub price table](https://cch-plus.com/pricing/v1/models.json).
-The report names the selected provider and table version. If no exact model is
-present, token usage is still reported but no cost is guessed.
-
-## Troubleshooting
-
-### Common Issues
-
-**1. API Key Error**
-```
-Configuration error: API key must be provided
-```
-**Solution**: Check each role's `key_file` path in [config.yaml](config.yaml)
-
-**2. Model Not Found**
-```
-API request failed: model 'gpt-5.1' not found
-```
-**Solution**: Use `--model gpt-4o` or another available model
-
-**3. Token Limit Exceeded**
-```
-API request failed: maximum context length exceeded
-```
-**Solution**: Reduce `chunk_token_soft_limit` in [config.yaml](config.yaml)
-
-**4. No Subtitle Pairs Found**
-```
-Error: No subtitle pairs found
-```
-**Solution**: Ensure your `.ass` file has both English and Chinese dialogue lines with matching timestamps
-
-**5. Import Error**
-```
-ModuleNotFoundError: No module named 'tiktoken'
-```
-**Solution**: Activate virtual environment and run `pip install -r requirements.txt`
-
-### Debug Mode
-
-For verbose output, modify [subretrans/cli.py](subretrans/cli.py) to add debug logging:
-
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-```
-
-## Output Example
-
-### Before (Original)
-```
-Dialogue: 1,0:00:02.56,0:00:04.00,Chinese3,NTP,0000,0000,0000,,今晚，在军法署...
-Dialogue: -1,0:00:02.56,0:00:04.00,English3,NTP,0000,0000,0000,,  Tonight, on JAG...
-```
-
-### After (Refined)
-```
-Dialogue: 1,0:00:02.56,0:00:04.00,Chinese3,NTP,0000,0000,0000,,今晚，在《JAG军法官》节目中...
-Dialogue: -1,0:00:02.56,0:00:04.00,English3,NTP,0000,0000,0000,,Tonight, on JAG...
-```
-
-**Changes made:**
-- English: Removed leading spaces, capitalized "Tonight"
-- Chinese: Improved translation ("军法署" → "《JAG军法官》节目中")
+All tests run offline with fake models.
 
 ## Limitations
 
-- **Format Support**: Only supports `.ass` subtitle format (not `.srt`, `.vtt`, etc.)
-- **Language Pair**: Designed for English-Chinese pairs only
-- **Timestamp Matching**: Requires exact timestamp matches between English and Chinese lines
-- **LLM Quality**: Output quality depends on the model used (GPT-5.1 recommended)
-- **Edge Cases**: May not preserve all complex ASS formatting in rare cases
-- **Single File Processing**: Processes one file at a time (no batch mode)
-Here are two polished versions—you can choose the tone you prefer:
-- **No compatibility with other API formats is guaranteed**: There are plans to support OpenAI-compatible APIs (e.g., NewAPI).
+- English-Chinese pairs in the `.ass` layout shown by `example_input.ass`;
+  the pipeline additionally accepts any input format Subtitle Edit can read.
+- Exact timestamp matches are required between paired English and Chinese
+  events in standalone mode.
+- One file per run; series-level memory across episodes is not implemented.
 
-## Future Enhancements (TODO)
+## Future Enhancements
 
-Priorty:
-- [ ] Global across eposides via series memory file/ Redis?
-
-Potential features for future versions:
-
-- [ ] Support for `.srt` and `.vtt` formats
-- [ ] Batch file processing
-- [ ] Custom terminology dictionaries
-- [ ] Diff report generation (showing all changes)
-- [ ] GUI/Web interface
-- [ ] Parallel chunk processing
-- [ ] Quality scoring metrics
-- [ ] Support for more language pairs
-
-## Dependencies
-
-```
-tiktoken>=0.5.1      # OpenAI's token counting library
-requests>=2.31.0     # HTTP client for API calls
-python-dotenv>=1.0.0 # Environment variable management
-```
-
-All dependencies are listed in [requirements.txt](requirements.txt).
+- Series memory shared across episodes.
+- Diff report generation showing every change.
+- Quality scoring metrics.
 
 ## License
 
-This repository is licensed under the MIT License. The example subtitle is not part of the licensed content, and its copyright holder retains all rights.
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with tests
-4. Submit a pull request
-
-### Development Setup
-
-```bash
-# Clone repository
-git clone <repository-url>
-cd subretrans
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run tests
-./run.sh test_input.ass test_output.ass --dry-run
-```
-
-## Support
-
-For issues, questions, or suggestions:
-- Open an issue on GitHub
-- Check [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) for detailed technical documentation
-- Review [plan.md](plan.md) for design decisions
-
-## Acknowledgments
-
-- Built using OpenAI's GPT models
-- Uses `tiktoken` for accurate token counting
-- Follows ASS subtitle format specification
-
----
-
-**Version**: 0.0.6
-**Last Updated**: December 1, 2025
-**Status**: Use at your own dangers
+MIT, see [LICENCE.md](LICENCE.md).

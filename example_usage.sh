@@ -1,57 +1,24 @@
 #!/bin/bash
-# Example usage script for subtitle refinement tool
+# Example invocations of the standalone refinement CLI against example_input.ass.
+# Each run writes a complete ASS file after every chunk, so any of them can be interrupted safely.
 
-echo "=== Subtitle Refinement Tool - Example Usage ==="
-echo ""
-
-# Activate virtual environment
 unalias python 2>/dev/null
 unalias python3 2>/dev/null
-source venv/bin/activate
 
-# Example 1: Quick test with dry-run mode
-echo "Example 1: Quick test (dry-run mode, first 10 pairs)"
-./run.sh test_input.ass output_dryrun.ass --dry-run
-echo ""
+set -e
+cd "$(dirname "$0")"
 
-# Example 2: Process with fixed pairs per chunk
-echo "Example 2: Process 50 pairs per chunk"
-./run.sh test_input.ass output_50pairs.ass --refine-batch-size 50
-echo ""
+echo "Example 1: dry run (first 10 pairs)"
+./run.sh example_input.ass example_output_dryrun.ass --dry-run -v
 
-# Example 3: Process limited number of chunks
-echo "Example 3: Process first 3 chunks only"
-./run.sh test_input.ass output_3chunks.ass --max-chunks 3
-echo ""
+echo "Example 2: fixed batches, two chunks only"
+./run.sh example_input.ass example_output_2chunks.ass --refine-batch-size 30 --max-chunks 2
 
-# Example 4: Combine chunk size with max chunks
-echo "Example 4: 30 pairs per chunk, max 2 chunks"
-./run.sh test_input.ass output_30pairs_2chunks.ass --refine-batch-size 30 --max-chunks 2
-echo ""
+echo "Example 3: full run with episode memory checkpoint and streaming output"
+./run.sh example_input.ass example_output_full.ass --checkpoint --stream -v
 
-# Example 5: Full processing (token-based chunking)
-echo "Example 5: Full processing of test file (token-based)"
-./run.sh test_input.ass output_full.ass
-echo ""
+echo "Example 4: resume the full run from pair 60 using the saved checkpoint"
+./run.sh example_input.ass example_output_full.ass --checkpoint --resume 60
 
-# Example 6: Test API connection
-echo "Example 6: Test API connection"
-./run.sh test_input.ass output.ass --test-connection
-echo ""
-
-# Example 7: Verbose mode with timing and preview
-echo "Example 7: Verbose mode (shows timing and response preview)"
-./run.sh test_input.ass output_verbose.ass -v --refine-batch-size 30 --max-chunks 2
-echo ""
-
-# Example 8: Verbose mode with one chunk
-echo "Example 8: Verbose mode with one chunk"
-./run.sh test_input.ass output_verbose_fast.ass -v --max-chunks 1
-echo ""
-
-# Example 9: Full verbose processing
-echo "Example 9: Full processing with verbose output"
-./run.sh test_input.ass output_full_verbose.ass -v
-echo ""
-
-echo "=== Examples completed ==="
+echo "Example 5: dump the prompts without calling any API"
+./run.sh genreq example_input.ass --refine-batch-size 60 --max-chunks 1

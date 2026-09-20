@@ -4,32 +4,9 @@ from __future__ import annotations
 
 import json
 
-from langchain_core.messages import AIMessage
-
-from .providers import ModelConfig, build_chat_model
-from .translation import (
-    TranslateBatch,
-    TranslationBatch,
-    TranslationResult,
-)
-
-
-def _exact_object(
-    value: object, expected_fields: set[str], *, location: str
-) -> dict[str, object]:
-    if type(value) is not dict:
-        raise ValueError(f"{location} must be a JSON object")
-    fields = set(value)
-    if fields != expected_fields:
-        missing = sorted(expected_fields - fields)
-        unknown = sorted(fields - expected_fields)
-        details = []
-        if missing:
-            details.append(f"missing fields: {', '.join(missing)}")
-        if unknown:
-            details.append(f"unknown fields: {', '.join(unknown)}")
-        raise ValueError(f"{location} has invalid fields ({'; '.join(details)})")
-    return value
+from .fsutil import require_exact_fields
+from .providers import ModelConfig, build_chat_model, clean_response_text, invoke_text
+from .translation import TranslateBatch, TranslationBatch, TranslationResult
 
 
 def build_model_translate_batch(
@@ -58,24 +35,18 @@ def build_model_translate_batch(
     )
 
     def translate_batch(batch: TranslationBatch) -> tuple[TranslationResult, ...]:
-        request_payload = [
-            {"id": request.id, "source": request.source} for request in batch
-        ]
-        response = model.invoke(
+        request_payload = [{"id": request.id, "source": request.source} for request in batch]
+        response_text, _ = invoke_text(
+            model,
             [
                 ("system", system_prompt),
                 ("human", json.dumps(request_payload, ensure_ascii=False)),
-            ]
+            ],
         )
-        if not isinstance(response, AIMessage):
-            raise TypeError("model response must be an AIMessage")
-        response_text = response.text
-        if not isinstance(response_text, str):
-            raise TypeError("AIMessage text must be a string")
-        response_text = str(response_text)
-
-        payload = _exact_object(
-            json.loads(response_text), {"translations"}, location="response"
+        payload = require_exact_fields(
+            json.loads(clean_response_text(response_text)),
+            {"translations"},
+            location="response",
         )
         raw_translations = payload["translations"]
         if type(raw_translations) is not list:
@@ -85,7 +56,7 @@ def build_model_translate_batch(
 
         translations: list[TranslationResult] = []
         for index, raw_translation in enumerate(raw_translations):
-            item = _exact_object(
+            item = require_exact_fields(
                 raw_translation,
                 {"id", "translation"},
                 location=f"response.translations[{index}]",
@@ -93,9 +64,7 @@ def build_model_translate_batch(
             item_id = item["id"]
             translation = item["translation"]
             if type(item_id) is not int:
-                raise ValueError(
-                    f"response.translations[{index}].id must be an integer"
-                )
+                raise ValueError(f"response.translations[{index}].id must be an integer")
             if type(translation) is not str or not translation.strip():
                 raise ValueError(
                     f"response.translations[{index}].translation must be a "

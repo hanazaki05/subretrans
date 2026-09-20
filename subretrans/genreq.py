@@ -1,324 +1,174 @@
-#!/usr/bin/env python3
-"""
-Generate request prompts from ASS file without calling API.
+"""Generate the exact refine prompts for an ASS file without calling any API."""
 
-Useful for testing request timing with other tools or inspecting prompts.
-"""
+from __future__ import annotations
 
 import argparse
+import logging
 import sys
-import os
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
-# Import modules
-from .config import load_config_sdk
-from .ass_parser import parse_ass_file, build_pairs_from_ass_lines
+from .ass_parser import build_pairs_from_ass_lines, parse_ass_file
 from .chunker import chunk_pairs
-from .memory import init_global_memory, estimate_memory_tokens
+from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config
+from .memory import GlobalMemory
 from .prompts import (
-    _find_section_boundaries,
-    _parse_template_glossary,
-    build_system_prompt,
-    build_user_prompt_for_chunk,
-    load_main_prompt_template,
+    build_refine_system_prompt,
+    load_refine_prompt_template,
+    parse_authoritative_glossary,
 )
-from .utils import estimate_tokens, estimate_pairs_tokens
 from .serializers import serialize
+from .utils import estimate_tokens
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
-def generate_prompts(input_path, output_path, refine_batch_size, max_chunks, config):
-    """
-    Generate system and user prompts for each chunk without calling API.
+def generate_prompts(
+    input_path: Path, config: AppConfig, max_chunks: int | None
+) -> list[dict[str, Any]]:
+    """Build the system and user prompt for every chunk plus token estimates."""
 
-    Args:
-        input_path: Path to input .ass file
-        output_path: Path to output markdown file
-        refine_batch_size: Number of subtitle pairs per chunk
-        max_chunks: Maximum number of chunks to process (None = all)
-        config: Configuration object
+    _, ass_lines = parse_ass_file(str(input_path))
+    pairs = build_pairs_from_ass_lines(ass_lines)
+    if not pairs:
+        raise ValueError(f"no subtitle pairs found in {input_path}")
+    representation = config.refine.intermediate_representation
+    model_name = config.api.refine.model
+    memory = GlobalMemory(
+        user_glossary=parse_authoritative_glossary(load_refine_prompt_template(config.prompts))
+    )
+    system_prompt = build_refine_system_prompt(memory, config.prompts, representation)
+    system_tokens = estimate_tokens(system_prompt, model_name)
+    chunks = chunk_pairs(
+        pairs,
+        batch_size=config.refine.batch_size,
+        token_soft_limit=config.refine.chunk_token_soft_limit,
+        base_prompt_tokens=system_tokens,
+        model_name=model_name,
+    )
+    if max_chunks is not None:
+        chunks = chunks[:max_chunks]
+    logger.info("Generating prompts for %d chunks of %d pairs", len(chunks), len(pairs))
 
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        print(f"\n{'='*60}")
-        print(f"PROMPT GENERATOR (No API Calls)")
-        print(f"{'='*60}")
-        print(f"Input:  {input_path}")
-        print(f"Output: {output_path}")
-        print(f"Pairs per chunk: {refine_batch_size}")
-        print(f"{'='*60}\n")
-
-        # Step 1: Parse ASS file
-        print("Step 1: Parsing ASS file...")
-        if not os.path.exists(input_path):
-            print(f"Error: Input file not found: {input_path}")
-            return False
-
-        header, ass_lines = parse_ass_file(input_path)
-        print(f"  Parsed {len(ass_lines)} dialogue lines")
-
-        # Step 2: Build subtitle pairs
-        print("\nStep 2: Building subtitle pairs...")
-        pairs = build_pairs_from_ass_lines(ass_lines)
-        print(f"  Created {len(pairs)} subtitle pairs")
-
-        if not pairs:
-            print("Error: No subtitle pairs found")
-            return False
-
-        # Step 3: Initialize global memory from the composed refine prompt
-        global_memory = init_global_memory()
-        prompt_text = load_main_prompt_template(config)
-        section_start, section_end, _ = _find_section_boundaries(
-            prompt_text, "User Terminology (Authoritative Glossary)"
-        )
-        if section_start is not None:
-            global_memory.user_glossary = _parse_template_glossary(
-                prompt_text[section_start:section_end]
-            )
-
-        # Step 4: Chunk pairs
-        print("\nStep 3: Splitting into chunks...")
-
-        # Temporarily set refine_batch_size in config
-        config.refine_batch_size = refine_batch_size
-
-        base_prompt_tokens = estimate_tokens(
-            build_system_prompt(global_memory, config),
-            config.refine.model
-        )
-        print(f"  Base prompt tokens: {base_prompt_tokens:,}")
-        print(f"  Chunking strategy: Fixed {refine_batch_size} pairs per chunk")
-
-        chunks = chunk_pairs(pairs, config, base_prompt_tokens)
-        print(f"  Created {len(chunks)} chunks")
-
-        # Apply max_chunks limit if set
-        if max_chunks is not None and max_chunks < len(chunks):
-            print(f"  [LIMITED] Generating prompts for only first {max_chunks} chunks (from {len(chunks)})")
-            chunks = chunks[:max_chunks]
-
-        # Step 5: Generate prompts for each chunk
-        print("\nStep 4: Generating prompts for each chunk...")
-        print("-" * 60)
-
-        all_prompts = []
-        for i, chunk in enumerate(chunks):
-            print(f"\nGenerating prompts for chunk {i+1}/{len(chunks)} ({len(chunk)} pairs)...")
-
-            # Build system prompt (with format-aware example conversion)
-            system_prompt = build_system_prompt(global_memory, config)
-
-            # Build user prompt using the configured intermediate representation
-            pairs_serialized = serialize(chunk, config.intermediate_representation)
-            user_prompt = build_user_prompt_for_chunk(pairs_serialized)
-
-            # Estimate tokens
-            system_tokens = estimate_tokens(system_prompt, config.refine.model)
-            user_tokens = estimate_tokens(user_prompt, config.refine.model)
-            total_tokens = system_tokens + user_tokens
-
-            print(f"  System prompt: {system_tokens:,} tokens")
-            print(f"  User prompt: {user_tokens:,} tokens")
-            print(f"  Total: {total_tokens:,} tokens")
-
-            all_prompts.append({
-                "chunk_index": i,
+    prompts: list[dict[str, Any]] = []
+    for index, chunk in enumerate(chunks):
+        user_prompt = serialize(chunk, representation)
+        user_tokens = estimate_tokens(user_prompt, model_name)
+        prompts.append(
+            {
+                "chunk_index": index,
                 "chunk_size": len(chunk),
                 "system_prompt": system_prompt,
                 "user_prompt": user_prompt,
                 "system_tokens": system_tokens,
                 "user_tokens": user_tokens,
-                "total_tokens": total_tokens
-            })
-
-        print("\n" + "-" * 60)
-
-        # Step 6: Write to markdown file
-        print("\nStep 5: Writing prompts to markdown file...")
-        write_markdown(
-            chunks=chunks,
-            prompts=all_prompts,
-            output_path=output_path,
-            config=config,
-            input_filename=os.path.basename(input_path),
-            total_pairs=len(pairs)
+                "total_tokens": system_tokens + user_tokens,
+                "total_pairs": len(pairs),
+            }
         )
-        print(f"  Output written to: {output_path}")
-
-        print("\n✓ Prompt generation completed successfully!\n")
-        return True
-
-    except Exception as e:
-        print(f"\n✗ Error: {str(e)}\n")
-        import traceback
-        traceback.print_exc()
-        return False
+    return prompts
 
 
-def write_markdown(chunks, prompts, output_path, config, input_filename, total_pairs):
-    """
-    Write prompts to markdown file.
-
-    Args:
-        chunks: List of subtitle pair chunks
-        prompts: List of prompt dictionaries
-        output_path: Path to output markdown file
-        config: Configuration object
-        input_filename: Original input filename
-        total_pairs: Total number of subtitle pairs
-    """
-    with open(output_path, "w", encoding="utf-8") as f:
-        # Write header
-        f.write(f"# Request Prompts for {input_filename}\n\n")
-
-        # Write configuration
-        f.write("## Configuration\n\n")
-        f.write(f"- **Total pairs:** {total_pairs}\n")
-        f.write(f"- **Pairs per chunk:** {config.refine_batch_size}\n")
-        f.write(f"- **Total chunks:** {len(chunks)}\n")
-        f.write(
-            "- **Intermediate representation:** "
-            f"{config.intermediate_representation}\n"
+def render_markdown(
+    prompts: list[dict[str, Any]], config: AppConfig, input_name: str
+) -> str:
+    refine = config.api.refine
+    total_pairs = prompts[0]["total_pairs"] if prompts else 0
+    lines = [
+        f"# Request Prompts for {input_name}",
+        "",
+        "## Configuration",
+        "",
+        f"- **Total pairs:** {total_pairs}",
+        f"- **Pairs per chunk:** {config.refine.batch_size}",
+        f"- **Total chunks:** {len(prompts)}",
+        f"- **Intermediate representation:** {config.refine.intermediate_representation}",
+        f"- **Model:** {refine.model}",
+        f"- **Max output tokens:** {refine.max_output_tokens:,}",
+        f"- **Temperature:** {refine.temperature}",
+    ]
+    if refine.reasoning_effort is not None:
+        lines.append(f"- **Reasoning effort:** {refine.reasoning_effort}")
+    lines += [
+        "",
+        "## Token Summary",
+        "",
+        "| Chunk | Pairs | System Tokens | User Tokens | Total Tokens |",
+        "|-------|-------|---------------|-------------|-------------|",
+    ]
+    for prompt in prompts:
+        lines.append(
+            f"| {prompt['chunk_index'] + 1}/{len(prompts)} | {prompt['chunk_size']} | "
+            f"{prompt['system_tokens']:,} | {prompt['user_tokens']:,} | {prompt['total_tokens']:,} |"
         )
-        f.write(f"- **Model:** {config.refine.model}\n")
-        f.write(f"- **Max output tokens:** {config.refine.max_output_tokens:,}\n")
-        f.write(f"- **Temperature:** {config.refine.temperature}\n")
-        if config.refine.reasoning_effort is not None:
-            f.write(f"- **Reasoning effort:** {config.refine.reasoning_effort}\n")
-        f.write("\n")
-
-        # Write summary table
-        f.write("## Token Summary\n\n")
-        f.write("| Chunk | Pairs | System Tokens | User Tokens | Total Tokens |\n")
-        f.write("|-------|-------|---------------|-------------|-------------|\n")
-
-        total_system = 0
-        total_user = 0
-        total_all = 0
-
-        for prompt in prompts:
-            f.write(f"| {prompt['chunk_index']+1}/{len(prompts)} | "
-                   f"{prompt['chunk_size']} | "
-                   f"{prompt['system_tokens']:,} | "
-                   f"{prompt['user_tokens']:,} | "
-                   f"{prompt['total_tokens']:,} |\n")
-            total_system += prompt['system_tokens']
-            total_user += prompt['user_tokens']
-            total_all += prompt['total_tokens']
-
-        f.write(f"| **Total** | {total_pairs} | "
-               f"{total_system:,} | {total_user:,} | {total_all:,} |\n")
-        f.write("\n---\n\n")
-
-        # Write each chunk's prompts
-        for prompt in prompts:
-            chunk_num = prompt['chunk_index'] + 1
-            f.write(f"## Chunk {chunk_num}/{len(prompts)} ({prompt['chunk_size']} pairs)\n\n")
-
-            # System prompt
-            f.write("### System Prompt\n\n")
-            f.write("```\n")
-            f.write(prompt['system_prompt'])
-            f.write("\n```\n\n")
-
-            # User prompt
-            f.write("### User Prompt\n\n")
-            f.write("```\n")
-            f.write(prompt['user_prompt'])
-            f.write("\n```\n\n")
-
-            # Token estimates
-            f.write("### Token Estimates\n\n")
-            f.write(f"- **System prompt:** {prompt['system_tokens']:,} tokens\n")
-            f.write(f"- **User content:** {prompt['user_tokens']:,} tokens\n")
-            f.write(f"- **Total input:** {prompt['total_tokens']:,} tokens\n")
-            f.write(f"- **Max output:** {config.refine.max_output_tokens:,} tokens\n")
-            f.write(f"- **Estimated max total:** {prompt['total_tokens'] + config.refine.max_output_tokens:,} tokens\n")
-            f.write("\n---\n\n")
+    lines.append(
+        f"| **Total** | {total_pairs} | {sum(p['system_tokens'] for p in prompts):,} | "
+        f"{sum(p['user_tokens'] for p in prompts):,} | {sum(p['total_tokens'] for p in prompts):,} |"
+    )
+    lines += ["", "---", ""]
+    for prompt in prompts:
+        number = prompt["chunk_index"] + 1
+        lines += [
+            f"## Chunk {number}/{len(prompts)} ({prompt['chunk_size']} pairs)",
+            "",
+            "### System Prompt",
+            "",
+            "```",
+            prompt["system_prompt"],
+            "```",
+            "",
+            "### User Prompt",
+            "",
+            "```",
+            prompt["user_prompt"],
+            "```",
+            "",
+            "### Token Estimates",
+            "",
+            f"- **System prompt:** {prompt['system_tokens']:,} tokens",
+            f"- **User content:** {prompt['user_tokens']:,} tokens",
+            f"- **Total input:** {prompt['total_tokens']:,} tokens",
+            f"- **Max output:** {refine.max_output_tokens:,} tokens",
+            f"- **Estimated max total:** {prompt['total_tokens'] + refine.max_output_tokens:,} tokens",
+            "",
+            "---",
+            "",
+        ]
+    return "\n".join(lines)
 
 
-def main():
-    """Main CLI entry point."""
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate request prompts from ASS file without calling API",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Generate prompts with 120 pairs per chunk
-  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120
-
-  # Limit to first 2 chunks
-  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120 --max-chunks 2
-
-  # Custom output file
-  python -m subretrans.genreq input.ass --refine-batch-size 100 --output my_prompts.md
-
-Note: This tool does NOT call the API, it only generates the prompts.
-        """
+        description="Generate request prompts from an ASS file without calling any API"
     )
-
+    parser.add_argument("input", help="Input .ass subtitle file")
     parser.add_argument(
-        "input",
-        help="Input .ass subtitle file"
+        "--refine-batch-size", type=int, required=True, help="Pairs per chunk (required)"
     )
-    parser.add_argument(
-        "--refine-batch-size",
-        type=int,
-        required=True,
-        help="Number of subtitle pairs per chunk (required)"
-    )
-    parser.add_argument(
-        "--config",
-        default=str(REPOSITORY_ROOT / "config.yaml"),
-        help="Configuration YAML path",
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output markdown file (default: {input_basename}_prompts.md)"
-    )
-    parser.add_argument(
-        "--max-chunks",
-        type=int,
-        default=None,
-        help="Maximum number of chunks to generate (for testing)"
-    )
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Configuration YAML path")
+    parser.add_argument("--output", help="Output markdown file (default: <input stem>_prompts.md)")
+    parser.add_argument("--max-chunks", type=int, help="Generate prompts for at most N chunks")
+    return parser
 
-    args = parser.parse_args()
 
-    # Determine output path
-    if args.output:
-        output_path = args.output
-    else:
-        input_stem = Path(args.input).stem
-        output_path = f"{input_stem}_prompts.md"
-
-    # Load configuration (SDK version)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    input_path = Path(args.input)
+    output_path = Path(args.output) if args.output else Path(f"{input_path.stem}_prompts.md")
     try:
-        config = load_config_sdk(
-            yaml_file_path=args.config,
-            refine_batch_size=args.refine_batch_size,
-            verbose=False
-        )
-    except ValueError as e:
-        print(f"Configuration error: {e}")
+        config = load_config(args.config)
+        config = replace(config, refine=replace(config.refine, batch_size=args.refine_batch_size))
+        prompts = generate_prompts(input_path, config, args.max_chunks)
+    except (OSError, ValueError) as error:
+        logger.error("%s", error)
         return 1
-
-    # Generate prompts
-    success = generate_prompts(
-        args.input,
-        output_path,
-        args.refine_batch_size,
-        args.max_chunks,
-        config
-    )
-
-    return 0 if success else 1
+    output_path.write_text(render_markdown(prompts, config, input_path.name), encoding="utf-8")
+    print(f"Wrote {len(prompts)} chunk prompt(s) to {output_path}")
+    return 0
 
 
 if __name__ == "__main__":

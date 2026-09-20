@@ -1,520 +1,296 @@
-"""
-Serializers for subtitle pair intermediate representations.
+"""Intermediate representations exchanged with the refine model.
 
-Supports three formats:
-- JSON: Standard JSON array format
-- XML-pair: Custom XML-like format
-- Pseudo-TOML: TOML-like format
-
-All formats preserve ASS formatting tags and handle special characters.
+Three formats are supported: JSON arrays, an XML-like ``<pair>`` block format
+and a pseudo-TOML ``[pair]`` format. Strict parsers raise
+:class:`SerializationError`; recovery helpers salvage what they can from
+malformed model output.
 """
+
+from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import List, Dict, Any, Tuple
+from collections.abc import Sequence
+
 from .pairs import SubtitlePair
 
 
+logger = logging.getLogger(__name__)
+
+REPRESENTATIONS = ("json", "xml-pair", "pseudo-toml")
+
+_FIELD_ASSIGNMENT_SEPARATORS = "=>:|"
+_JSON_ARRAY_RE = re.compile(r"\[\s*\{.*?\}\s*\]", re.DOTALL)
+_XML_BLOCK_RE = re.compile(r"(?is)<pair>\s*(.*?)\s*</pair>")
+_UNESCAPED_BACKSLASH_RE = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
 class SerializationError(Exception):
-    """Exception raised for serialization/deserialization errors."""
-    pass
+    """Raised when text cannot be parsed as the requested representation."""
 
 
-# ============================================================================
-# JSON Format (existing)
-# ============================================================================
-
-def serialize_json(pairs: List[SubtitlePair]) -> str:
-    """
-    Serialize subtitle pairs to JSON format.
-
-    Args:
-        pairs: List of SubtitlePair objects
-
-    Returns:
-        JSON string representation
-    """
-    json_list = [pair.to_dict() for pair in pairs]
-    return json.dumps(json_list, ensure_ascii=False, indent=2)
+def _normalize_format(format_type: str) -> str:
+    normalized = (format_type or "").lower()
+    if normalized not in REPRESENTATIONS:
+        raise ValueError(
+            f"Unsupported format: {format_type}. Supported formats: {', '.join(REPRESENTATIONS)}"
+        )
+    return normalized
 
 
-def deserialize_json(text: str) -> List[SubtitlePair]:
-    """
-    Deserialize JSON format to subtitle pairs.
-
-    Args:
-        text: JSON string representation
-
-    Returns:
-        List of SubtitlePair objects
-
-    Raises:
-        SerializationError: If JSON parsing fails
-    """
+def _pair_from_fields(raw_id: object, eng: object, chinese: object) -> SubtitlePair:
     try:
-        json_list = json.loads(text)
-        if not isinstance(json_list, list):
-            raise SerializationError("JSON must be an array")
-
-        pairs = []
-        for item in json_list:
-            if not isinstance(item, dict):
-                raise SerializationError(f"Invalid JSON item: {item}")
-            if not all(k in item for k in ["id", "eng", "chinese"]):
-                raise SerializationError(f"Missing required fields in: {item}")
-
-            pairs.append(SubtitlePair(
-                id=item["id"],
-                eng=item["eng"],
-                chinese=item["chinese"]
-            ))
-
-        return pairs
-    except json.JSONDecodeError as e:
-        raise SerializationError(f"Failed to parse JSON: {str(e)}")
-    except Exception as e:
-        raise SerializationError(f"Deserialization error: {str(e)}")
+        pair_id = int(str(raw_id).strip())
+    except ValueError as exc:
+        raise SerializationError(f"Invalid ID value: {raw_id!r}") from exc
+    if not isinstance(eng, str) or not isinstance(chinese, str):
+        raise SerializationError(f"eng and chinese must be strings for ID {pair_id}")
+    return SubtitlePair(id=pair_id, eng=eng, chinese=chinese)
 
 
-# ============================================================================
-# XML-pair Format
-# ============================================================================
-
-def serialize_xml_pair(pairs: List[SubtitlePair]) -> str:
-    """
-    Serialize subtitle pairs to XML-pair format.
-
-    Format:
-        <pair>
-        ID=0
-        eng=Tonight, on JAG...
-        chinese=今晚，在《军法署》...
-        </pair>
-
-    Args:
-        pairs: List of SubtitlePair objects
-
-    Returns:
-        XML-pair string representation
-    """
-    lines = []
-    for pair in pairs:
-        lines.append("<pair>")
-        lines.append(f"ID={pair.id}")
-        lines.append(f"eng={pair.eng}")
-        lines.append(f"chinese={pair.chinese}")
-        lines.append("</pair>")
-        lines.append("")  # Empty line between pairs
-
-    return "\n".join(lines).rstrip()  # Remove trailing empty line
+# JSON -----------------------------------------------------------------------
 
 
-def _parse_field_assignment(line: str, expected_field: str) -> tuple:
-    """
-    Parse a field assignment line with two-stage strategy.
-
-    Stage 1: Strict parsing with '=' separator
-    Stage 2: Regex fallback for alternate separators and whitespace
-
-    Args:
-        line: Line to parse (e.g., "eng=value" or "eng>value")
-        expected_field: Expected field name (e.g., "eng", "chinese", "ID")
-
-    Returns:
-        Tuple of (value, used_fallback, separator) where:
-        - value: Extracted value string, or None if parsing fails
-        - used_fallback: True if Stage 2 was used, False if Stage 1 succeeded
-        - separator: The separator character used (only when fallback is True), None otherwise
-    """
-    # Stage 1: Strict parsing with '=' separator
-    if "=" in line:
-        key, value = line.split("=", 1)
-        if key == expected_field:
-            return (value, False, None)  # Strict match successful, no fallback used
-
-    # Stage 2: Regex-based fallback
-    # Match: field_name + optional_whitespace + separator + optional_whitespace + value
-    # Supported separators: =, >, :, |
-    pattern = rf'^({re.escape(expected_field)})\s*([=>:|])\s*(.*)$'
-    match = re.match(pattern, line.strip())
-
-    if match:
-        _, separator, value = match.groups()
-        return (value.strip(), True, separator)  # Fallback used, return separator for logging
-
-    return (None, False, None)  # Both stages failed
+def serialize_json(pairs: Sequence[SubtitlePair]) -> str:
+    return json.dumps([pair.to_dict() for pair in pairs], ensure_ascii=False, indent=2)
 
 
-def deserialize_xml_pair(text: str) -> List[SubtitlePair]:
-    """
-    Deserialize XML-pair format to subtitle pairs.
-
-    Args:
-        text: XML-pair string representation
-
-    Returns:
-        List of SubtitlePair objects
-
-    Raises:
-        SerializationError: If parsing fails
-    """
-    pairs = []
-    lines = text.strip().split("\n")
-
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-
-        # Skip empty lines
-        if not line:
-            i += 1
-            continue
-
-        # Expect <pair> tag
-        if line != "<pair>":
-            raise SerializationError(f"Expected '<pair>' at line {i+1}, got: {line}")
-
-        i += 1
-        pair_data = {}
-
-        # Read ID, eng, chinese with two-stage parsing
-        for field in ["ID", "eng", "chinese"]:
-            if i >= len(lines):
-                raise SerializationError(f"Unexpected end of input while reading {field}")
-
-            line = lines[i].strip()
-
-            # Parse field assignment using two-stage strategy
-            value, used_fallback, separator = _parse_field_assignment(line, field)
-
-            if value is None:
-                raise SerializationError(f"Expected '{field}=...' at line {i+1}, got: {line}")
-
-            # Log warning if non-standard separator was used
-            if used_fallback and separator != "=":
-                import sys
-                print(f"  [Warning]: Non-standard separator '{separator}' for field '{field}' at line {i+1}, auto-corrected", file=sys.stderr)
-
-            pair_data[field.lower() if field != "ID" else "id"] = value
-            i += 1
-
-        # Expect </pair> tag
-        if i >= len(lines):
-            raise SerializationError("Expected '</pair>' tag")
-
-        line = lines[i].strip()
-        if line != "</pair>":
-            raise SerializationError(f"Expected '</pair>' at line {i+1}, got: {line}")
-
-        # Create SubtitlePair
-        try:
-            pair_id = int(pair_data["id"])
-        except ValueError:
-            raise SerializationError(f"Invalid ID value: {pair_data['id']}")
-
-        pairs.append(SubtitlePair(
-            id=pair_id,
-            eng=pair_data["eng"],
-            chinese=pair_data["chinese"]
-        ))
-
-        i += 1
-
+def deserialize_json(text: str) -> list[SubtitlePair]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SerializationError(f"Failed to parse JSON: {exc}") from exc
+    if not isinstance(payload, list):
+        raise SerializationError("JSON must be an array")
+    pairs: list[SubtitlePair] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise SerializationError(f"Invalid JSON item: {item!r}")
+        if not all(key in item for key in ("id", "eng", "chinese")):
+            raise SerializationError(f"Missing required fields in: {item!r}")
+        pairs.append(_pair_from_fields(item["id"], item["eng"], item["chinese"]))
     return pairs
 
 
-def _extract_xml_pair_field_value(block_text: str, field: str) -> str:
-    """
-    Extract a field value from within a <pair>...</pair> block.
+# XML-pair -------------------------------------------------------------------
 
-    This is a best-effort extractor designed to tolerate cases where:
-    - Fields are out of order
-    - Multiple fields appear on the same line (e.g., "ID=10 eng=...")
-    - Non-standard separators are used (>, :, |)
-    """
-    # Capture everything after `field<sep>` until the next field marker or end of block.
-    # Use a word boundary to avoid matching inside normal text.
-    pattern = rf"(?is)\b{re.escape(field)}\s*[=>:|]\s*(.*?)(?=\b(?:ID|eng|chinese)\s*[=>:|]|$)"
-    match = re.search(pattern, block_text)
+
+def serialize_xml_pair(pairs: Sequence[SubtitlePair]) -> str:
+    blocks = [
+        f"<pair>\nID={pair.id}\neng={pair.eng}\nchinese={pair.chinese}\n</pair>"
+        for pair in pairs
+    ]
+    return "\n\n".join(blocks)
+
+
+def _parse_field_assignment(line: str, expected_field: str) -> tuple[str | None, str | None]:
+    """Return ``(value, separator)``; separator is ``None`` for a strict ``field=`` match."""
+
+    if "=" in line:
+        key, value = line.split("=", 1)
+        if key == expected_field:
+            return value, None
+    match = re.match(
+        rf"^({re.escape(expected_field)})\s*([{re.escape(_FIELD_ASSIGNMENT_SEPARATORS)}])\s*(.*)$",
+        line.strip(),
+    )
+    if match:
+        _, separator, value = match.groups()
+        return value.strip(), separator
+    return None, None
+
+
+def deserialize_xml_pair(text: str) -> list[SubtitlePair]:
+    pairs: list[SubtitlePair] = []
+    lines = text.strip().split("\n")
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if not line:
+            index += 1
+            continue
+        if line != "<pair>":
+            raise SerializationError(f"Expected '<pair>' at line {index + 1}, got: {line}")
+        index += 1
+        fields: dict[str, str] = {}
+        for field in ("ID", "eng", "chinese"):
+            if index >= len(lines):
+                raise SerializationError(f"Unexpected end of input while reading {field}")
+            line = lines[index].strip()
+            value, separator = _parse_field_assignment(line, field)
+            if value is None:
+                raise SerializationError(f"Expected '{field}=...' at line {index + 1}, got: {line}")
+            if separator is not None and separator != "=":
+                logger.warning(
+                    "Non-standard separator %r for field %r at line %d; auto-corrected",
+                    separator,
+                    field,
+                    index + 1,
+                )
+            fields[field] = value
+            index += 1
+        if index >= len(lines):
+            raise SerializationError("Expected '</pair>' tag")
+        line = lines[index].strip()
+        if line != "</pair>":
+            raise SerializationError(f"Expected '</pair>' at line {index + 1}, got: {line}")
+        pairs.append(_pair_from_fields(fields["ID"], fields["eng"], fields["chinese"]))
+        index += 1
+    return pairs
+
+
+def _extract_xml_pair_field(block: str, field: str) -> str:
+    pattern = (
+        rf"(?is)\b{re.escape(field)}\s*[{re.escape(_FIELD_ASSIGNMENT_SEPARATORS)}]\s*"
+        rf"(.*?)(?=\b(?:ID|eng|chinese)\s*[{re.escape(_FIELD_ASSIGNMENT_SEPARATORS)}]|$)"
+    )
+    match = re.search(pattern, block)
     if not match:
         raise SerializationError(f"Missing field '{field}'")
     return match.group(1).strip()
 
 
-def deserialize_xml_pair_best_effort(text: str) -> Tuple[List[SubtitlePair], List[str]]:
-    """
-    Best-effort XML-pair deserialization that skips malformed <pair> blocks.
+def deserialize_xml_pair_best_effort(text: str) -> tuple[list[SubtitlePair], list[str]]:
+    """Parse every well-formed ``<pair>`` block and report the ones skipped."""
 
-    Returns:
-        (pairs, errors) where errors are human-readable skip reasons.
-    """
-    pairs: List[SubtitlePair] = []
-    errors: List[str] = []
-
-    # Find all <pair>...</pair> blocks, preserving order.
-    block_pattern = re.compile(r"(?is)<pair>\s*(.*?)\s*</pair>")
-    matches = list(block_pattern.finditer(text or ""))
+    matches = list(_XML_BLOCK_RE.finditer(text or ""))
     if not matches:
-        return pairs, ["No <pair>...</pair> blocks found"]
-
-    for idx, match in enumerate(matches, start=1):
+        return [], ["No <pair>...</pair> blocks found"]
+    pairs: list[SubtitlePair] = []
+    errors: list[str] = []
+    for position, match in enumerate(matches, start=1):
         block = match.group(1)
         try:
-            raw_id = _extract_xml_pair_field_value(block, "ID")
+            raw_id = _extract_xml_pair_field(block, "ID")
             id_match = re.match(r"\s*(\d+)", raw_id)
             if not id_match:
                 raise SerializationError(f"Invalid ID value: {raw_id}")
-            pair_id = int(id_match.group(1))
-
-            eng = _extract_xml_pair_field_value(block, "eng")
-            chinese = _extract_xml_pair_field_value(block, "chinese")
-
-            pairs.append(SubtitlePair(id=pair_id, eng=eng, chinese=chinese))
-        except Exception as e:
-            errors.append(f"pair#{idx}: {str(e)}")
-            continue
-
+            pairs.append(
+                SubtitlePair(
+                    id=int(id_match.group(1)),
+                    eng=_extract_xml_pair_field(block, "eng"),
+                    chinese=_extract_xml_pair_field(block, "chinese"),
+                )
+            )
+        except SerializationError as exc:
+            errors.append(f"pair#{position}: {exc}")
     return pairs, errors
 
 
-# ============================================================================
-# Pseudo-TOML Format
-# ============================================================================
-
-def serialize_pseudo_toml(pairs: List[SubtitlePair]) -> str:
-    """
-    Serialize subtitle pairs to pseudo-TOML format.
-
-    Format:
-        [pair]
-        id = 0
-        eng = Tonight, on JAG...
-        chinese = 今晚，在《军法署》...
-
-        [pair]
-        id = 1
-        eng = Good evening...
-        chinese = 晚上好...
-
-    Args:
-        pairs: List of SubtitlePair objects
-
-    Returns:
-        Pseudo-TOML string representation
-    """
-    lines = []
-    for pair in pairs:
-        lines.append("[pair]")
-        lines.append(f"id = {pair.id}")
-        lines.append(f"eng = {pair.eng}")
-        lines.append(f"chinese = {pair.chinese}")
-        lines.append("")  # Empty line between pairs
-
-    return "\n".join(lines).rstrip()  # Remove trailing empty line
+# Pseudo-TOML ----------------------------------------------------------------
 
 
-def deserialize_best_effort(text: str, format_type: str) -> Tuple[List[SubtitlePair], List[str]]:
-    """
-    Best-effort deserialization entrypoint.
-
-    For strict parsing, use `deserialize()`. This function is intended as a
-    last-resort recovery mechanism when strict deserialization fails.
-    """
-    fmt = (format_type or "").lower()
-    if fmt == "xml-pair":
-        return deserialize_xml_pair_best_effort(text)
-
-    return ([], [f"Best-effort deserialization not implemented for format: {format_type}"])
+def serialize_pseudo_toml(pairs: Sequence[SubtitlePair]) -> str:
+    blocks = [
+        f"[pair]\nid = {pair.id}\neng = {pair.eng}\nchinese = {pair.chinese}" for pair in pairs
+    ]
+    return "\n\n".join(blocks)
 
 
-def deserialize_pseudo_toml(text: str) -> List[SubtitlePair]:
-    """
-    Deserialize pseudo-TOML format to subtitle pairs.
-
-    Args:
-        text: Pseudo-TOML string representation
-
-    Returns:
-        List of SubtitlePair objects
-
-    Raises:
-        SerializationError: If parsing fails
-    """
-    pairs = []
+def deserialize_pseudo_toml(text: str) -> list[SubtitlePair]:
+    pairs: list[SubtitlePair] = []
     lines = text.strip().split("\n")
-
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-
-        # Skip empty lines
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
         if not line:
-            i += 1
+            index += 1
             continue
-
-        # Expect [pair] section
         if line != "[pair]":
-            raise SerializationError(f"Expected '[pair]' at line {i+1}, got: {line}")
-
-        i += 1
-        pair_data = {}
-
-        # Read id, eng, chinese
-        for field in ["id", "eng", "chinese"]:
-            if i >= len(lines):
+            raise SerializationError(f"Expected '[pair]' at line {index + 1}, got: {line}")
+        index += 1
+        fields: dict[str, str] = {}
+        for field in ("id", "eng", "chinese"):
+            while index < len(lines) and not lines[index].strip():
+                index += 1
+            if index >= len(lines):
                 raise SerializationError(f"Unexpected end of input while reading {field}")
-
-            line = lines[i].strip()
-
-            # Skip empty lines within a pair (shouldn't happen but be lenient)
-            if not line:
-                i += 1
-                if i >= len(lines):
-                    raise SerializationError(f"Unexpected end of input while reading {field}")
-                line = lines[i].strip()
-
-            # Parse field = value
+            line = lines[index].strip()
             if "=" not in line:
-                raise SerializationError(f"Expected '{field} = ...' at line {i+1}, got: {line}")
-
-            parts = line.split("=", 1)
-            if len(parts) != 2:
-                raise SerializationError(f"Invalid field format at line {i+1}: {line}")
-
-            key = parts[0].strip()
-            value = parts[1].strip()
-
+                raise SerializationError(f"Expected '{field} = ...' at line {index + 1}, got: {line}")
+            key, value = (part.strip() for part in line.split("=", 1))
             if key != field:
-                raise SerializationError(f"Expected field '{field}' at line {i+1}, got: {key}")
-
-            pair_data[field] = value
-            i += 1
-
-        # Create SubtitlePair
-        try:
-            pair_id = int(pair_data["id"])
-        except ValueError:
-            raise SerializationError(f"Invalid ID value: {pair_data['id']}")
-
-        pairs.append(SubtitlePair(
-            id=pair_id,
-            eng=pair_data["eng"],
-            chinese=pair_data["chinese"]
-        ))
-
+                raise SerializationError(f"Expected field '{field}' at line {index + 1}, got: {key}")
+            fields[field] = value
+            index += 1
+        pairs.append(_pair_from_fields(fields["id"], fields["eng"], fields["chinese"]))
     return pairs
 
 
-# ============================================================================
-# Format-agnostic Interface
-# ============================================================================
+# Format-agnostic interface --------------------------------------------------
 
-def serialize(pairs: List[SubtitlePair], format_type: str) -> str:
-    """
-    Serialize subtitle pairs using the specified format.
 
-    Args:
-        pairs: List of SubtitlePair objects
-        format_type: One of "json", "xml-pair", "pseudo-toml"
+def serialize(pairs: Sequence[SubtitlePair], format_type: str) -> str:
+    """Serialize ``pairs`` in the requested representation."""
 
-    Returns:
-        Serialized string representation
-
-    Raises:
-        ValueError: If format_type is unsupported
-    """
-    format_type = format_type.lower()
-
-    if format_type == "json":
+    normalized = _normalize_format(format_type)
+    if normalized == "json":
         return serialize_json(pairs)
-    elif format_type == "xml-pair":
+    if normalized == "xml-pair":
         return serialize_xml_pair(pairs)
-    elif format_type == "pseudo-toml":
-        return serialize_pseudo_toml(pairs)
-    else:
-        raise ValueError(f"Unsupported format: {format_type}. "
-                        f"Supported formats: json, xml-pair, pseudo-toml")
+    return serialize_pseudo_toml(pairs)
 
 
-def deserialize(text: str, format_type: str) -> List[SubtitlePair]:
-    """
-    Deserialize text to subtitle pairs using the specified format.
+def deserialize(text: str, format_type: str) -> list[SubtitlePair]:
+    """Strictly parse ``text`` in the requested representation."""
 
-    Args:
-        text: Serialized string representation
-        format_type: One of "json", "xml-pair", "pseudo-toml"
-
-    Returns:
-        List of SubtitlePair objects
-
-    Raises:
-        ValueError: If format_type is unsupported
-        SerializationError: If deserialization fails
-    """
-    format_type = format_type.lower()
-
-    if format_type == "json":
+    normalized = _normalize_format(format_type)
+    if normalized == "json":
         return deserialize_json(text)
-    elif format_type == "xml-pair":
+    if normalized == "xml-pair":
         return deserialize_xml_pair(text)
-    elif format_type == "pseudo-toml":
-        return deserialize_pseudo_toml(text)
-    else:
-        raise ValueError(f"Unsupported format: {format_type}. "
-                        f"Supported formats: json, xml-pair, pseudo-toml")
+    return deserialize_pseudo_toml(text)
 
 
-# ============================================================================
-# Example Conversion (for prompts)
-# ============================================================================
+def extract_from_format_marker(text: str, format_type: str) -> str | None:
+    """Return the portion of ``text`` starting at the first format marker, if any.
+
+    Used after the strict parser fails because a model added commentary before
+    the payload. The text is expected to be already cleaned of code fences.
+    """
+
+    normalized = _normalize_format(format_type)
+    if normalized == "xml-pair":
+        index = text.find("<pair>")
+        return text[index:].strip() if index != -1 else None
+    if normalized == "pseudo-toml":
+        index = text.find("[pair]")
+        return text[index:].strip() if index != -1 else None
+    arrays = _JSON_ARRAY_RE.findall(text)
+    if arrays:
+        return max(arrays, key=len)
+    stripped = text.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return stripped
+    return None
+
+
+def deserialize_best_effort(text: str, format_type: str) -> tuple[list[SubtitlePair], list[str]]:
+    """Last-resort recovery that keeps well-formed items and reports skipped ones."""
+
+    normalized = _normalize_format(format_type)
+    if normalized == "xml-pair":
+        return deserialize_xml_pair_best_effort(text)
+    return [], [f"Best-effort deserialization not implemented for format: {format_type}"]
+
 
 def convert_json_examples_to_format(json_text: str, target_format: str) -> str:
+    """Convert a JSON example array from a prompt template to ``target_format``.
+
+    Prompt templates may contain raw ASS tags such as ``{\\i1}`` inside JSON
+    strings; unescaped backslashes are repaired before the second attempt.
     """
-    Convert JSON examples to target format.
 
-    Used for converting the few-shot examples in main_prompt.md to the
-    selected intermediate representation format.
-
-    Args:
-        json_text: JSON text containing examples
-        target_format: Target format ("json", "xml-pair", "pseudo-toml")
-
-    Returns:
-        Converted text in target format
-
-    Raises:
-        ValueError: If target_format is unsupported
-        SerializationError: If conversion fails
-    """
-    if target_format.lower() == "json":
-        return json_text  # No conversion needed
-
-    # Try to parse JSON, but first attempt to fix common issues with
-    # unescaped backslashes in ASS tags (e.g., {\i1} -> {\\i1})
+    normalized = _normalize_format(target_format)
+    if normalized == "json":
+        return json_text
     try:
-        # First, try parsing as-is
         pairs = deserialize_json(json_text)
-    except (json.JSONDecodeError, SerializationError) as e:
-        # If that fails, try fixing unescaped backslashes
-        # This handles cases where markdown templates have raw backslashes
-        # like {"eng": "text {\i1}italics{\i0}"} which need to be escaped
-        # We need to escape backslashes that appear inside JSON string values
-        # Strategy: Replace single backslashes with double backslashes, but be careful
-        # not to break already-escaped sequences like \\n, \", etc.
-
-        # Use a regex to find backslashes that aren't followed by valid JSON escape chars
-        # Valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
-        import re
-
-        # Replace backslashes that are NOT part of valid escape sequences
-        # This regex matches a backslash NOT followed by: ", \, /, b, f, n, r, t, u
-        fixed_json = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', json_text)
-
+    except SerializationError as original:
+        fixed = _UNESCAPED_BACKSLASH_RE.sub(r"\\\\", json_text)
         try:
-            pairs = deserialize_json(fixed_json)
-        except (json.JSONDecodeError, SerializationError):
-            # If still failing, raise the original error
-            raise SerializationError(f"Failed to parse JSON: {e}")
-
-    # Convert to target format
-    return serialize(pairs, target_format)
+            pairs = deserialize_json(fixed)
+        except SerializationError:
+            raise SerializationError(f"Failed to parse JSON: {original}") from original
+    return serialize(pairs, normalized)

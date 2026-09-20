@@ -7,7 +7,7 @@ api:
     model: "deepseek"
     key_file: "key-zenmux"
     base_url: "https://zenmux.ai/api/anthropic"
-    timeout: 30000
+    timeout: 1800
     max_retries: 0
     max_output_tokens: 27000
     reasoning_effort: null
@@ -37,7 +37,7 @@ api:
     model: "deepseek"
     key_file: "key-zenmux"
     base_url: "https://zenmux.ai/api/anthropic"
-    timeout: 30000
+    timeout: 1800
     max_retries: 2
     max_output_tokens: 131072
     reasoning_effort: null
@@ -50,9 +50,9 @@ pipeline:
 
 # Prompt composition. Shared rules are prepended to each stage-specific task.
 prompts:
-  shared_path: "rm/shared_translation_rules.md"
-  refine_path: "rm/refine_task.md"
-  qa_path: "rm/qa_task.md"
+  shared_path: "prompts/shared_translation_rules.md"
+  refine_path: "prompts/refine_task.md"
+  qa_path: "prompts/qa_task.md"
 
 primer:
   batch_size: 20
@@ -106,5 +106,4 @@ subtitle_edit:
 # Glossary settings
 glossary:
   max_entries: 100
-  policy: "lock"  # lock: user glossary is authoritative; learned terms cannot override
   terminology_min_confidence: 0.6  # Minimum confidence for extracted terminology entries

@@ -28,7 +28,7 @@ def sha256(path: Path) -> str:
 def state_for(path: Path, mode: str) -> PipelineState:
     memory = path.parent / "test-memory.yaml"
     memory.write_text(
-        "user_glossary: []\nglossary: []\nstyle_notes: ''\n"
+        "user_glossary: []\nglossary: []\n"
         "story_description: Test episode context.\n",
         encoding="utf-8",
     )
@@ -69,7 +69,7 @@ def make_refine(*, progress_mutation=None):
     ) -> None:
         output_path.write_bytes(input_path.read_bytes())
         checkpoint_path.write_text(
-            "user_glossary: []\nglossary: []\nstyle_notes: ''\n"
+            "user_glossary: []\nglossary: []\n"
             "story_description: Test episode context.\n",
             encoding="utf-8",
         )
@@ -271,7 +271,7 @@ def test_qa_rejects_changed_memory_checkpoint(tmp_path) -> None:
     source.write_text(VALID_ASS, encoding="utf-8")
     state = state_for(source, "serial_memory")
     Path(state["memory_checkpoint_path"]).write_text(
-        "user_glossary: []\nglossary: []\nstyle_notes: changed\n"
+        "user_glossary: []\nglossary: []\n"
         "story_description: Changed context.\n",
         encoding="utf-8",
     )
@@ -306,7 +306,6 @@ def test_qa_user_glossary_overrides_learned_duplicate(tmp_path) -> None:
         "glossary:\n"
         "- {eng: ' commander ', zh: 指挥官, type: title, confidence: 0.9, evidence_ids: [1]}\n"
         "- {eng: SecNav, zh: 海军部长, type: title, confidence: 0.8, evidence_ids: [2]}\n"
-        "style_notes: ''\n"
         "story_description: Test episode context.\n",
         encoding="utf-8",
     )

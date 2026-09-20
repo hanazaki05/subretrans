@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from os import PathLike
 from pathlib import Path
-from typing import Callable, Sequence
+
+from .fsutil import atomic_write_json, require_exact_fields
 
 
 logger = logging.getLogger(__name__)
@@ -48,24 +49,6 @@ TranslationBatch = tuple[TranslationRequest, ...]
 TranslateBatch = Callable[[TranslationBatch], Sequence[TranslationResult]]
 
 
-def _require_exact_fields(
-    value: object, expected: set[str], *, location: str
-) -> dict[str, object]:
-    if type(value) is not dict:
-        raise ValueError(f"{location} must be a JSON object")
-    fields = set(value)
-    if fields != expected:
-        missing = sorted(expected - fields)
-        unknown = sorted(fields - expected)
-        details = []
-        if missing:
-            details.append(f"missing fields: {', '.join(missing)}")
-        if unknown:
-            details.append(f"unknown fields: {', '.join(unknown)}")
-        raise ValueError(f"{location} has invalid fields ({'; '.join(details)})")
-    return value
-
-
 def _validate_manifest(manifest: TranslationManifest) -> None:
     if type(manifest) is not TranslationManifest:
         raise TypeError("manifest must be a TranslationManifest")
@@ -95,7 +78,7 @@ def _validate_manifest(manifest: TranslationManifest) -> None:
 
 
 def _manifest_from_json(value: object) -> TranslationManifest:
-    payload = _require_exact_fields(
+    payload = require_exact_fields(
         value,
         {"version", "source_artifact_path", "translated_artifact_path", "units"},
         location="manifest",
@@ -106,30 +89,26 @@ def _manifest_from_json(value: object) -> TranslationManifest:
 
     units: list[TranslationUnit] = []
     for index, raw_unit in enumerate(raw_units):
-        unit = _require_exact_fields(
-            raw_unit,
-            {"id", "source", "translation"},
-            location=f"units[{index}]",
+        unit = require_exact_fields(
+            raw_unit, {"id", "source", "translation"}, location=f"units[{index}]"
         )
         units.append(
             TranslationUnit(
-                id=unit["id"],  # type: ignore[arg-type]
-                source=unit["source"],  # type: ignore[arg-type]
-                translation=unit["translation"],  # type: ignore[arg-type]
+                id=unit["id"], source=unit["source"], translation=unit["translation"]
             )
         )
 
     manifest = TranslationManifest(
-        version=payload["version"],  # type: ignore[arg-type]
-        source_artifact_path=payload["source_artifact_path"],  # type: ignore[arg-type]
-        translated_artifact_path=payload["translated_artifact_path"],  # type: ignore[arg-type]
+        version=payload["version"],
+        source_artifact_path=payload["source_artifact_path"],
+        translated_artifact_path=payload["translated_artifact_path"],
         units=units,
     )
     _validate_manifest(manifest)
     return manifest
 
 
-def load_manifest(path: str | os.PathLike[str]) -> TranslationManifest:
+def load_manifest(path: str | PathLike[str]) -> TranslationManifest:
     """Load and strictly validate a version-1 translation manifest."""
 
     with Path(path).open(encoding="utf-8") as handle:
@@ -137,39 +116,22 @@ def load_manifest(path: str | os.PathLike[str]) -> TranslationManifest:
     return _manifest_from_json(payload)
 
 
-def save_manifest(
-    manifest: TranslationManifest, path: str | os.PathLike[str]
-) -> None:
+def save_manifest(manifest: TranslationManifest, path: str | PathLike[str]) -> None:
     """Validate and atomically replace a manifest in its destination directory."""
 
     _validate_manifest(manifest)
-    destination = Path(path)
-    payload = {
-        "version": manifest.version,
-        "source_artifact_path": manifest.source_artifact_path,
-        "translated_artifact_path": manifest.translated_artifact_path,
-        "units": [
-            {
-                "id": unit.id,
-                "source": unit.source,
-                "translation": unit.translation,
-            }
-            for unit in manifest.units
-        ],
-    }
-    fd, temporary_path = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    atomic_write_json(
+        path,
+        {
+            "version": manifest.version,
+            "source_artifact_path": manifest.source_artifact_path,
+            "translated_artifact_path": manifest.translated_artifact_path,
+            "units": [
+                {"id": unit.id, "source": unit.source, "translation": unit.translation}
+                for unit in manifest.units
+            ],
+        },
     )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, destination)
-    finally:
-        if os.path.exists(temporary_path):
-            os.unlink(temporary_path)
 
 
 def _validate_batch_result(
@@ -201,7 +163,7 @@ def _validate_batch_result(
 
 
 def translate_manifest(
-    manifest_path: str | os.PathLike[str],
+    manifest_path: str | PathLike[str],
     translate_batch: TranslateBatch,
     batch_size: int,
     max_workers: int,
@@ -235,9 +197,7 @@ def translate_manifest(
     )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures: dict[
-            Future[Sequence[TranslationResult]], tuple[int, TranslationBatch]
-        ] = {
+        futures: dict[Future[Sequence[TranslationResult]], tuple[int, TranslationBatch]] = {
             executor.submit(translate_batch, batch): (index, batch)
             for index, batch in enumerate(batches, start=1)
         }

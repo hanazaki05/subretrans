@@ -228,8 +228,6 @@ plan*.md
 key
 key-*
 rm/*
-!rm/shared_translation_rules.md
-!rm/refine_task.md
-!rm/qa_task.md
 .claude/*
 .claude
+.ace-tool/

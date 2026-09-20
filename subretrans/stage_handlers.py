@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
-import shutil
-import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-
-import yaml
 
 from .ass_parser import (
     apply_pairs_to_ass_lines,
@@ -24,11 +18,8 @@ from .ass_parser import (
     render_ass_file,
     write_ass_file,
 )
-from .memory import (
-    GlobalMemory,
-    prune_learned_glossary_against_user_glossary,
-    validate_memory_structure,
-)
+from .fsutil import atomic_copy, atomic_write_json, require_distinct_paths, sha256_file
+from .memory import load_memory_checkpoint, prune_learned_glossary_against_user_glossary
 from .model_agent import (
     AgentQA,
     AgentQAGlossaryTerm,
@@ -37,6 +28,8 @@ from .model_agent import (
     AgentRepair,
     AgentRepairHistory,
 )
+from .refine import load_refine_progress
+from .state import MemorylessTranslationState, PipelineState, Stage
 from .subtitle_processing import (
     POSTPROCESS_OPERATIONS,
     SrtCue,
@@ -46,7 +39,6 @@ from .subtitle_processing import (
     read_srt,
     write_srt,
 )
-from .state import MemorylessTranslationState, PipelineState, Stage
 from .translation import (
     MANIFEST_VERSION,
     TranslateBatch,
@@ -64,6 +56,9 @@ StageUpdate = Mapping[str, Any]
 PreprocessSubtitle = Callable[[Path, Path], Path]
 Refine = Callable[[Path, Path, Path, Path], None]
 
+QA_PROGRESS_VERSION = 5
+REPAIR_HISTORY_VERSION = 1
+
 
 @dataclass(frozen=True)
 class WorkflowSettings:
@@ -80,56 +75,9 @@ class WorkflowSettings:
     qa_window_offsets: tuple[int, ...] = (0,)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _require_extension(path: Path, extension: str) -> None:
     if path.suffix.lower() != extension:
         raise ValueError(f"expected a {extension} artifact: {path}")
-
-
-def _require_distinct(input_path: Path, output_path: Path) -> None:
-    if input_path.resolve() == output_path.resolve():
-        raise ValueError(f"input and output paths must differ: {input_path}")
-
-
-def _atomic_copy(source: Path, destination: Path) -> None:
-    _require_distinct(source, destination)
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with source.open("rb") as source_handle, os.fdopen(
-            fd, "wb"
-        ) as destination_handle:
-            shutil.copyfileobj(source_handle, destination_handle)
-            destination_handle.flush()
-            os.fsync(destination_handle.fileno())
-        os.replace(temporary_path, destination)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 def _load_qa_progress(
@@ -161,8 +109,8 @@ def _load_qa_progress(
     }
     if type(payload) is not dict or set(payload) != expected:
         raise ValueError("QA progress has invalid fields")
-    if payload["version"] != 5:
-        raise ValueError("QA progress version must be 5")
+    if payload["version"] != QA_PROGRESS_VERSION:
+        raise ValueError(f"QA progress version must be {QA_PROGRESS_VERSION}")
     if payload["artifact_path"] != str(artifact_path):
         raise ValueError("QA progress artifact_path does not match")
     if payload["artifact_hash"] != artifact_hash:
@@ -205,13 +153,12 @@ def _load_qa_memory(state: PipelineState) -> tuple[AgentQAMemory, str]:
     memory_path = Path(memory_path_value)
     if not memory_path.is_file():
         raise FileNotFoundError(f"QA memory checkpoint not found: {memory_path}")
-    memory_hash = _sha256(memory_path)
+    memory_hash = sha256_file(memory_path)
     if memory_hash != state["memory_hash"]:
         raise ValueError("QA memory checkpoint hash does not match pipeline state")
-    payload = yaml.safe_load(memory_path.read_text(encoding="utf-8"))
-    if not validate_memory_structure(payload):
-        raise ValueError(f"Invalid QA memory checkpoint: {memory_path}")
-    memory = GlobalMemory.from_dict(payload)
+    memory = load_memory_checkpoint(memory_path)
+    if memory is None:
+        raise FileNotFoundError(f"QA memory checkpoint not found: {memory_path}")
     removed_count, _ = prune_learned_glossary_against_user_glossary(memory)
     if removed_count:
         logger.info(
@@ -228,9 +175,7 @@ def _load_qa_memory(state: PipelineState) -> tuple[AgentQAMemory, str]:
             parsed.append(AgentQATerm(value["eng"], value["zh"]))
         return tuple(parsed)
 
-    def learned_terms(
-        values: list[dict[str, Any]],
-    ) -> tuple[AgentQAGlossaryTerm, ...]:
+    def learned_terms(values: list[dict[str, Any]]) -> tuple[AgentQAGlossaryTerm, ...]:
         parsed: list[AgentQAGlossaryTerm] = []
         for value in values:
             eng = value["eng"]
@@ -277,8 +222,10 @@ def _read_repair_history(path: Path) -> list[AgentRepairHistory]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if type(payload) is not dict or set(payload) != {"version", "entries"}:
         raise ValueError("repair history has invalid fields")
-    if payload["version"] != 1 or type(payload["entries"]) is not list:
-        raise ValueError("repair history must be version 1 with an entries list")
+    if payload["version"] != REPAIR_HISTORY_VERSION or type(payload["entries"]) is not list:
+        raise ValueError(
+            f"repair history must be version {REPAIR_HISTORY_VERSION} with an entries list"
+        )
     entries: list[AgentRepairHistory] = []
     for index, value in enumerate(payload["entries"]):
         if type(value) is not dict or set(value) != {"attempt", "id", "before", "after"}:
@@ -288,10 +235,10 @@ def _read_repair_history(path: Path) -> list[AgentRepairHistory]:
 
 
 def _write_repair_history(path: Path, entries: list[AgentRepairHistory]) -> None:
-    _atomic_json(
+    atomic_write_json(
         path,
         {
-            "version": 1,
+            "version": REPAIR_HISTORY_VERSION,
             "entries": [
                 {
                     "attempt": entry.attempt,
@@ -319,8 +266,8 @@ def _reconstruct_repair_history(run_dir: Path, attempt: int) -> list[AgentRepair
             raise ValueError(
                 f"cannot reconstruct QA repair history for attempt {repair_attempt}"
             )
-        _, before_lines = parse_ass_file(str(before_path))
-        _, after_lines = parse_ass_file(str(after_path))
+        _, before_lines = parse_ass_file(before_path)
+        _, after_lines = parse_ass_file(after_path)
         before_pairs = build_pairs_from_ass_lines(before_lines)
         after_pairs = build_pairs_from_ass_lines(after_lines)
         if len(before_pairs) != len(after_pairs):
@@ -330,62 +277,9 @@ def _reconstruct_repair_history(run_dir: Path, attempt: int) -> list[AgentRepair
                 raise ValueError("QA repair history artifacts have different pair ids")
             if before.chinese != after.chinese:
                 entries.append(
-                    AgentRepairHistory(
-                        repair_attempt,
-                        before.id,
-                        before.chinese,
-                        after.chinese,
-                    )
+                    AgentRepairHistory(repair_attempt, before.id, before.chinese, after.chinese)
                 )
     return entries
-
-
-def _load_refine_progress(
-    progress_path: Path, output_path: Path, checkpoint_path: Path
-) -> tuple[int, str, str]:
-    with progress_path.open(encoding="utf-8") as handle:
-        value = json.load(handle)
-
-    expected_fields = {
-        "version",
-        "next_pair",
-        "artifact_path",
-        "artifact_hash",
-        "memory_checkpoint_path",
-        "memory_hash",
-    }
-    if type(value) is not dict:
-        raise ValueError("refine progress must be a JSON object")
-    fields = set(value)
-    if fields != expected_fields:
-        missing = sorted(expected_fields - fields)
-        unknown = sorted(fields - expected_fields)
-        details: list[str] = []
-        if missing:
-            details.append(f"missing fields: {', '.join(missing)}")
-        if unknown:
-            details.append(f"unknown fields: {', '.join(unknown)}")
-        raise ValueError(f"refine progress has invalid fields ({'; '.join(details)})")
-
-    if type(value["version"]) is not int or value["version"] != 1:
-        raise ValueError("refine progress version must be 1")
-    next_pair = value["next_pair"]
-    if type(next_pair) is not int or next_pair < 0:
-        raise ValueError("refine progress next_pair must be a non-negative integer")
-    if value["artifact_path"] != str(output_path):
-        raise ValueError("refine progress artifact_path does not match refined output")
-    if value["memory_checkpoint_path"] != str(checkpoint_path):
-        raise ValueError(
-            "refine progress memory_checkpoint_path does not match memory output"
-        )
-
-    artifact_hash = _sha256(output_path)
-    memory_hash = _sha256(checkpoint_path)
-    if type(value["artifact_hash"]) is not str or value["artifact_hash"] != artifact_hash:
-        raise ValueError("refine progress artifact_hash does not match refined output")
-    if type(value["memory_hash"]) is not str or value["memory_hash"] != memory_hash:
-        raise ValueError("refine progress memory_hash does not match memory output")
-    return next_pair, artifact_hash, memory_hash
 
 
 def _qa_conclusion(path: Path) -> str:
@@ -424,7 +318,7 @@ def build_stage_handlers(
         if state["translation_mode"] == "parallel_initial":
             logger.info("Stage preprocess: cleaning %s", source_path)
             preprocessed_path = run_dir / "preprocessed.en.srt"
-            _require_distinct(source_path, preprocessed_path)
+            require_distinct_paths(source_path, preprocessed_path)
             produced_path = preprocess_subtitle(source_path, preprocessed_path)
             if produced_path != preprocessed_path:
                 raise ValueError(
@@ -432,12 +326,10 @@ def build_stage_handlers(
                 )
             cues = read_srt(preprocessed_path)
             logger.info(
-                "Stage preprocess complete: %d cues -> %s",
-                len(cues),
-                preprocessed_path,
+                "Stage preprocess complete: %d cues -> %s", len(cues), preprocessed_path
             )
             translated_path = run_dir / "translated.zh.srt"
-            _require_distinct(preprocessed_path, translated_path)
+            require_distinct_paths(preprocessed_path, translated_path)
             manifest_path = run_dir / "translation.json"
             save_manifest(
                 TranslationManifest(
@@ -445,9 +337,7 @@ def build_stage_handlers(
                     source_artifact_path=str(preprocessed_path),
                     translated_artifact_path=str(translated_path),
                     units=[
-                        TranslationUnit(
-                            id=cue.index, source=cue.text, translation=None
-                        )
+                        TranslationUnit(id=cue.index, source=cue.text, translation=None)
                         for cue in cues
                     ],
                 ),
@@ -471,8 +361,7 @@ def build_stage_handlers(
     def translate_parallel(state: MemorylessTranslationState) -> StageUpdate:
         logger.info("Stage translate_parallel: starting memoryless initial translation")
         manifest_path = Path(state["translation_manifest_path"])
-        manifest_run_dir = manifest_path.parent
-        translated_path = manifest_run_dir / "translated.zh.srt"
+        translated_path = manifest_path.parent / "translated.zh.srt"
         manifest = translate_manifest(
             manifest_path,
             translate_batch,
@@ -485,7 +374,7 @@ def build_stage_handlers(
             )
 
         source_path = Path(manifest.source_artifact_path)
-        _require_distinct(source_path, translated_path)
+        require_distinct_paths(source_path, translated_path)
         source_cues = read_srt(source_path)
         if len(source_cues) != len(manifest.units):
             raise ValueError("manifest units do not match the source SRT cues")
@@ -495,14 +384,10 @@ def build_stage_handlers(
             zip(source_cues, manifest.units, strict=True), start=1
         ):
             if unit.id != cue.index or unit.source != cue.text:
-                raise ValueError(
-                    f"manifest unit {position} does not match the source SRT cue"
-                )
+                raise ValueError(f"manifest unit {position} does not match the source SRT cue")
             if unit.translation is None:
                 raise ValueError(f"manifest unit {unit.id} has no translation")
-            translated_cues.append(
-                SrtCue(cue.index, cue.start, cue.end, unit.translation)
-            )
+            translated_cues.append(SrtCue(cue.index, cue.start, cue.end, unit.translation))
         write_srt(translated_cues, translated_path)
         logger.info("Stage translate_parallel complete: %s", translated_path)
         return {}
@@ -516,14 +401,11 @@ def build_stage_handlers(
         output_path = run_dir / "merged.ass"
         source_path = Path(manifest.source_artifact_path)
         translated_path = Path(manifest.translated_artifact_path)
-        _require_distinct(source_path, output_path)
-        _require_distinct(translated_path, output_path)
+        require_distinct_paths(source_path, output_path)
+        require_distinct_paths(translated_path, output_path)
         merge_srt_to_ass(source_path, translated_path, output_path)
         logger.info("Stage merge_ass complete: %s", output_path)
-        return {
-            "artifact_path": str(output_path),
-            "artifact_hash": _sha256(output_path),
-        }
+        return {"artifact_path": str(output_path), "artifact_hash": sha256_file(output_path)}
 
     def refine_serial(state: PipelineState) -> StageUpdate:
         input_path = Path(state["artifact_path"])
@@ -531,24 +413,22 @@ def build_stage_handlers(
         checkpoint_path = run_dir / "memory.yaml"
         progress_path = run_dir / "refine-progress.json"
         logger.info("Stage refine_serial: refining %s", input_path)
-        _require_distinct(input_path, output_path)
+        require_distinct_paths(input_path, output_path)
         result = refine(input_path, output_path, checkpoint_path, progress_path)
         if result is not None:
             raise ValueError("refine must return None")
-        next_pair, artifact_hash, memory_hash = _load_refine_progress(
-            progress_path, output_path, checkpoint_path
-        )
+        progress = load_refine_progress(progress_path, output_path, checkpoint_path)
         logger.info(
             "Stage refine_serial complete: %d pairs committed -> %s",
-            next_pair,
+            progress.next_pair,
             output_path,
         )
         return {
             "artifact_path": str(output_path),
-            "artifact_hash": artifact_hash,
+            "artifact_hash": progress.artifact_hash,
             "memory_checkpoint_path": str(checkpoint_path),
-            "memory_hash": memory_hash,
-            "refine_chunk_cursor": next_pair,
+            "memory_hash": progress.memory_hash,
+            "refine_chunk_cursor": progress.next_pair,
         }
 
     def postprocess(state: PipelineState) -> StageUpdate:
@@ -557,10 +437,9 @@ def build_stage_handlers(
         output_name = "postprocessed.ass" if attempt == 0 else f"postprocessed-{attempt:03d}.ass"
         output_path = run_dir / output_name
         logger.info(
-            "Stage postprocess: applying deterministic cleanup (repair attempt %d)",
-            attempt,
+            "Stage postprocess: applying deterministic cleanup (repair attempt %d)", attempt
         )
-        _require_distinct(input_path, output_path)
+        require_distinct_paths(input_path, output_path)
         postprocess_ass(
             input_path,
             output_path,
@@ -568,18 +447,15 @@ def build_stage_handlers(
             settings.episode_replacements,
         )
         logger.info("Stage postprocess complete: %s", output_path)
-        return {
-            "artifact_path": str(output_path),
-            "artifact_hash": _sha256(output_path),
-        }
+        return {"artifact_path": str(output_path), "artifact_hash": sha256_file(output_path)}
 
     def qa(state: PipelineState) -> StageUpdate:
         input_path = Path(state["artifact_path"])
-        if _sha256(input_path) != state["artifact_hash"]:
+        if sha256_file(input_path) != state["artifact_hash"]:
             raise ValueError("QA artifact hash does not match pipeline state")
 
         structural_qa = _qa_conclusion(input_path)
-        header, ass_lines = parse_ass_file(str(input_path))
+        header, ass_lines = parse_ass_file(input_path)
         pairs = build_pairs_from_ass_lines(ass_lines)
         episode_memory, memory_hash = _load_qa_memory(state)
         attempt = state["agent_repair_attempts"]
@@ -588,7 +464,7 @@ def build_stage_handlers(
         if attempt and not repair_history:
             repair_history = _reconstruct_repair_history(run_dir, attempt)
             _write_repair_history(repair_history_path, repair_history)
-        history_hash = _sha256(repair_history_path) if repair_history else ""
+        history_hash = sha256_file(repair_history_path) if repair_history else ""
         windows = [
             (round_index, start, min(start + settings.qa_batch_size, len(pairs)))
             for round_index, offset in enumerate(settings.qa_window_offsets, start=1)
@@ -613,10 +489,7 @@ def build_stage_handlers(
         )
         if next_window > len(windows):
             raise ValueError("QA progress next_window exceeds the window count")
-        repairs = [
-            AgentRepair(repair["id"], repair["translation"])
-            for repair in raw_repairs
-        ]
+        repairs = [AgentRepair(repair["id"], repair["translation"]) for repair in raw_repairs]
         logger.info(
             "Stage qa: auditing %d pairs in %d windows across %d passes; "
             "workers=%d; structural QA=%s; memory=%s",
@@ -650,16 +523,10 @@ def build_stage_handlers(
                         agent_qa,
                         tuple(pairs[start:end]),
                         structural_qa,
-                        tuple(
-                            entry
-                            for entry in repair_history
-                            if start <= entry.id < end
-                        ),
+                        tuple(entry for entry in repair_history if start <= entry.id < end),
                         episode_memory,
                     ): (index, round_index, start, end)
-                    for index, (round_index, start, end) in enumerate(
-                        wave, start=next_window
-                    )
+                    for index, (round_index, start, end) in enumerate(wave, start=next_window)
                 }
                 for future in as_completed(futures):
                     index, round_index, start, end = futures[future]
@@ -684,10 +551,10 @@ def build_stage_handlers(
                 issues.extend(result.issues)
                 repairs.extend(result.repairs)
             next_window += len(wave)
-            _atomic_json(
+            atomic_write_json(
                 qa_progress_path,
                 {
-                    "version": 5,
+                    "version": QA_PROGRESS_VERSION,
                     "artifact_path": str(input_path),
                     "artifact_hash": state["artifact_hash"],
                     "batch_size": settings.qa_batch_size,
@@ -705,8 +572,7 @@ def build_stage_handlers(
                 },
             )
             logger.info(
-                "Stage qa progress: wave committed; %d/%d windows (%.1f%%); "
-                "elapsed=%.1fs",
+                "Stage qa progress: wave committed; %d/%d windows (%.1f%%); elapsed=%.1fs",
                 next_window,
                 len(windows),
                 next_window / len(windows) * 100,
@@ -715,11 +581,11 @@ def build_stage_handlers(
 
         passed = structural_qa == "passed" and agent_passed
         if passed:
-            _atomic_copy(input_path, review_path)
+            atomic_copy(input_path, review_path)
             logger.info("Stage qa passed; review artifact: %s", review_path)
             return {
                 "artifact_path": str(review_path),
-                "artifact_hash": _sha256(review_path),
+                "artifact_hash": sha256_file(review_path),
                 "qa_conclusion": "passed",
                 "qa_passed": True,
                 "qa_repair_applied": False,
@@ -739,15 +605,14 @@ def build_stage_handlers(
             issues.append(
                 f"Overlapping QA windows proposed conflicting repairs for ID {repair_id}."
             )
-        issue_text = "; ".join(issues)
-        conclusion = f"structural={structural_qa}; agent={issue_text}"
+        conclusion = f"structural={structural_qa}; agent={'; '.join(issues)}"
         applicable_repairs = tuple(
             repair
             for repair in repairs_by_id.values()
             if (pair_by_id[repair.id].meta or {}).get("chinese_line_id", -1) >= 0
         )
         if not applicable_repairs or attempt >= settings.agent_max_repair_attempts:
-            _atomic_copy(input_path, review_path)
+            atomic_copy(input_path, review_path)
             logger.warning(
                 "Stage qa requires human review: issues=%d, applicable_repairs=%d; "
                 "review artifact: %s",
@@ -757,7 +622,7 @@ def build_stage_handlers(
             )
             return {
                 "artifact_path": str(review_path),
-                "artifact_hash": _sha256(review_path),
+                "artifact_hash": sha256_file(review_path),
                 "qa_conclusion": conclusion,
                 "qa_passed": False,
                 "qa_repair_applied": False,
@@ -766,17 +631,14 @@ def build_stage_handlers(
         for repair in applicable_repairs:
             repair_history.append(
                 AgentRepairHistory(
-                    attempt + 1,
-                    repair.id,
-                    pair_by_id[repair.id].chinese,
-                    repair.translation,
+                    attempt + 1, repair.id, pair_by_id[repair.id].chinese, repair.translation
                 )
             )
             pair_by_id[repair.id].chinese = repair.translation
         _write_repair_history(repair_history_path, repair_history)
         repaired_path = run_dir / f"qa-repair-{attempt + 1:03d}.ass"
-        updated_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
-        write_ass_file(str(repaired_path), render_ass_file(header, updated_lines))
+        repaired_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
+        write_ass_file(repaired_path, render_ass_file(header, repaired_lines))
         logger.warning(
             "Stage qa found %d issues; applied %d repairs (attempt %d/%d)",
             len(issues),
@@ -786,7 +648,7 @@ def build_stage_handlers(
         )
         return {
             "artifact_path": str(repaired_path),
-            "artifact_hash": _sha256(repaired_path),
+            "artifact_hash": sha256_file(repaired_path),
             "qa_conclusion": conclusion,
             "qa_passed": False,
             "qa_repair_applied": True,
@@ -799,12 +661,9 @@ def build_stage_handlers(
     def release(state: PipelineState) -> StageUpdate:
         source_path = Path(state["artifact_path"])
         logger.info("Stage release: publishing %s -> %s", source_path, release_path)
-        _atomic_copy(source_path, release_path)
+        atomic_copy(source_path, release_path)
         logger.info("Stage release complete: %s", release_path)
-        return {
-            "artifact_path": str(release_path),
-            "artifact_hash": _sha256(release_path),
-        }
+        return {"artifact_path": str(release_path), "artifact_hash": sha256_file(release_path)}
 
     return cast(
         dict[Stage, Callable[[Any], StageUpdate]],

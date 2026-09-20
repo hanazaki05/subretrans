@@ -1,17 +1,13 @@
-"""
-ASS subtitle file parser and generator.
+"""ASS subtitle parsing, bilingual pair matching, and rendering."""
 
-Handles parsing of .ass subtitle files, extracting dialogue lines,
-building subtitle pairs, and generating output .ass files.
-"""
+from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
-import re
-import os
-import tempfile
+from os import PathLike
 
+from .fsutil import atomic_write_text
 from .pairs import SubtitlePair
+
 
 ENGLISH_STYLE_NAMES = {"e3"}
 CHINESE_STYLE_NAMES = {"c3"}
@@ -19,22 +15,10 @@ CHINESE_STYLE_NAMES = {"c3"}
 
 @dataclass
 class AssLine:
-    """
-    Represents a single Dialogue line from an ASS subtitle file.
+    """One ``Dialogue:`` event from the ``[Events]`` section.
 
-    Attributes:
-        id: Sequential index in the Events section
-        raw: Original raw line text (for debugging)
-        layer: Layer field from Dialogue line
-        start: Start timestamp (e.g., "0:00:01.00")
-        end: End timestamp
-        style: Style name (e.g., "English3", "Chinese3")
-        name: Name field
-        margin_l: Left margin
-        margin_r: Right margin
-        margin_v: Vertical margin
-        effect: Effect field
-        text: Text content (may contain ASS tags like {\\i1}, \\N, etc.)
+    ``id`` is the sequential index of the event; ``text`` keeps every ASS
+    override tag (``{\\i1}``, ``\\N``) verbatim.
     """
 
     id: int
@@ -51,31 +35,14 @@ class AssLine:
     text: str
 
 
-def parse_dialogue_line(line: str, line_id: int) -> Optional[AssLine]:
-    """
-    Parse a single Dialogue line from an ASS file.
+def parse_dialogue_line(line: str, line_id: int) -> AssLine | None:
+    """Parse ``Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text``."""
 
-    Format: Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-
-    Args:
-        line: Raw dialogue line from ASS file
-        line_id: Sequential ID for this line
-
-    Returns:
-        AssLine object if parsing succeeds, None otherwise
-    """
     if not line.startswith("Dialogue:"):
         return None
-
-    # Remove "Dialogue: " prefix
-    content = line[9:].strip()
-
-    # Split by comma, but only the first 9 commas (Text field may contain commas)
-    parts = content.split(",", 9)
-
+    parts = line[len("Dialogue:") :].strip().split(",", 9)
     if len(parts) < 10:
         return None
-
     return AssLine(
         id=line_id,
         raw=line,
@@ -88,216 +55,134 @@ def parse_dialogue_line(line: str, line_id: int) -> Optional[AssLine]:
         margin_r=parts[6],
         margin_v=parts[7],
         effect=parts[8],
-        text=parts[9]
+        text=parts[9],
     )
 
 
 def is_english_style(style: str) -> bool:
+    """Whether an ASS style name denotes the English track."""
+
     style_lower = style.strip().lower()
     return "english" in style_lower or style_lower in ENGLISH_STYLE_NAMES
 
 
 def is_chinese_style(style: str) -> bool:
+    """Whether an ASS style name denotes the Chinese track."""
+
     style_lower = style.strip().lower()
     return "chinese" in style_lower or style_lower in CHINESE_STYLE_NAMES
 
 
-def parse_ass_file(file_path: str) -> Tuple[str, List[AssLine]]:
-    """
-    Parse an ASS subtitle file into header and dialogue lines.
+def parse_ass_file(file_path: str | PathLike[str]) -> tuple[str, list[AssLine]]:
+    """Split an ASS file into its header text and parsed dialogue events."""
 
-    Args:
-        file_path: Path to the .ass file
+    with open(file_path, encoding="utf-8-sig") as handle:
+        lines = handle.readlines()
 
-    Returns:
-        Tuple of (header_text, list of AssLine objects)
-        header_text includes everything before the Dialogue lines
-    """
-    with open(file_path, "r", encoding="utf-8-sig") as f:
-        lines = f.readlines()
-
-    header_lines = []
-    dialogue_lines = []
+    header_lines: list[str] = []
+    dialogue_lines: list[AssLine] = []
     in_events = False
     line_id = 0
 
     for line in lines:
         stripped = line.strip()
-
-        # Check if we're in the Events section
         if stripped == "[Events]":
             in_events = True
             header_lines.append(line)
             continue
-
-        # If we're in Events and hit a Dialogue line, parse it
         if in_events and stripped.startswith("Dialogue:"):
             ass_line = parse_dialogue_line(stripped, line_id)
-            if ass_line:
+            if ass_line is not None:
                 dialogue_lines.append(ass_line)
                 line_id += 1
-        else:
-            # Everything else goes to header
-            if not in_events or stripped.startswith("Format:"):
-                header_lines.append(line)
+        elif not in_events or stripped.startswith("Format:"):
+            header_lines.append(line)
 
-    header_text = "".join(header_lines)
-    return header_text, dialogue_lines
+    return "".join(header_lines), dialogue_lines
 
 
-def build_pairs_from_ass_lines(ass_lines: List[AssLine]) -> List[SubtitlePair]:
+def build_pairs_from_ass_lines(ass_lines: list[AssLine]) -> list[SubtitlePair]:
+    """Pair English and Chinese events that share start and end timestamps.
+
+    Pairs are numbered sequentially in timestamp order; a pair needs an
+    English event and may have an empty Chinese side.
     """
-    Build SubtitlePair list from AssLine list by matching English and Chinese lines.
 
-    Matches lines based on:
-    - Same start/end timestamps
-    - One line with an English style, another with a Chinese style
-
-    Args:
-        ass_lines: List of parsed AssLine objects
-
-    Returns:
-        List of SubtitlePair objects
-    """
-    # Group lines by timestamp (start, end)
-    timestamp_groups: Dict[Tuple[str, str], List[AssLine]] = {}
-
+    timestamp_groups: dict[tuple[str, str], list[AssLine]] = {}
     for line in ass_lines:
-        key = (line.start, line.end)
-        if key not in timestamp_groups:
-            timestamp_groups[key] = []
-        timestamp_groups[key].append(line)
+        timestamp_groups.setdefault((line.start, line.end), []).append(line)
 
-    pairs = []
-    pair_id = 0
-
-    # Process each timestamp group
-    for timestamp, group_lines in sorted(timestamp_groups.items()):
-        eng_line = None
-        chinese_line = None
-
-        # Find English and Chinese lines in this group
+    pairs: list[SubtitlePair] = []
+    for _, group_lines in sorted(timestamp_groups.items()):
+        eng_line: AssLine | None = None
+        chinese_line: AssLine | None = None
         for line in group_lines:
             if is_english_style(line.style):
                 eng_line = line
             elif is_chinese_style(line.style):
                 chinese_line = line
-
-        # Create pair if we have at least English (Chinese can be empty for some cases)
-        if eng_line:
-            chinese_text = chinese_line.text if chinese_line else ""
-            eng_text = eng_line.text
-
-            # Store metadata for later reconstruction
-            meta = {
-                "start": eng_line.start,
-                "end": eng_line.end,
-                "style_eng": eng_line.style,
-                "style_chinese": chinese_line.style if chinese_line else "",
-                "layer": eng_line.layer,
-                "name": eng_line.name,
-                "margin_l": eng_line.margin_l,
-                "margin_r": eng_line.margin_r,
-                "margin_v": eng_line.margin_v,
-                "effect": eng_line.effect,
-                "eng_line_id": eng_line.id,
-                "chinese_line_id": chinese_line.id if chinese_line else -1
-            }
-
-            pair = SubtitlePair(
-                id=pair_id,
-                eng=eng_text,
-                chinese=chinese_text,
-                meta=meta
+        if eng_line is None:
+            continue
+        pairs.append(
+            SubtitlePair(
+                id=len(pairs),
+                eng=eng_line.text,
+                chinese=chinese_line.text if chinese_line else "",
+                meta={
+                    "start": eng_line.start,
+                    "end": eng_line.end,
+                    "style_eng": eng_line.style,
+                    "style_chinese": chinese_line.style if chinese_line else "",
+                    "layer": eng_line.layer,
+                    "name": eng_line.name,
+                    "margin_l": eng_line.margin_l,
+                    "margin_r": eng_line.margin_r,
+                    "margin_v": eng_line.margin_v,
+                    "effect": eng_line.effect,
+                    "eng_line_id": eng_line.id,
+                    "chinese_line_id": chinese_line.id if chinese_line else -1,
+                },
             )
-            pairs.append(pair)
-            pair_id += 1
-
+        )
     return pairs
 
 
-def apply_pairs_to_ass_lines(ass_lines: List[AssLine], pairs: List[SubtitlePair]) -> List[AssLine]:
-    """
-    Apply corrected subtitle pairs back to AssLine list.
+def apply_pairs_to_ass_lines(
+    ass_lines: list[AssLine], pairs: list[SubtitlePair]
+) -> list[AssLine]:
+    """Write corrected pair text back onto the events they were built from."""
 
-    Args:
-        ass_lines: Original list of AssLine objects
-        pairs: List of corrected SubtitlePair objects
-
-    Returns:
-        Updated list of AssLine objects with corrected text
-    """
-    # Create a mapping from line_id to AssLine for fast lookup
     line_map = {line.id: line for line in ass_lines}
-
-    # Apply corrections from pairs
     for pair in pairs:
-        if pair.meta:
-            # Update English line
-            eng_line_id = pair.meta.get("eng_line_id")
-            if eng_line_id is not None and eng_line_id in line_map:
-                line_map[eng_line_id].text = pair.eng
+        if not pair.meta:
+            continue
+        eng_line_id = pair.meta.get("eng_line_id")
+        if eng_line_id is not None and eng_line_id in line_map:
+            line_map[eng_line_id].text = pair.eng
+        chinese_line_id = pair.meta.get("chinese_line_id")
+        if (
+            chinese_line_id is not None
+            and chinese_line_id >= 0
+            and chinese_line_id in line_map
+        ):
+            line_map[chinese_line_id].text = pair.chinese
+    return sorted(line_map.values(), key=lambda line: line.id)
 
-            # Update Chinese line
-            chinese_line_id = pair.meta.get("chinese_line_id")
-            if chinese_line_id is not None and chinese_line_id >= 0 and chinese_line_id in line_map:
-                line_map[chinese_line_id].text = pair.chinese
 
-    # Return sorted by original ID
-    return sorted(line_map.values(), key=lambda x: x.id)
+def render_ass_file(header: str, ass_lines: list[AssLine]) -> str:
+    """Render the header followed by every dialogue event."""
 
-
-def render_ass_file(header: str, ass_lines: List[AssLine]) -> str:
-    """
-    Render ASS file content from header and dialogue lines.
-
-    Args:
-        header: Header text (everything before Dialogue lines)
-        ass_lines: List of AssLine objects
-
-    Returns:
-        Complete ASS file content as string
-    """
-    lines = [header]
-
-    # Add dialogue lines
+    rendered = [header]
     for line in ass_lines:
-        dialogue = (
+        rendered.append(
             f"Dialogue: {line.layer},{line.start},{line.end},{line.style},"
             f"{line.name},{line.margin_l},{line.margin_r},{line.margin_v},"
             f"{line.effect},{line.text}\n"
         )
-        lines.append(dialogue)
-
-    return "".join(lines)
+    return "".join(rendered)
 
 
-def write_ass_file(file_path: str, content: str) -> None:
-    """
-    Write ASS file content to disk.
+def write_ass_file(file_path: str | PathLike[str], content: str) -> None:
+    """Atomically write ASS content with a UTF-8 BOM."""
 
-    Args:
-        file_path: Output file path
-        content: Complete ASS file content
-    """
-    # Atomic write to avoid corrupting output on crashes/interruption:
-    # write to a temp file in the same directory, then replace.
-    output_dir = os.path.dirname(os.path.abspath(file_path)) or "."
-    base_name = os.path.basename(file_path)
-    fd, tmp_path = tempfile.mkstemp(prefix=f".{base_name}.tmp.", dir=output_dir)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
-            f.write(content)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                # Some filesystems may not support fsync; atomic replace still prevents truncation.
-                pass
-        os.replace(tmp_path, file_path)
-    finally:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
+    atomic_write_text(file_path, content, encoding="utf-8-sig")
