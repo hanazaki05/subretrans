@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.0] - 2026-09-20
+
+### Added
+- **Agentic subtitle pipeline** with persistent LangGraph/SQLite execution and an explicit human-review gate.
+- Two translation modes:
+  - `parallel_initial`: memoryless, bounded-concurrency first-pass translation followed by serial proofreading.
+  - `serial_memory`: direct serial translation/proofreading of an existing ASS file.
+- Incremental episode story memory for serial proofreading, with run-scoped checkpoints, artifact hashes, and resumable progress manifests.
+- Provider selection for OpenAI Responses, Anthropic Messages, Google Gemini, and legacy OpenAI-compatible chat APIs.
+- A pinned wrapper around Subtitle Edit's headless `seconv` project for source preprocessing and UTF-8 SRT generation.
+- Strict translation manifests, SRT-to-ASS merging, structural subtitle QA, and CLI commands for running or approving pipeline jobs.
+
+### Changed
+- Split subtitle postprocessing into generic normalization and ordered show/episode-specific replacements configured through `pipeline.episode_replacements`.
+- Removed the separate `experiment/` layer; the production package now contains the unified workflow implementation.
+- Serial refinement now commits subtitle output before its matching memory/progress checkpoint so resumed story memory cannot advance beyond the saved artifact.
+
 ## [0.0.10] - 2026-01-03
 
 ### Fixed
