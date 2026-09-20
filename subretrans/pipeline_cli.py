@@ -12,13 +12,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
-import yaml
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .ass_parser import build_pairs_from_ass_lines, parse_ass_file
 from .cli import file_sha256, process_subtitles
 from .config import load_config_sdk
+from .model_agent import build_agent_qa
 from .model_translation import build_model_translate_batch
 from .pipeline import build_pipeline
 from .stage_handlers import WorkflowSettings, build_stage_handlers
@@ -28,8 +28,8 @@ from .translation import TranslateBatch, TranslationBatch
 from .workflow_config import (
     PipelineSettings,
     load_pipeline_settings,
+    load_role_model_settings,
     load_subtitle_edit_settings,
-    load_translation_model_settings,
 )
 
 
@@ -80,15 +80,11 @@ def _load_run_metadata(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _configured_model_name(config_path: Path, mode: TranslationMode) -> str:
-    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("configuration root must be a mapping")
-    section_name = "translation_model" if mode == "parallel_initial" else "main_model"
-    section = payload.get(section_name)
-    if not isinstance(section, dict) or not isinstance(section.get("name"), str):
-        raise ValueError(f"{section_name}.name must be configured")
-    return section["name"]
+def _configured_model_versions(config_path: Path) -> dict[str, str]:
+    return {
+        role: load_role_model_settings(config_path, role).model
+        for role in ("primer", "refine", "extraction", "agent")
+    }
 
 
 def _lazy_translate_batch(
@@ -102,7 +98,7 @@ def _lazy_translate_batch(
         if translator is None:
             with lock:
                 if translator is None:
-                    model = load_translation_model_settings(config_path)
+                    model = load_role_model_settings(config_path, "primer")
                     translator = build_model_translate_batch(
                         model.config,
                         source_language=settings.source_language,
@@ -160,11 +156,17 @@ def _refine_callable(config_path: Path):
 
         config = load_config_sdk(yaml_file_path=str(config_path))
         config.per_block_update = True
+        if config.refine.protocol.value == "openai-responses":
+            api_mode = "response"
+        elif config.refine.protocol.value == "openai-chat-compatible":
+            api_mode = "chat-completion"
+        else:
+            raise ValueError("refine API must use an OpenAI protocol")
         success = process_subtitles(
             str(processing_input),
             str(output_path),
             config,
-            api_mode=config.api_mode,
+            api_mode=api_mode,
             use_stream=config.use_stream,
             resume_index=resume_index or None,
             enable_checkpoint=True,
@@ -197,11 +199,13 @@ def _handlers(
             release_path=release_path,
             batch_size=pipeline_settings.batch_size,
             max_workers=pipeline_settings.max_workers,
+            agent_max_repair_attempts=pipeline_settings.agent_max_repair_attempts,
             episode_replacements=pipeline_settings.episode_replacements,
         ),
         preprocess_subtitle=_subtitle_preprocessor(config_path),
         translate_batch=_lazy_translate_batch(config_path, pipeline_settings),
         refine=_refine_callable(config_path),
+        agent_qa=build_agent_qa(load_role_model_settings(config_path, "agent")),
     )
 
 
@@ -240,9 +244,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "refine_chunk_cursor": 0,
         "memory_checkpoint_path": None,
         "memory_hash": "",
-        "model_version": _configured_model_name(config_path, mode),
+        "model_versions": _configured_model_versions(config_path),
         "prompt_version": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "qa_conclusion": "pending",
+        "qa_passed": False,
+        "qa_repair_applied": False,
+        "agent_repair_attempts": 0,
     }
     graph_config = {"configurable": {"thread_id": thread_id}}
     with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:

@@ -33,6 +33,9 @@ class ModelConfig:
     base_url: str | None
     timeout: float | None
     max_retries: int = 0
+    max_output_tokens: int | None = None
+    reasoning_effort: str | None = None
+    temperature: float | None = None
 
 
 def build_chat_model(
@@ -48,21 +51,41 @@ def build_chat_model(
     }
 
     if config.protocol is ModelProtocol.OPENAI_RESPONSES:
+        if config.max_output_tokens is not None:
+            common_args["max_tokens"] = config.max_output_tokens
+        if config.reasoning_effort is not None:
+            common_args["reasoning_effort"] = config.reasoning_effort
+        if config.temperature is not None:
+            common_args["temperature"] = config.temperature
         if config.base_url is not None:
             common_args["base_url"] = config.base_url
         return ChatOpenAI(**common_args, use_responses_api=True)
 
     if config.protocol is ModelProtocol.ANTHROPIC_MESSAGES:
+        if config.max_output_tokens is not None:
+            common_args["max_tokens"] = config.max_output_tokens
+        if config.temperature is not None:
+            common_args["temperature"] = config.temperature
         if config.base_url is not None:
             common_args["base_url"] = config.base_url
         return ChatAnthropic(**common_args)
 
     if config.protocol is ModelProtocol.GOOGLE_GEMINI:
+        if config.max_output_tokens is not None:
+            common_args["max_output_tokens"] = config.max_output_tokens
+        if config.temperature is not None:
+            common_args["temperature"] = config.temperature
         if config.base_url is not None:
-            raise ValueError("google-gemini does not accept a custom base_url")
+            common_args["base_url"] = config.base_url
         return ChatGoogleGenerativeAI(**common_args)
 
     if config.protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE:
+        if config.max_output_tokens is not None:
+            common_args["max_tokens"] = config.max_output_tokens
+        if config.reasoning_effort is not None:
+            common_args["reasoning_effort"] = config.reasoning_effort
+        if config.temperature is not None:
+            common_args["temperature"] = config.temperature
         if config.base_url is not None:
             common_args["base_url"] = config.base_url
         return ChatOpenAI(**common_args, use_responses_api=False)

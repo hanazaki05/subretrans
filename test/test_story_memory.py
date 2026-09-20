@@ -77,8 +77,8 @@ Return JSON.
 def test_incremental_update_merges_glossary_and_replaces_story(monkeypatch) -> None:
     calls = []
 
-    def fake_call(messages, config, **kwargs):
-        calls.append((messages, config, kwargs))
+    def fake_call(messages, config, model_settings):
+        calls.append((messages, config, model_settings))
         return (
             json.dumps(
                 {
@@ -99,10 +99,10 @@ def test_incremental_update_merges_glossary_and_replaces_story(monkeypatch) -> N
             None,
         )
 
-    monkeypatch.setattr("subretrans.llm.call_openai_api_sdk", fake_call)
+    monkeypatch.setattr("subretrans.llm.call_role_api_sdk", fake_call)
     config = SimpleNamespace(
         terminology_min_confidence=0.6,
-        terminology_model=SimpleNamespace(name="memory-model"),
+        extraction=SimpleNamespace(model="memory-model"),
         glossary_policy="lock",
         glossary_max_entries=100,
         verbose=False,

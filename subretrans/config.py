@@ -1,115 +1,198 @@
-"""
-Configuration module for OpenAI SDK-based subtitle refinement.
+"""Configuration loading for subtitle model roles and runtime settings."""
 
-Loads configuration from YAML file and provides configuration compatible with
-the main project's structure.
-"""
-
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
 import yaml
+
+from .providers import ModelConfig, ModelProtocol
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
+API_ROLES = ("primer", "refine", "extraction", "agent")
+ROLE_FIELDS = {
+    "protocol",
+    "model",
+    "key_file",
+    "base_url",
+    "timeout",
+    "max_retries",
+    "max_output_tokens",
+    "reasoning_effort",
+    "temperature",
+}
 
 
-def load_api_key_from_file(key_file_path: str = None) -> str:
-    """
-    Load API key from key file.
+def load_api_key_from_file(key_file_path: str | Path) -> str:
+    """Read a non-empty API key from ``key_file_path``."""
 
-    Args:
-        key_file_path: Path to key file (defaults to key in the repository root)
-
-    Returns:
-        API key string
-
-    Raises:
-        FileNotFoundError: If key file doesn't exist
-        ValueError: If key file is empty or invalid
-    """
-    if key_file_path is None:
-        key_file_path = str(REPOSITORY_ROOT / "key")
-
-    if not os.path.exists(key_file_path):
-        raise FileNotFoundError(f"Key file not found: {key_file_path}")
-
-    with open(key_file_path, "r", encoding="utf-8") as f:
-        api_key = f.read().strip()
-
+    path = Path(key_file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Key file not found: {path}")
+    api_key = path.read_text(encoding="utf-8").strip()
     if not api_key:
-        raise ValueError("Key file is empty")
-
+        raise ValueError(f"API key file must not be empty: {path}")
     return api_key
 
 
-def load_yaml_config(yaml_file_path: str = None) -> dict:
-    """
-    Load configuration from YAML file.
+def load_yaml_config(yaml_file_path: str | Path | None = None) -> dict[str, Any]:
+    """Load a YAML configuration mapping."""
 
-    Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
+    path = Path(yaml_file_path or REPOSITORY_ROOT / "config.yaml").resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("configuration root must be a mapping")
+    return payload
 
-    Returns:
-        Configuration dictionary
 
-    Raises:
-        FileNotFoundError: If YAML file doesn't exist
-        yaml.YAMLError: If YAML file is invalid
-    """
-    if yaml_file_path is None:
-        yaml_file_path = str(REPOSITORY_ROOT / "config.yaml")
-
-    if not os.path.exists(yaml_file_path):
-        raise FileNotFoundError(f"Config file not found: {yaml_file_path}")
-
-    with open(yaml_file_path, "r", encoding="utf-8") as f:
-        config_data = yaml.safe_load(f)
-
-    return config_data
+def _nonempty_string(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value.strip()
 
 
 @dataclass
-class MainModelSettings:
-    """Primary refinement model configuration."""
+class RoleModelSettings:
+    """Complete provider and generation settings for one model role."""
 
-    name: str = "gpt-5-mini"
-    max_output_tokens: int = 12000
-    reasoning_effort: str = "medium"
-    temperature: float = 1.0
-    key_file: Optional[str] = None  # Optional per-model API key file override
-    base_url: Optional[str] = None  # Optional per-model base URL override
+    protocol: ModelProtocol
+    model: str
+    key_file: Path
+    base_url: str | None
+    timeout: float | None
+    max_retries: int
+    max_output_tokens: int
+    reasoning_effort: str | None
+    temperature: float | None
+
+    @property
+    def config(self) -> ModelConfig:
+        """Build the provider-neutral model configuration for this role."""
+
+        return ModelConfig(
+            protocol=self.protocol,
+            model=self.model,
+            api_key=load_api_key_from_file(self.key_file),
+            base_url=self.base_url,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+            max_output_tokens=self.max_output_tokens,
+            reasoning_effort=self.reasoning_effort,
+            temperature=self.temperature,
+        )
 
 
-@dataclass
-class TerminologyModelSettings:
-    """Dedicated terminology extractor model configuration."""
+def _load_role_settings(
+    section: Any, role: str, yaml_dir: Path
+) -> RoleModelSettings:
+    field_prefix = f"api.{role}"
+    if not isinstance(section, dict):
+        raise ValueError(f"{field_prefix} must be a mapping")
+    unknown = set(section) - ROLE_FIELDS
+    if unknown:
+        raise ValueError(
+            f"{field_prefix} has unknown fields: {', '.join(sorted(unknown))}"
+        )
+    missing = ROLE_FIELDS - set(section)
+    if missing:
+        raise ValueError(
+            f"{field_prefix} has missing fields: {', '.join(sorted(missing))}"
+        )
 
-    name: str = "gpt-4o-mini"
-    max_output_tokens: int = 1800
-    temperature: float = 0.5
-    key_file: Optional[str] = None  # Optional per-model API key file override
-    base_url: Optional[str] = None  # Optional per-model base URL override
+    protocol_name = _nonempty_string(section["protocol"], f"{field_prefix}.protocol")
+    try:
+        protocol = ModelProtocol(protocol_name)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_prefix}.protocol is unsupported: {protocol_name}"
+        ) from exc
+
+    key_file = Path(_nonempty_string(section["key_file"], f"{field_prefix}.key_file"))
+    if not key_file.is_absolute():
+        key_file = yaml_dir / key_file
+    key_file = key_file.resolve()
+
+    base_url = section["base_url"]
+    if base_url is not None:
+        base_url = _nonempty_string(base_url, f"{field_prefix}.base_url")
+
+    timeout = section["timeout"]
+    if timeout is not None:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError(f"{field_prefix}.timeout must be a positive number or null")
+        timeout = float(timeout)
+
+    max_retries = section["max_retries"]
+    if type(max_retries) is not int or max_retries < 0:
+        raise ValueError(f"{field_prefix}.max_retries must be a non-negative integer")
+
+    max_output_tokens = section["max_output_tokens"]
+    if type(max_output_tokens) is not int or max_output_tokens <= 0:
+        raise ValueError(f"{field_prefix}.max_output_tokens must be a positive integer")
+
+    reasoning_effort = section["reasoning_effort"]
+    if reasoning_effort is not None:
+        reasoning_effort = _nonempty_string(
+            reasoning_effort, f"{field_prefix}.reasoning_effort"
+        )
+
+    temperature = section["temperature"]
+    if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise ValueError(f"{field_prefix}.temperature must be a number or null")
+        temperature = float(temperature)
+
+    settings = RoleModelSettings(
+        protocol=protocol,
+        model=_nonempty_string(section["model"], f"{field_prefix}.model"),
+        key_file=key_file,
+        base_url=base_url,
+        timeout=timeout,
+        max_retries=max_retries,
+        max_output_tokens=max_output_tokens,
+        reasoning_effort=reasoning_effort,
+        temperature=temperature,
+    )
+    load_api_key_from_file(key_file)
+    return settings
+
+
+def load_api_roles(
+    yaml_file_path: str | Path | None = None,
+) -> dict[str, RoleModelSettings]:
+    """Load the exact four model roles under the top-level ``api`` mapping."""
+
+    path = Path(yaml_file_path or REPOSITORY_ROOT / "config.yaml").resolve()
+    payload = load_yaml_config(path)
+    api = payload.get("api")
+    if not isinstance(api, dict):
+        raise ValueError("api must be a mapping")
+    unknown = set(api) - set(API_ROLES)
+    if unknown:
+        raise ValueError(f"api has unknown roles: {', '.join(sorted(unknown))}")
+    missing = set(API_ROLES) - set(api)
+    if missing:
+        raise ValueError(f"api has missing roles: {', '.join(sorted(missing))}")
+    return {
+        role: _load_role_settings(api[role], role, path.parent) for role in API_ROLES
+    }
 
 
 @dataclass
 class ConfigSDK:
-    """
-    Configuration class for OpenAI SDK-based subtitle refinement.
+    """Runtime configuration with explicit model settings for every role."""
 
-    Compatible with the main project's Config structure but uses
-    OpenAI SDK instead of direct HTTP requests.
-    """
-
-    api_key: str = ""
-    api_base_url: str = "https://api.openai.com/v1"
+    primer: RoleModelSettings
+    refine: RoleModelSettings
+    extraction: RoleModelSettings
+    agent: RoleModelSettings
     max_context_tokens: int = 128000
     memory_token_limit: int = 4000
     chunk_token_soft_limit: int = 60000
     pairs_per_chunk: Optional[int] = None
-    api_timeout: int = 280
-    api_mode: str = "chat-completion"  # "chat-completion" or "response"
     use_stream: bool = True
     per_block_update: bool = True
     verbose: bool = False
@@ -124,129 +207,50 @@ class ConfigSDK:
     glossary_policy: str = "lock"
     user_prompt_path: str = "custom_main_prompt.md"
     terminology_min_confidence: float = 0.6
-    main_model: MainModelSettings = field(default_factory=MainModelSettings)
-    terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
     intermediate_format: str = "json"
 
-    @property
-    def incremental_output(self) -> bool:
-        """
-        Backward-compatible alias for `per_block_update`.
-
-        Deprecated: use `per_block_update`.
-        """
-        return self.per_block_update
-
-    @incremental_output.setter
-    def incremental_output(self, value: bool) -> None:
-        self.per_block_update = bool(value)
-
-    @property
-    def use_streaming(self) -> bool:
-        """Backward-compatible alias for `use_stream`."""
-        return self.use_stream
-
-    @use_streaming.setter
-    def use_streaming(self, value: bool) -> None:
-        self.use_stream = bool(value)
-
-    def __post_init__(self):
-        """Load API key from key file if not set and validate format."""
-        if not self.api_key:
-            try:
-                self.api_key = load_api_key_from_file()
-                print(f"Loaded API key from key file: {self.api_key[:20]}...")
-            except Exception as e:
-                raise ValueError(f"Failed to load API key from key file: {str(e)}")
-
-        valid_formats = ["json", "xml-pair", "pseudo-toml"]
+    def __post_init__(self) -> None:
+        valid_formats = {"json", "xml-pair", "pseudo-toml"}
         if self.intermediate_format.lower() not in valid_formats:
-            raise ValueError(f"Invalid intermediate format: {self.intermediate_format}. "
-                           f"Valid formats: {', '.join(valid_formats)}")
-
-        valid_api_modes = ["chat-completion", "response"]
-        if self.api_mode.lower() not in valid_api_modes:
-            raise ValueError(f"Invalid api_mode: {self.api_mode}. "
-                           f"Valid modes: {', '.join(valid_api_modes)}")
-
-    @property
-    def model_name(self) -> str:
-        """Backward-compatible alias for the main model name."""
-        return self.main_model.name
-
-    @property
-    def terminology_model_name(self) -> str:
-        """Backward-compatible alias for the terminology model name."""
-        return self.terminology_model.name
+            raise ValueError(
+                f"Invalid intermediate format: {self.intermediate_format}. "
+                f"Valid formats: {', '.join(sorted(valid_formats))}"
+            )
 
 
-def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
-    """
-    Load configuration from YAML file.
+def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK:
+    """Load complete application configuration from YAML."""
 
-    Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
+    payload = load_yaml_config(yaml_file_path)
+    deprecated_sections = {
+        "main_model",
+        "terminology_model",
+        "translation_model",
+    }.intersection(payload)
+    if deprecated_sections:
+        raise ValueError(
+            "deprecated model sections are not supported: "
+            + ", ".join(sorted(deprecated_sections))
+        )
+    roles = load_api_roles(yaml_file_path)
+    token_settings = payload.get("tokens", {})
+    chunking_settings = payload.get("chunking", {})
+    pricing_settings = payload.get("pricing", {})
+    glossary_settings = payload.get("glossary", {})
+    user_settings = payload.get("user", {})
+    runtime_settings = payload.get("runtime", {})
+    if "api_mode" in runtime_settings:
+        raise ValueError("runtime.api_mode is not supported; configure api.<role>.protocol")
+    format_settings = payload.get("format", {})
 
-    Returns:
-        ConfigSDK object with settings from YAML file
-    """
-    config_data = load_yaml_config(yaml_file_path)
-
-    # Extract values from YAML structure
-    api_settings = config_data.get("api", {})
-    main_model_settings = config_data.get("main_model", {})
-    terminology_model_settings = config_data.get("terminology_model", {})
-    token_settings = config_data.get("tokens", {})
-    chunking_settings = config_data.get("chunking", {})
-    pricing_settings = config_data.get("pricing", {})
-    glossary_settings = config_data.get("glossary", {})
-    user_settings = config_data.get("user", {})
-    runtime_settings = config_data.get("runtime", {})
-    format_settings = config_data.get("format", {})
-
-    # Resolve key file path relative to YAML config file
-    key_file_path = api_settings.get("key_file")
-    if key_file_path:
-        # Determine YAML directory
-        if yaml_file_path:
-            yaml_dir = os.path.dirname(os.path.abspath(yaml_file_path))
-        else:
-            yaml_dir = str(REPOSITORY_ROOT)
-
-        # Resolve key file path relative to YAML directory
-        key_file_path = os.path.join(yaml_dir, key_file_path)
-        api_key = load_api_key_from_file(key_file_path)
-    else:
-        api_key = load_api_key_from_file()  # Use default location
-
-    # Create model settings
-    main_model = MainModelSettings(
-        name=main_model_settings.get("name", "gpt-5-mini"),
-        max_output_tokens=main_model_settings.get("max_output_tokens", 12000),
-        reasoning_effort=main_model_settings.get("reasoning_effort", "medium"),
-        temperature=main_model_settings.get("temperature", 1.0),
-        key_file=main_model_settings.get("key_file"),
-        base_url=main_model_settings.get("base_url"),
+    per_block_update = runtime_settings.get(
+        "per_block_update", runtime_settings.get("incremental_output", True)
     )
-
-    terminology_model = TerminologyModelSettings(
-        name=terminology_model_settings.get("name", "gpt-4o-mini"),
-        max_output_tokens=terminology_model_settings.get("max_output_tokens", 1800),
-        temperature=terminology_model_settings.get("temperature", 0.5),
-        key_file=terminology_model_settings.get("key_file"),
-        base_url=terminology_model_settings.get("base_url"),
-    )
-
-    # Create config object
-    per_block_update = runtime_settings.get("per_block_update")
-    if per_block_update is None:
-        # Backward compatibility
-        per_block_update = runtime_settings.get("incremental_output", True)
-
-    config = ConfigSDK(
-        api_key=api_key,
-        api_base_url=api_settings.get("base_url", "https://api.openai.com/v1"),
-        api_timeout=api_settings.get("timeout", 280),
+    return ConfigSDK(
+        primer=roles["primer"],
+        refine=roles["refine"],
+        extraction=roles["extraction"],
+        agent=roles["agent"],
         max_context_tokens=token_settings.get("max_context_tokens", 128000),
         memory_token_limit=token_settings.get("memory_token_limit", 4000),
         chunk_token_soft_limit=token_settings.get("chunk_token_soft_limit", 60000),
@@ -255,10 +259,13 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         price_per_1k_completion_tokens=pricing_settings.get("completion_tokens", 0.06),
         glossary_max_entries=glossary_settings.get("max_entries", 100),
         glossary_policy=glossary_settings.get("policy", "lock"),
-        terminology_min_confidence=glossary_settings.get("terminology_min_confidence", 0.6),
+        terminology_min_confidence=glossary_settings.get(
+            "terminology_min_confidence", 0.6
+        ),
         user_prompt_path=user_settings.get("prompt_path", "custom_main_prompt.md"),
-        api_mode=runtime_settings.get("api_mode", "chat-completion"),
-        use_stream=runtime_settings.get("use_stream", runtime_settings.get("use_streaming", True)),
+        use_stream=runtime_settings.get(
+            "use_stream", runtime_settings.get("use_streaming", True)
+        ),
         per_block_update=per_block_update,
         verbose=runtime_settings.get("verbose", False),
         very_verbose=runtime_settings.get("very_verbose", False),
@@ -266,24 +273,15 @@ def load_config_from_yaml(yaml_file_path: str = None) -> ConfigSDK:
         stats_interval=runtime_settings.get("stats_interval", 1.0),
         dry_run=runtime_settings.get("dry_run", False),
         max_chunks=runtime_settings.get("max_chunks"),
-        main_model=main_model,
-        terminology_model=terminology_model,
         intermediate_format=format_settings.get("intermediate_format", "json"),
     )
 
-    # Skip __post_init__ API key loading since we already loaded it
-    config.api_key = api_key
-
-    return config
-
 
 def load_config_sdk(
-    yaml_file_path: str = None,
+    yaml_file_path: str | Path | None = None,
     model_name: Optional[str] = None,
-    terminology_model: Optional[str] = None,
-    api_mode: Optional[str] = None,
     use_stream: Optional[bool] = None,
-    use_streaming: Optional[bool] = None,  # deprecated alias for use_stream
+    use_streaming: Optional[bool] = None,
     per_block_update: Optional[bool] = None,
     incremental_output: Optional[bool] = None,
     dry_run: bool = False,
@@ -298,43 +296,11 @@ def load_config_sdk(
     stats_interval: Optional[float] = None,
     intermediate_format: Optional[str] = None,
 ) -> ConfigSDK:
-    """
-    Load configuration from YAML file with optional overrides.
+    """Load YAML configuration and apply command-line runtime overrides."""
 
-    Args:
-        yaml_file_path: Path to YAML config file (defaults to config.yaml in the repository root)
-        model_name: Override for main refinement model name
-        terminology_model: Override for terminology extraction model name
-        api_mode: Override for API mode (chat-completion or response)
-        use_stream: Override for stream mode (chat-completion only)
-        use_streaming: Deprecated alias for use_stream
-        per_block_update: Override for per-block update mode (write file after each chunk/block)
-        incremental_output: Deprecated alias for per_block_update
-        dry_run: Enable dry run mode
-        max_chunks: Override for maximum chunks to process
-        memory_limit: Override for memory token limit
-        pairs_per_chunk: Override for pairs per chunk
-        reasoning_effort: Override for reasoning effort hint
-        api_timeout: Override for API request timeout
-        verbose: Enable verbose mode
-        very_verbose: Enable very verbose mode
-        debug_prompts: Print system prompt for debugging
-        stats_interval: Stats refresh interval in seconds
-        intermediate_format: Override for intermediate representation format (json, xml-pair, pseudo-toml)
-
-    Returns:
-        ConfigSDK object with specified settings
-    """
-    # Load from YAML first
     config = load_config_from_yaml(yaml_file_path)
-
-    # Apply CLI overrides
     if model_name:
-        config.main_model.name = model_name
-    if terminology_model:
-        config.terminology_model.name = terminology_model
-    if api_mode is not None:
-        config.api_mode = api_mode
+        config.refine.model = model_name
     if use_stream is not None:
         config.use_stream = use_stream
     elif use_streaming is not None:
@@ -342,10 +308,9 @@ def load_config_sdk(
     if per_block_update is not None:
         config.per_block_update = per_block_update
     elif incremental_output is not None:
-        # Backward compatibility
         config.per_block_update = incremental_output
     if dry_run:
-        config.dry_run = dry_run
+        config.dry_run = True
     if max_chunks is not None:
         config.max_chunks = max_chunks
     if memory_limit is not None:
@@ -353,21 +318,20 @@ def load_config_sdk(
     if pairs_per_chunk is not None:
         config.pairs_per_chunk = pairs_per_chunk
     if reasoning_effort is not None:
-        config.main_model.reasoning_effort = reasoning_effort
+        config.refine.reasoning_effort = reasoning_effort
     if api_timeout is not None:
-        config.api_timeout = api_timeout
+        config.refine.timeout = float(api_timeout)
     if verbose:
-        config.verbose = verbose
+        config.verbose = True
     if very_verbose:
-        config.very_verbose = very_verbose
+        config.very_verbose = True
         config.verbose = True
     if debug_prompts:
-        config.debug_prompts = debug_prompts
+        config.debug_prompts = True
         config.very_verbose = True
         config.verbose = True
     if stats_interval is not None:
         config.stats_interval = stats_interval
     if intermediate_format is not None:
         config.intermediate_format = intermediate_format
-
     return config

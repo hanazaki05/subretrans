@@ -29,9 +29,12 @@ class PipelineState(TypedDict):
     refine_chunk_cursor: int
     memory_checkpoint_path: str | None
     memory_hash: str
-    model_version: str
+    model_versions: dict[str, str]
     prompt_version: str
     qa_conclusion: str
+    qa_passed: bool
+    qa_repair_applied: bool
+    agent_repair_attempts: int
 
 
 class MemorylessTranslationState(TypedDict):

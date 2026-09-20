@@ -1,0 +1,21 @@
+{
+  "removeTextForHearingImpaired": {
+    "removeTextBetweenBrackets": true,
+    "removeTextBetweenParentheses": true,
+    "removeTextBetweenCurlyBrackets": true,
+    "removeTextBetweenQuestionMarks": false,
+    "removeTextBetweenCustom": false,
+    "removeTextBetweenCustomBefore": "?",
+    "removeTextBetweenCustomAfter": "?",
+    "removeTextBetweenOnlySeparateLines": false,
+    "removeTextBeforeColon": true,
+    "removeTextBeforeColonOnlyIfUppercase": false,
+    "removeTextBeforeColonOnlyOnSeparateLine": false,
+    "removeInterjections": true,
+    "removeInterjectionsOnlyOnSeparateLine": false,
+    "removeIfContains": false,
+    "removeIfAllUppercase": false,
+    "removeIfContainsText": "",
+    "removeIfOnlyMusicSymbols": false
+  }
+}

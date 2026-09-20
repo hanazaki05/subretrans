@@ -228,7 +228,6 @@ def extract_memory_update_from_chunk(
     previous_story_description: str,
     config: ConfigSDK,
     user_glossary: Optional[List[Dict[str, str]]] = None,
-    max_retries: int = 2
 ) -> Dict[str, Any]:
     """Extract glossary entries and update the episode story description once."""
     if not pairs:
@@ -238,7 +237,7 @@ def extract_memory_update_from_chunk(
         }
 
     # Local import avoids the memory <-> LLM module import cycle.
-    from .llm import call_openai_api_sdk
+    from .llm import call_role_api_sdk
     from .prompts import build_memory_update_system_prompt, MEMORY_UPDATE_USER_TEMPLATE
 
     pairs_json = json.dumps(pairs_to_json_list(pairs), ensure_ascii=False, indent=2)
@@ -264,13 +263,7 @@ def extract_memory_update_from_chunk(
         {"role": "user", "content": user_prompt}
     ]
 
-    response_text, _ = call_openai_api_sdk(
-        messages,
-        config,
-        max_retries=max_retries,
-        model_settings=getattr(config, "terminology_model", None),
-        reasoning_effort=None,
-    )
+    response_text, _ = call_role_api_sdk(messages, config, config.extraction)
     if getattr(config, "very_verbose", False):
         print("\n  [Memory update raw response]:\n")
         print(response_text.rstrip() if response_text else "[Empty response]")

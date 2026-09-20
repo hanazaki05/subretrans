@@ -17,6 +17,7 @@ from typing import Optional
 
 # Import SDK-specific modules
 from .config import load_config_sdk
+from .providers import ModelProtocol
 from .llm import (
     refine_chunk_sdk,
     refine_chunk_sdk_streaming,
@@ -215,14 +216,13 @@ def estimate_base_prompt_tokens(config, global_memory: GlobalMemory) -> int:
     # Build a sample system prompt with current memory (using new template-based approach)
     system_prompt = build_system_prompt(global_memory, config)
 
-    return estimate_tokens(system_prompt, config.main_model.name)
+    return estimate_tokens(system_prompt, config.refine.model)
 
 
 def process_subtitles(
     input_path: str,
     output_path: str,
     config,
-    api_mode: str = "chat-completion",
     use_stream: bool = False,
     resume_index: Optional[int] = None,
     enable_checkpoint: bool = False,
@@ -236,7 +236,6 @@ def process_subtitles(
         input_path: Path to input .ass file
         output_path: Path to output .ass file
         config: ConfigSDK object
-        api_mode: API format - 'chat-completion' or 'response'
         use_stream: Whether to use stream mode (chat-completion only; response always streams)
         resume_index: Optional pair index to resume from (skips pairs before this index)
         enable_checkpoint: Whether to persist episode memory after each chunk
@@ -247,18 +246,20 @@ def process_subtitles(
         True if successful, False otherwise
     """
     try:
-        # Build mode display string
-        if api_mode == "response":
+        protocol = config.refine.protocol
+        if protocol is ModelProtocol.OPENAI_RESPONSES:
             mode_str = "openai response stream"
-        else:
+        elif protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE:
             mode_str = f"openai chat-completion {'stream' if use_stream else 'non-stream'}"
+        else:
+            raise ValueError(f"unsupported refinement protocol: {protocol}")
 
         print(f"\n{'='*60}")
         print(f"SUBTITLE REFINEMENT TOOL (OpenAI SDK)")
         print(f"{'='*60}")
         print(f"Input:     {input_path}")
         print(f"Output:    {output_path}")
-        print(f"Model:     {config.main_model.name}")
+        print(f"Model:     {config.refine.model}")
         print(f"Mode:      {mode_str}")
         print(f"Format:    {config.intermediate_format.upper()}")
         print(f"{'='*60}\n")
@@ -399,7 +400,7 @@ def process_subtitles(
             print(f"  Chunking strategy: Token-based (max ~{config.chunk_token_soft_limit:,} tokens)")
 
         chunks = chunk_pairs(pairs_to_process, config, base_prompt_tokens)
-        print_chunk_statistics(chunks, config.main_model.name)
+        print_chunk_statistics(chunks, config.refine.model)
 
         # Apply max_chunks limit if set
         if config.max_chunks is not None and config.max_chunks < len(chunks):
@@ -448,8 +449,8 @@ def process_subtitles(
                 # Start timing
                 start_time = time.time()
 
-                # Choose API mode and stream mode
-                if api_mode == "response":
+                # Choose the API implementation from the configured role protocol.
+                if protocol is ModelProtocol.OPENAI_RESPONSES:
                     # Response API: always streams
                     if config.debug_prompts:
                         print("\n  LLM Output (real-time):")
@@ -515,7 +516,7 @@ def process_subtitles(
                     print_verbose_preview(response_text, usage.reasoning_tokens)
                     # Only show full response in non-stream mode
                     # (in stream mode, content was already shown in real-time)
-                    if config.very_verbose and not use_stream and api_mode != "response":
+                    if config.very_verbose and not use_stream and protocol is not ModelProtocol.OPENAI_RESPONSES:
                         print("\n  Full API response:\n")
                         print(response_text.rstrip() if response_text else "[Empty response]")
                         print()
@@ -565,7 +566,7 @@ def process_subtitles(
                     )
 
                 # Check if memory needs compression
-                memory_tokens = estimate_memory_tokens(global_memory, config.main_model.name)
+                memory_tokens = estimate_memory_tokens(global_memory, config.refine.model)
                 if memory_tokens > config.memory_token_limit:
                     print(f"  Memory size ({memory_tokens} tokens) exceeds limit. Compressing...")
                     try:
@@ -576,7 +577,7 @@ def process_subtitles(
                         global_memory = compressed_memory
                         total_usage = accumulate_usage(total_usage, compression_usage)
 
-                        new_size = estimate_memory_tokens(global_memory, config.main_model.name)
+                        new_size = estimate_memory_tokens(global_memory, config.refine.model)
                         print(f"  Memory compressed: {memory_tokens} → {new_size} tokens")
 
                         # Save compressed memory to checkpoint (if enabled)
@@ -654,9 +655,6 @@ Examples:
   # Verbose stream mode
   python -m subretrans.cli input.ass output.ass --stream -v
 
-  # Use OpenAI Response API (always streams)
-  python -m subretrans.cli input.ass output.ass --api-mode response
-
   # Fixed pairs per chunk
   python -m subretrans.cli input.ass output.ass --pairs-per-chunk 50
 
@@ -678,7 +676,7 @@ Examples:
   # Enable per-block update explicitly (default behavior)
   python -m subretrans.cli input.ass output.ass --per-block-update
 
-Note: API key is automatically loaded from the repository-root key file
+Note: Model protocols and credentials are selected from config.yaml api roles
 Note: Per-block update is enabled by default for data safety (write after each chunk)
         """
     )
@@ -694,13 +692,6 @@ Note: Per-block update is enabled by default for data safety (write after each c
     parser.add_argument(
         "--config",
         help="YAML configuration path (default: repository config.yaml)",
-    )
-    parser.add_argument(
-        "--api-mode",
-        choices=["chat-completion", "response"],
-        default=None,
-        dest="api_mode",
-        help="API format: 'chat-completion' (default) or 'response' (OpenAI Responses API, always streams)"
     )
     parser.add_argument(
         "--stream",
@@ -837,7 +828,6 @@ Note: Per-block update is enabled by default for data safety (write after each c
         config = load_config_sdk(
             yaml_file_path=args.config,
             model_name=args.model,
-            api_mode=args.api_mode,
             use_stream=args.stream,
             per_block_update=args.per_block_update,
             dry_run=args.dry_run,
@@ -869,7 +859,6 @@ Note: Per-block update is enabled by default for data safety (write after each c
         args.input,
         args.output,
         config,
-        api_mode=config.api_mode,
         use_stream=config.use_stream,
         resume_index=args.resume,
         enable_checkpoint=args.checkpoint or args.checkpoint_path is not None,

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from subretrans.model_agent import AgentQAResult, AgentRepair
 from subretrans.subtitle_processing import read_srt
 from subretrans.stage_handlers import WorkflowSettings, build_stage_handlers
 from subretrans.state import PipelineState
@@ -34,9 +35,17 @@ def state_for(path: Path, mode: str) -> PipelineState:
         "refine_chunk_cursor": 0,
         "memory_checkpoint_path": None,
         "memory_hash": "",
-        "model_version": "test-model",
+        "model_versions": {
+            "primer": "test-primer",
+            "refine": "test-refine",
+            "extraction": "test-extraction",
+            "agent": "test-agent",
+        },
         "prompt_version": "test-prompt",
         "qa_conclusion": "pending",
+        "qa_passed": False,
+        "qa_repair_applied": False,
+        "agent_repair_attempts": 0,
     }
 
 
@@ -69,6 +78,10 @@ def make_refine(*, progress_mutation=None):
     return refine
 
 
+def pass_agent_qa(pairs, structural_qa):
+    return AgentQAResult(True, (), ())
+
+
 def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -> None:
     source = tmp_path / "episode.mkv"
     source.write_bytes(b"fake media")
@@ -99,11 +112,13 @@ def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -
             release_path,
             batch_size=1,
             max_workers=1,
+            agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
         preprocess_subtitle=preprocess_subtitle,
         translate_batch=translate,
         refine=make_refine(),
+        agent_qa=pass_agent_qa,
     )
     state = state_for(source, "parallel_initial")
 
@@ -128,7 +143,7 @@ def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -
         "artifact_hash": state["artifact_hash"],
         "translation_manifest_path": state["translation_manifest_path"],
         "stage": "translate_parallel",
-        "model_version": state["model_version"],
+        "model_version": state["model_versions"]["primer"],
         "prompt_version": state["prompt_version"],
     }
     assert handlers["translate_parallel"](translation_state) == {}
@@ -167,6 +182,7 @@ def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
             release_path,
             batch_size=2,
             max_workers=2,
+            agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
         preprocess_subtitle=lambda input_path, output_path: pytest.fail(
@@ -174,6 +190,7 @@ def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
         ),
         translate_batch=lambda batch: pytest.fail("serial mode translated"),
         refine=make_refine(),
+        agent_qa=pass_agent_qa,
     )
     state = state_for(source, "serial_memory")
 
@@ -212,11 +229,13 @@ def test_refine_rejects_invalid_progress(tmp_path, mutate, match) -> None:
             tmp_path / "release.ass",
             batch_size=1,
             max_workers=1,
+            agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(progress_mutation=mutate),
+        agent_qa=pass_agent_qa,
     )
 
     with pytest.raises(ValueError, match=match):
@@ -232,17 +251,62 @@ def test_qa_failure_reports_counts(tmp_path) -> None:
             tmp_path / "release.ass",
             batch_size=1,
             max_workers=1,
+            agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(),
+        agent_qa=lambda pairs, structural_qa: AgentQAResult(
+            False, ("Missing translation",), ()
+        ),
     )
 
     conclusion = handlers["qa"](state_for(source, "serial_memory"))["qa_conclusion"]
 
-    assert conclusion.startswith("failed: ")
+    assert conclusion.startswith("structural=failed: ")
     assert "empty_chinese_events=1" in conclusion
+
+
+def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> None:
+    source = tmp_path / "wrong.ass"
+    source.write_text(VALID_ASS.replace("你好", "错误"), encoding="utf-8")
+    run_dir = tmp_path / "run"
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            run_dir,
+            tmp_path / "release.ass",
+            batch_size=1,
+            max_workers=1,
+            agent_max_repair_attempts=1,
+            episode_replacements=(),
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=lambda pairs, structural_qa: AgentQAResult(
+            False,
+            ("The Chinese translation is incorrect.",),
+            (AgentRepair(0, "你好"),),
+        ),
+    )
+    state = state_for(source, "serial_memory")
+
+    update = handlers["qa"](state)
+
+    repaired = Path(update["artifact_path"])
+    assert repaired == run_dir / "qa-repair-001.ass"
+    assert "你好" in repaired.read_text(encoding="utf-8-sig")
+    assert "Hello" in repaired.read_text(encoding="utf-8-sig")
+    assert "错误" in source.read_text(encoding="utf-8")
+    assert update["agent_repair_attempts"] == 1
+    assert update["qa_repair_applied"] is True
+
+    exhausted_state = state_for(source, "serial_memory")
+    exhausted_state["agent_repair_attempts"] = 1
+    exhausted = handlers["qa"](exhausted_state)
+    assert exhausted["qa_repair_applied"] is False
+    assert "artifact_path" not in exhausted
 
 
 def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_path) -> None:
@@ -256,6 +320,7 @@ def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_pat
             tmp_path / "release.ass",
             batch_size=1,
             max_workers=1,
+            agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
         preprocess_subtitle=lambda input_path, output_path: pytest.fail(
@@ -263,6 +328,7 @@ def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_pat
         ),
         translate_batch=lambda batch: (),
         refine=make_refine(),
+        agent_qa=pass_agent_qa,
     )
 
     with pytest.raises(ValueError, match="expected a .ass"):

@@ -50,6 +50,33 @@ def test_model_config_is_frozen_and_disables_retries_by_default() -> None:
 
 
 @patch("subretrans.providers.ChatOpenAI")
+def test_openai_responses_maps_generation_settings(chat_openai) -> None:
+    config = ModelConfig(
+        protocol=ModelProtocol.OPENAI_RESPONSES,
+        model="test-model",
+        api_key="test-key",
+        base_url=None,
+        timeout=45.0,
+        max_output_tokens=2048,
+        reasoning_effort="high",
+        temperature=0.2,
+    )
+
+    build_chat_model(config)
+
+    chat_openai.assert_called_once_with(
+        model="test-model",
+        api_key="test-key",
+        timeout=45.0,
+        max_retries=0,
+        max_tokens=2048,
+        reasoning_effort="high",
+        temperature=0.2,
+        use_responses_api=True,
+    )
+
+
+@patch("subretrans.providers.ChatOpenAI")
 def test_openai_responses_routes_custom_base_url(chat_openai) -> None:
     config = model_config(
         ModelProtocol.OPENAI_RESPONSES,
@@ -104,18 +131,22 @@ def test_google_gemini_routes_native_parameters(chat_google) -> None:
 
 
 @patch("subretrans.providers.ChatGoogleGenerativeAI")
-def test_google_gemini_rejects_custom_base_url(chat_google) -> None:
+def test_google_gemini_routes_custom_base_url(chat_google) -> None:
     config = model_config(
         ModelProtocol.GOOGLE_GEMINI,
-        base_url="https://unsupported-gateway.example",
+        base_url="https://gemini-gateway.example",
     )
 
-    with pytest.raises(
-        ValueError, match="google-gemini does not accept a custom base_url"
-    ):
-        build_chat_model(config)
+    result = build_chat_model(config)
 
-    chat_google.assert_not_called()
+    assert result is chat_google.return_value
+    chat_google.assert_called_once_with(
+        model="test-model",
+        api_key="test-key",
+        timeout=45.0,
+        max_retries=0,
+        base_url="https://gemini-gateway.example",
+    )
 
 
 @patch("subretrans.providers.ChatOpenAI")

@@ -21,6 +21,8 @@ class SubtitleEditSettings:
     source_dir: Path
     build_dir: Path
     dotnet_executable: str
+    settings_file: Path
+    multiple_replace_file: Path
     operations: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -30,7 +32,12 @@ class SubtitleEditSettings:
                 raise ValueError(f"{name} must be a non-empty string")
         if _REVISION_RE.fullmatch(self.revision) is None:
             raise ValueError("revision must be a 40-character hexadecimal commit hash")
-        for name in ("source_dir", "build_dir"):
+        for name in (
+            "source_dir",
+            "build_dir",
+            "settings_file",
+            "multiple_replace_file",
+        ):
             if not isinstance(getattr(self, name), Path):
                 raise TypeError(f"{name} must be a Path")
         if not isinstance(self.operations, tuple):
@@ -161,7 +168,9 @@ def preprocess_with_seconv(
             "--overwrite",
             "--encoding:utf-8-no-bom",
             "--json",
+            f"--settings:{settings.settings_file}",
             *settings.operations,
+            f"--multiple-replace:{settings.multiple_replace_file}",
         ],
         check=True,
         capture_output=True,

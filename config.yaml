@@ -1,42 +1,48 @@
 # Configuration for OpenAI SDK-based subtitle refinement
 # This file controls all aspects of the subtitle processing pipeline
 
-# API Settings
+# Model roles. Every role is self-contained and uses paths relative to this file.
 api:
-  key_file: "key"  # Path to file containing API key (relative to this config file)
-  base_url: "https://api.openai.com/v1"
-  timeout: 800  # API request timeout in seconds
-
-# Main refinement model settings (GPT-5.* for subtitle correction)
-main_model:
-  name: "gemini-3-pro-preview"
-  #name: "gpt-4o"
-  max_output_tokens: 27000
-  reasoning_effort: "high"  # none, low, medium, high
-  temperature: 0.6
-  #temperature: 0.4
-  # Optional per-model API credentials (overrides global api settings)
-  key_file: "key-yunwu"  # Path to model-specific API key file
-  base_url: "https://yunwu.ai/v1"  # Model-specific endpoint URL
-
-# Terminology extraction model settings (GPT-4o-mini for glossary extraction)
-terminology_model:
-  name: "gpt-4o-mini"
-  max_output_tokens: 1800
-  temperature: 0.45
-  # Optional per-model API credentials (overrides global api settings)
-  #key_file: "key-terminology"  # Path to model-specific API key file
-  #base_url: "https://another.url/v1"  # Model-specific endpoint URL
-
-# Memoryless first-pass translation provider. This is independent from the
-# serial refinement model and can run batches concurrently.
-translation_model:
-  protocol: "openai-responses"
-  name: "gemini-3-pro-preview"
-  key_file: "key-yunwu"
-  base_url: "https://yunwu.ai/v1"
-  timeout: 800
-  max_retries: 0
+  primer:
+    protocol: "anthropic-messages"
+    model: "deepseek-v4.1-flash"
+    key_file: "key-zenmux"
+    base_url: "https://zenmux.ai/api/anthropic"
+    timeout: 30000
+    max_retries: 0
+    max_output_tokens: 27000
+    reasoning_effort: "high"
+    temperature: 1.0
+  refine:
+    protocol: "google-gemini"
+    model: "gemini-3.1-pro-preview"
+    key_file: "key-openlux"
+    base_url: "https://api.openlux.ai"
+    timeout: 800
+    max_retries: 2
+    max_output_tokens: 27000
+    reasoning_effort: "high"
+    temperature: 0.6
+  extraction:
+    protocol: "openai-chat-compatible"
+    model: "gpt-4o-mini"
+    key_file: "key-openlux"
+    base_url: "https://api.openlux.ai/v1"
+    timeout: 800
+    max_retries: 2
+    max_output_tokens: 1800
+    reasoning_effort: null
+    temperature: 0.45
+  agent:
+    protocol: "anthropic-messages"
+    model: "deepseek-v4.1-flash"
+    key_file: "key-zenmux"
+    base_url: "https://zenmux.ai/api/anthropic"
+    timeout: 30000
+    max_retries: 2
+    max_output_tokens: 27000
+    reasoning_effort: "high"
+    temperature: 1.0
 
 # Agent pipeline persistence and initial-translation settings.
 pipeline:
@@ -44,6 +50,7 @@ pipeline:
   checkpoint_db: ".subretrans-runs/pipeline.sqlite3"
   batch_size: 20
   max_workers: 4
+  agent_max_repair_attempts: 2
   source_language: "English"
   target_language: "Simplified Chinese"
   user_instruction: "Preserve subtitle line breaks and formatting tags."
@@ -61,9 +68,12 @@ subtitle_edit:
   source_dir: ".subretrans-tools/subtitleedit"
   build_dir: ".subretrans-tools/seconv"
   dotnet_executable: "dotnet"
+  settings_file: "subtitle_edit_settings.json"
+  multiple_replace_file: "subtitle_edit_multiple_replace.template"
   operations:
-    - "--fix-common-errors"
     - "--remove-text-for-hi"
+    - "--remove-line-breaks"
+    - "--fix-common-errors-rules:FixEmptyLines,FixInvalidItalicTags,FixUnneededSpaces,FixMissingSpaces,FixUnneededPeriods,FixCommas,FixShortLines,FixDoubleApostrophes,FixCommonOcrErrors,FixMissingOpenBracket,FixDoubleGreaterThan,FixDoubleDash,FixHyphensRemoveDashSingleLine,AddMissingQuotes"
 
 # Token management
 tokens:
@@ -95,7 +105,6 @@ user:
 
 # Runtime options (can be overridden by CLI flags)
 runtime:
-  api_mode: "chat-completion"
   use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
   per_block_update: true  # Update output file after each chunk/block (recommended for safety)
   verbose: false  # Enable verbose output with detailed progress

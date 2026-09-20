@@ -12,7 +12,7 @@ A Python tool for refining bilingual (currently English-Chinese) ASS subtitles u
   - **English**: Fixes capitalization, spacing, and punctuation only (preserves meaning)
   - **Chinese**: Improves translation quality, naturalness, and consistency
 - **Episode Memory**: Maintains terminology, style notes, and a cumulative `Incremental Story Description` across chunks; the complete memory can be resumed from a checkpoint.
-- **Agent Pipeline**: Supports two checkpointable modes: `parallel_initial` uses memoryless parallel first-pass translation followed by serial memory-aware proofreading; `serial_memory` uses that same serial flow to translate and proofread directly. Both continue through postprocessing, QA, human review, and release.
+- **Agent Pipeline**: Supports two checkpointable modes: `parallel_initial` uses memoryless parallel first-pass translation followed by serial memory-aware proofreading; `serial_memory` uses that same serial flow to translate and proofread directly. An agent model then performs semantic QA and applies bounded, targeted repairs before human review.
 - **ASS Tag Preservation**: Keeps all formatting tags (e.g., `{\i1}`, `{\b1}`, `\N`) intact
 - **Token Tracking**: Monitors API usage and estimates costs in real-time
 - **Robust Error Handling**: Automatic retries with exponential backoff
@@ -31,8 +31,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Set API key (or edit config.yaml)
-export OPENAI_API_KEY="your-api-key-here"
+# 3. Set the role key_file paths in config.yaml
 
 # 4. Process subtitles (not suggested)
 ./run.sh example_input.ass output.ass
@@ -87,12 +86,22 @@ converts/cleans the source into the run's UTF-8 SRT artifact. Building the
 pinned source requires the .NET 10 SDK/runtime. The generic ASS normalization
 and structural QA live in `subtitle_processing.py`; show/episode replacements
 are ordered rules under `pipeline.episode_replacements` rather than built into
-that module.
+that module. The default `subtitle_edit` section reproduces the checked options
+from Subtitle Edit's Batch convert window through
+`subtitle_edit_settings.json`, `subtitle_edit_multiple_replace.template`, and
+an explicit `operations` list.
 
 `parallel_initial` never receives glossary or story memory, so its batches can
 run independently. The following serial refinement stage maintains the
 incremental story description. `serial_memory` skips initial translation and
 uses that same serial refinement path directly on an existing ASS artifact.
+
+After deterministic structural checks, the `agent` API audits semantic
+completeness, accuracy, and consistency. A failed audit may return targeted
+Chinese replacements. Each repair is written to a new run artifact,
+normalized, and audited again. `pipeline.agent_max_repair_attempts` bounds
+this loop; a failure without repairs or an exhausted budget proceeds to human
+review rather than restarting the entire pipeline.
 
 ## Installation
 
@@ -115,17 +124,17 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. **Configure API key**:
-
-   Option A - Environment variable (recommended):
-   ```bash
-   export OPENAI_API_KEY="sk-proj-..."
-   ```
-
-   Option B - Edit [config.yaml](config.yaml):
+4. **Configure the four API roles in [config.yaml](config.yaml)**. Each role points to its own key file:
    ```yaml
    api:
-     key_file: "key"
+     primer:
+       key_file: "key"
+     refine:
+       key_file: "key"
+     extraction:
+       key_file: "key"
+     agent:
+       key_file: "key"
    ```
 
 5. **Test the installation**:
@@ -472,81 +481,47 @@ The system prompt is now generated from a **single markdown template file** (`ma
 - **Dynamic terminology** - Automatic glossary injection from GlobalMemory
 - **Backward compatible** - Falls back to legacy prompt building if no config provided
 
-## Configuration (v0.0.6)
+## Configuration
 
-Edit [config.yaml](config.yaml) to customize:
+All model endpoints live in one strict suite in [config.yaml](config.yaml):
 
-```python
-from dataclasses import dataclass, field
-from typing import Optional
+```yaml
+api:
+  primer: &role
+    protocol: openai-responses
+    model: gpt-5.5
+    key_file: key
+    base_url: https://api.openai.com/v1
+    timeout: 800
+    max_retries: 0
+    max_output_tokens: 27000
+    reasoning_effort: high
+    temperature: null
+  refine: *role
+  extraction: *role
+  agent: *role
 
-@dataclass
-class MainModelSettings:
-    name: str = "gpt-5.1"
-    max_output_tokens: int = 12000
-    reasoning_effort: str = "medium"
-    temperature: float = 1.0      # GPT-5.* has no temperature setting
-
-
-@dataclass
-class TerminologyModelSettings:
-    name: str = "gpt-4o-mini"
-    max_output_tokens: int = 1500
-    temperature: float = 0.3      # Lower temperature keeps glossary extraction stable
-
-
-@dataclass
-class Config:
-    api_key: str = ""
-    api_base_url: str = "https://api.openai.com/v1"
-    max_context_tokens: int = 128000
-    memory_token_limit: int = 2000
-    chunk_token_soft_limit: int = 100000
-    pairs_per_chunk: Optional[int] = None
-    api_timeout: int = 120
-    verbose: bool = False
-    very_verbose: bool = False
-    debug_prompts: bool = False
-    stats_interval: float = 1.0
-    dry_run: bool = False
-    max_chunks: Optional[int] = None
-    price_per_1k_prompt_tokens: float = 0.03
-    price_per_1k_completion_tokens: float = 0.06
-    glossary_max_entries: int = 100
-    glossary_policy: str = "lock"
-    user_prompt_path: str = "main_prompt.md"
-    terminology_min_confidence: float = 0.6
-    main_model: MainModelSettings = field(default_factory=MainModelSettings)
-    terminology_model: TerminologyModelSettings = field(default_factory=TerminologyModelSettings)
+pipeline:
+  agent_max_repair_attempts: 2
 ```
 
-- **Reasoning effort**: Adjust `config.main_model.reasoning_effort` to hint GPT-5.1's reasoning depth (`"none"`, `"low"`, `"medium"`, `"high"`).
-- **Temperature**: Tune `config.main_model.temperature` (defaults to `1.0`) for the primary GPT-5 run, and `config.terminology_model.temperature` for the GPT-4o terminology extractor if you need stricter or looser extraction.
-- **Glossary limit**: Adjust `config.glossary_max_entries` (default `100`) if you need to retain more/fewer global terminology entries in the prompt.
-- **Glossary policy**: `config.glossary_policy="lock"` means learned terminology can only add new entries and will never override user-defined mappings from the user glossary.
-- **User prompt file**: Set `config.user_prompt_path` to point at the main prompt template file (default `main_prompt.md`). This template serves as the complete system prompt with dynamic terminology injection.
-- **Terminology confidence**: `config.terminology_min_confidence` controls both the GPT‑4o prompt threshold and local filtering of extracted terms.
+- **API roles**: `primer`, `refine`, `extraction`, and `agent` are mandatory and use the same strict fields. Key paths are relative to the selected YAML file.
+- **Protocols**: Choose `openai-responses`, `openai-chat-compatible`, `anthropic-messages`, or `google-gemini`. Refinement and extraction currently require an OpenAI protocol; primer and agent use the provider-neutral adapters.
+- **Reasoning and temperature**: Configure these independently for each role; use `null` when the endpoint does not accept the option.
+- **Glossary policy**: `glossary.policy: lock` means learned terminology can add entries but cannot override user-defined mappings.
+- **Terminology confidence**: `glossary.terminology_min_confidence` controls both the extraction prompt threshold and local filtering.
 
-### Using Alternative API Providers
-
-To use a different OpenAI-compatible API:
-
-```python
-# In config.yaml
-api_base_url: str = "https://your-api-endpoint.com/v1"
-
-@dataclass
-class MainModelSettings:
-    name: str = "your-model-name"
-    ...
-```
+To use a different endpoint for one role, change only that role's `protocol`,
+`model`, `key_file`, and `base_url` while retaining the remaining required
+fields. Put only the provider token in the referenced `key_file`; `key-*` files
+are ignored by Git.
 
 ## Error Handling
 
 The tool includes robust error handling:
 
 - **API Errors**
-  - Automatic retry with exponential backoff (3 attempts)
+  - Automatic retry with exponential backoff up to each role's configured `max_retries`
   - Wait times: 1s, 2s, 4s between retries
   - Graceful failure with error messages
 
@@ -600,7 +575,7 @@ Estimated cost:    $    0.5815 USD
 ```
 Configuration error: API key must be provided
 ```
-**Solution**: Set `OPENAI_API_KEY` environment variable or edit [config.yaml](config.yaml)
+**Solution**: Check each role's `key_file` path in [config.yaml](config.yaml)
 
 **2. Model Not Found**
 ```

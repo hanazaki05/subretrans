@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-from . import providers
+from .config import RoleModelSettings, load_api_roles
 from .subtitle_edit import SubtitleEditSettings
 
 
@@ -16,15 +16,11 @@ class PipelineSettings:
     checkpoint_db: Path
     batch_size: int
     max_workers: int
+    agent_max_repair_attempts: int
     source_language: str
     target_language: str
     user_instruction: str | None
     episode_replacements: tuple[tuple[str, str], ...]
-
-
-@dataclass(frozen=True)
-class TranslationModelSettings:
-    config: providers.ModelConfig
 
 
 def _load_section(yaml_path: str | Path, section_name: str) -> tuple[dict[str, Any], Path]:
@@ -71,6 +67,12 @@ def _positive_integer(value: Any, field_name: str) -> int:
     return value
 
 
+def _nonnegative_integer(value: Any, field_name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
 def _resolve_path(value: Any, field_name: str, yaml_dir: Path) -> Path:
     raw_path = Path(_nonempty_string(value, field_name))
     if not raw_path.is_absolute():
@@ -90,6 +92,7 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
             "checkpoint_db",
             "batch_size",
             "max_workers",
+            "agent_max_repair_attempts",
             "source_language",
             "target_language",
             "episode_replacements",
@@ -130,6 +133,10 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
         max_workers=_positive_integer(
             section["max_workers"], "pipeline.max_workers"
         ),
+        agent_max_repair_attempts=_nonnegative_integer(
+            section["agent_max_repair_attempts"],
+            "pipeline.agent_max_repair_attempts",
+        ),
         source_language=_nonempty_string(
             section["source_language"], "pipeline.source_language"
         ),
@@ -141,69 +148,15 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
     )
 
 
-def load_translation_model_settings(
-    yaml_path: str | Path,
-) -> TranslationModelSettings:
-    """Load the strict ``translation_model`` section and its API key file."""
+def load_role_model_settings(
+    yaml_path: str | Path, role: str
+) -> RoleModelSettings:
+    """Load one of the four strict model roles from ``api``."""
 
-    section, yaml_dir = _load_section(yaml_path, "translation_model")
-    _validate_fields(
-        section,
-        "translation_model",
-        required={
-            "protocol",
-            "name",
-            "key_file",
-            "base_url",
-            "timeout",
-            "max_retries",
-        },
-    )
-
-    protocol_name = _nonempty_string(
-        section["protocol"], "translation_model.protocol"
-    )
     try:
-        protocol = providers.ModelProtocol(protocol_name)
-    except ValueError as exc:
-        raise ValueError(
-            f"translation_model.protocol is unsupported: {protocol_name}"
-        ) from exc
-
-    model_name = _nonempty_string(section["name"], "translation_model.name")
-    key_path = _resolve_path(
-        section["key_file"], "translation_model.key_file", yaml_dir
-    )
-    api_key = key_path.read_text(encoding="utf-8").strip()
-    if not api_key:
-        raise ValueError("translation_model key file must not be empty")
-
-    base_url = section["base_url"]
-    if base_url is not None:
-        base_url = _nonempty_string(base_url, "translation_model.base_url")
-
-    timeout = section["timeout"]
-    if timeout is not None:
-        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-            raise ValueError("translation_model.timeout must be a positive number or null")
-        if timeout <= 0:
-            raise ValueError("translation_model.timeout must be a positive number or null")
-        timeout = float(timeout)
-
-    max_retries = section["max_retries"]
-    if type(max_retries) is not int or max_retries < 0:
-        raise ValueError("translation_model.max_retries must be a non-negative integer")
-
-    return TranslationModelSettings(
-        config=providers.ModelConfig(
-            protocol=protocol,
-            model=model_name,
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-        )
-    )
+        return load_api_roles(yaml_path)[role]
+    except KeyError as exc:
+        raise ValueError(f"unsupported API role: {role}") from exc
 
 
 def load_subtitle_edit_settings(yaml_path: str | Path) -> SubtitleEditSettings:
@@ -219,6 +172,8 @@ def load_subtitle_edit_settings(yaml_path: str | Path) -> SubtitleEditSettings:
             "source_dir",
             "build_dir",
             "dotnet_executable",
+            "settings_file",
+            "multiple_replace_file",
             "operations",
         },
     )
@@ -244,6 +199,14 @@ def load_subtitle_edit_settings(yaml_path: str | Path) -> SubtitleEditSettings:
         ),
         dotnet_executable=_nonempty_string(
             section["dotnet_executable"], "subtitle_edit.dotnet_executable"
+        ),
+        settings_file=_resolve_path(
+            section["settings_file"], "subtitle_edit.settings_file", yaml_dir
+        ),
+        multiple_replace_file=_resolve_path(
+            section["multiple_replace_file"],
+            "subtitle_edit.multiple_replace_file",
+            yaml_dir,
         ),
         operations=operations,
     )

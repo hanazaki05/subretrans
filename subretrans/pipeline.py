@@ -59,7 +59,14 @@ def build_pipeline(
     graph.add_edge("merge_ass", "refine_serial")
     graph.add_edge("refine_serial", "postprocess")
     graph.add_edge("postprocess", "qa")
-    graph.add_edge("qa", "human_review")
+    graph.add_conditional_edges(
+        "qa",
+        _route_qa,
+        {
+            "postprocess": "postprocess",
+            "human_review": "human_review",
+        },
+    )
     graph.add_edge("release", END)
 
     return graph.compile(checkpointer=checkpointer)
@@ -72,6 +79,15 @@ def _route_translation_mode(state: PipelineState) -> Stage:
     if state["translation_mode"] == "serial_memory":
         return "refine_serial"
     raise ValueError(f"unsupported translation mode: {state['translation_mode']}")
+
+
+def _route_qa(state: PipelineState) -> Stage:
+    """Re-run deterministic postprocessing only after an applied agent repair."""
+    if state["qa_passed"]:
+        return "human_review"
+    if state["qa_repair_applied"]:
+        return "postprocess"
+    return "human_review"
 
 
 def _handler_node(stage: Stage, handler: StageHandler) -> StageHandler:
@@ -94,7 +110,7 @@ def _translation_node(handler: TranslationHandler) -> StageHandler:
             "artifact_hash": state["artifact_hash"],
             "translation_manifest_path": manifest_path,
             "stage": "translate_parallel",
-            "model_version": state["model_version"],
+            "model_version": state["model_versions"]["primer"],
             "prompt_version": state["prompt_version"],
         }
         update = handler(translation_state)
@@ -122,6 +138,8 @@ def _human_review_node(handler: StageHandler) -> Callable[[PipelineState], Comma
                 "artifact_path": current_state["artifact_path"],
                 "artifact_hash": current_state["artifact_hash"],
                 "qa_conclusion": current_state["qa_conclusion"],
+                "qa_passed": current_state["qa_passed"],
+                "agent_repair_attempts": current_state["agent_repair_attempts"],
             }
         )
         update = {**handler(current_state), "stage": "human_review"}

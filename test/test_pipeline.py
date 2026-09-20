@@ -26,9 +26,17 @@ def initial_state(
         "refine_chunk_cursor": 0,
         "memory_checkpoint_path": "/tmp/input.memory.yaml",
         "memory_hash": "memory-hash",
-        "model_version": "test-model-v1",
+        "model_versions": {
+            "primer": "test-primer",
+            "refine": "test-refine",
+            "extraction": "test-extraction",
+            "agent": "test-agent",
+        },
         "prompt_version": "test-prompt-v1",
         "qa_conclusion": "pending",
+        "qa_passed": False,
+        "qa_repair_applied": False,
+        "agent_repair_attempts": 0,
     }
 
 
@@ -40,7 +48,11 @@ def recording_handlers(calls: list[str]) -> dict[Stage, StageHandler]:
             if stage == "preprocess" and state["translation_mode"] == "parallel_initial":
                 return {"translation_manifest_path": "/tmp/translations.json"}
             if stage == "qa":
-                return {"qa_conclusion": "passed"}
+                return {
+                    "qa_conclusion": "passed",
+                    "qa_passed": True,
+                    "qa_repair_applied": False,
+                }
             return {}
 
         return handler
@@ -128,6 +140,60 @@ def test_rejection_terminates_without_release() -> None:
     assert calls[-1] == "human_review"
     assert "release" not in calls
     assert result["stage"] == "human_review"
+
+
+def test_agent_repair_repeats_postprocess_and_qa_before_review() -> None:
+    calls: list[str] = []
+    handlers = recording_handlers(calls)
+    qa_calls = 0
+
+    def qa(state: PipelineState) -> dict[str, Any]:
+        nonlocal qa_calls
+        calls.append("qa")
+        qa_calls += 1
+        if qa_calls == 1:
+            return {
+                "qa_conclusion": "repair applied",
+                "qa_passed": False,
+                "qa_repair_applied": True,
+                "agent_repair_attempts": 1,
+            }
+        return {
+            "qa_conclusion": "passed",
+            "qa_passed": True,
+            "qa_repair_applied": False,
+        }
+
+    handlers["qa"] = qa
+    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
+    result = pipeline.invoke(
+        initial_state(), {"configurable": {"thread_id": "agent-repair"}}
+    )
+
+    assert result["__interrupt__"]
+    assert calls[-4:] == ["postprocess", "qa", "postprocess", "qa"]
+
+
+def test_failed_qa_without_repair_goes_to_human_review() -> None:
+    calls: list[str] = []
+    handlers = recording_handlers(calls)
+
+    def qa(state: PipelineState) -> dict[str, Any]:
+        calls.append("qa")
+        return {
+            "qa_conclusion": "failed",
+            "qa_passed": False,
+            "qa_repair_applied": False,
+        }
+
+    handlers["qa"] = qa
+    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
+    result = pipeline.invoke(
+        initial_state(), {"configurable": {"thread_id": "agent-exhausted"}}
+    )
+
+    assert result["__interrupt__"]
+    assert calls[-1] == "qa"
 
 
 def test_missing_handler_fails_when_building_pipeline() -> None:

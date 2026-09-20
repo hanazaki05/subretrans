@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from .ass_parser import (
+    apply_pairs_to_ass_lines,
+    build_pairs_from_ass_lines,
+    parse_ass_file,
+    render_ass_file,
+    write_ass_file,
+)
+from .model_agent import AgentQA
 from .subtitle_processing import SrtCue, audit_ass, merge_srt_to_ass, postprocess_ass, read_srt, write_srt
 from .state import MemorylessTranslationState, PipelineState, Stage
 from .translation import (
@@ -36,6 +44,7 @@ class WorkflowSettings:
     release_path: Path
     batch_size: int
     max_workers: int
+    agent_max_repair_attempts: int
     episode_replacements: tuple[tuple[str, str], ...]
 
 
@@ -145,6 +154,7 @@ def build_stage_handlers(
     preprocess_subtitle: PreprocessSubtitle,
     translate_batch: TranslateBatch,
     refine: Refine,
+    agent_qa: AgentQA,
 ) -> dict[Stage, Callable[[Any], StageUpdate]]:
     """Build all concrete handlers for one run directory and release target."""
 
@@ -268,7 +278,9 @@ def build_stage_handlers(
 
     def postprocess(state: PipelineState) -> StageUpdate:
         input_path = Path(state["artifact_path"])
-        output_path = run_dir / "postprocessed.ass"
+        attempt = state["agent_repair_attempts"]
+        output_name = "postprocessed.ass" if attempt == 0 else f"postprocessed-{attempt:03d}.ass"
+        output_path = run_dir / output_name
         _require_distinct(input_path, output_path)
         postprocess_ass(input_path, output_path, settings.episode_replacements)
         return {
@@ -277,7 +289,51 @@ def build_stage_handlers(
         }
 
     def qa(state: PipelineState) -> StageUpdate:
-        return {"qa_conclusion": _qa_conclusion(Path(state["artifact_path"]))}
+        input_path = Path(state["artifact_path"])
+        if _sha256(input_path) != state["artifact_hash"]:
+            raise ValueError("QA artifact hash does not match pipeline state")
+
+        structural_qa = _qa_conclusion(input_path)
+        header, ass_lines = parse_ass_file(str(input_path))
+        pairs = build_pairs_from_ass_lines(ass_lines)
+        result = agent_qa(tuple(pairs), structural_qa)
+        passed = structural_qa == "passed" and result.passed
+        if passed:
+            return {
+                "qa_conclusion": "passed",
+                "qa_passed": True,
+                "qa_repair_applied": False,
+            }
+
+        issue_text = "; ".join(result.issues)
+        conclusion = f"structural={structural_qa}; agent={issue_text}"
+        attempt = state["agent_repair_attempts"]
+        pair_by_id = {pair.id: pair for pair in pairs}
+        applicable_repairs = tuple(
+            repair
+            for repair in result.repairs
+            if (pair_by_id[repair.id].meta or {}).get("chinese_line_id", -1) >= 0
+        )
+        if not applicable_repairs or attempt >= settings.agent_max_repair_attempts:
+            return {
+                "qa_conclusion": conclusion,
+                "qa_passed": False,
+                "qa_repair_applied": False,
+            }
+
+        for repair in applicable_repairs:
+            pair_by_id[repair.id].chinese = repair.translation
+        repaired_path = run_dir / f"qa-repair-{attempt + 1:03d}.ass"
+        updated_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
+        write_ass_file(str(repaired_path), render_ass_file(header, updated_lines))
+        return {
+            "artifact_path": str(repaired_path),
+            "artifact_hash": _sha256(repaired_path),
+            "qa_conclusion": conclusion,
+            "qa_passed": False,
+            "qa_repair_applied": True,
+            "agent_repair_attempts": attempt + 1,
+        }
 
     def human_review(state: PipelineState) -> StageUpdate:
         return {}

@@ -1,0 +1,23 @@
+{
+  "categories": [
+    {
+      "name": "Default",
+      "rules": [
+        {
+          "find": "<i>",
+          "replaceWith": "<i> ",
+          "description": "",
+          "isActive": true,
+          "type": "CaseInsensitive"
+        },
+        {
+          "find": "</i>",
+          "replaceWith": "</i> ",
+          "description": "",
+          "isActive": true,
+          "type": "CaseInsensitive"
+        }
+      ]
+    }
+  ]
+}

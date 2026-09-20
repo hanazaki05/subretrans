@@ -94,7 +94,7 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
 
         base_prompt_tokens = estimate_tokens(
             build_system_prompt(global_memory),
-            config.main_model.name
+            config.refine.model
         )
         print(f"  Base prompt tokens: {base_prompt_tokens:,}")
         print(f"  Chunking strategy: Fixed {pairs_per_chunk} pairs per chunk")
@@ -123,8 +123,8 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
             user_prompt = build_user_prompt_for_chunk(pairs_serialized)
 
             # Estimate tokens
-            system_tokens = estimate_tokens(system_prompt, config.main_model.name)
-            user_tokens = estimate_tokens(user_prompt, config.main_model.name)
+            system_tokens = estimate_tokens(system_prompt, config.refine.model)
+            user_tokens = estimate_tokens(user_prompt, config.refine.model)
             total_tokens = system_tokens + user_tokens
 
             print(f"  System prompt: {system_tokens:,} tokens")
@@ -187,11 +187,11 @@ def write_markdown(chunks, prompts, output_path, config, input_filename, total_p
         f.write(f"- **Pairs per chunk:** {config.pairs_per_chunk}\n")
         f.write(f"- **Total chunks:** {len(chunks)}\n")
         f.write(f"- **Intermediate format:** {config.intermediate_format}\n")
-        f.write(f"- **Model:** {config.main_model.name}\n")
-        f.write(f"- **Max output tokens:** {config.main_model.max_output_tokens:,}\n")
-        f.write(f"- **Temperature:** {config.main_model.temperature}\n")
-        if hasattr(config.main_model, 'reasoning_effort'):
-            f.write(f"- **Reasoning effort:** {config.main_model.reasoning_effort}\n")
+        f.write(f"- **Model:** {config.refine.model}\n")
+        f.write(f"- **Max output tokens:** {config.refine.max_output_tokens:,}\n")
+        f.write(f"- **Temperature:** {config.refine.temperature}\n")
+        if config.refine.reasoning_effort is not None:
+            f.write(f"- **Reasoning effort:** {config.refine.reasoning_effort}\n")
         f.write("\n")
 
         # Write summary table
@@ -239,8 +239,8 @@ def write_markdown(chunks, prompts, output_path, config, input_filename, total_p
             f.write(f"- **System prompt:** {prompt['system_tokens']:,} tokens\n")
             f.write(f"- **User content:** {prompt['user_tokens']:,} tokens\n")
             f.write(f"- **Total input:** {prompt['total_tokens']:,} tokens\n")
-            f.write(f"- **Max output:** {config.main_model.max_output_tokens:,} tokens\n")
-            f.write(f"- **Estimated max total:** {prompt['total_tokens'] + config.main_model.max_output_tokens:,} tokens\n")
+            f.write(f"- **Max output:** {config.refine.max_output_tokens:,} tokens\n")
+            f.write(f"- **Estimated max total:** {prompt['total_tokens'] + config.refine.max_output_tokens:,} tokens\n")
             f.write("\n---\n\n")
 
 

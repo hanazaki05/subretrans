@@ -1,8 +1,10 @@
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from subretrans.cli import file_sha256
+from subretrans.model_agent import AgentQAResult
 from subretrans.pipeline_cli import _refine_callable, review_pipeline, run_pipeline
 
 
@@ -22,15 +24,30 @@ def test_serial_pipeline_cli_persists_review_and_releases(
     source = tmp_path / "input.ass"
     source.write_text(VALID_ASS, encoding="utf-8")
     release = tmp_path / "release.ass"
+    key = tmp_path / "key"
+    key.write_text("test-key\n", encoding="utf-8")
     config = tmp_path / "config.yaml"
     config.write_text(
-        f"""main_model:
-  name: test-refiner
+        f"""api:
+  primer: &model
+    protocol: openai-responses
+    model: test-model
+    key_file: {key}
+    base_url: https://example.test/v1
+    timeout: 30
+    max_retries: 0
+    max_output_tokens: 1000
+    reasoning_effort: null
+    temperature: null
+  refine: *model
+  extraction: *model
+  agent: *model
 pipeline:
   state_dir: {tmp_path / 'state'}
   checkpoint_db: {tmp_path / 'state/checkpoints.sqlite3'}
   batch_size: 2
   max_workers: 2
+  agent_max_repair_attempts: 1
   source_language: English
   target_language: Simplified Chinese
   user_instruction: null
@@ -61,6 +78,10 @@ pipeline:
 
     monkeypatch.setattr(
         "subretrans.pipeline_cli._refine_callable", fake_refine_factory
+    )
+    monkeypatch.setattr(
+        "subretrans.pipeline_cli.build_agent_qa",
+        lambda settings: lambda pairs, structural_qa: AgentQAResult(True, (), ()),
     )
     run_args = argparse.Namespace(
         input=str(source),
@@ -111,14 +132,15 @@ def test_refine_resume_continues_from_committed_output(
         encoding="utf-8",
     )
     config = tmp_path / "config.yaml"
-    config.write_text("main_model: {}\n", encoding="utf-8")
+    config.write_text("{}\n", encoding="utf-8")
     seen: dict[str, object] = {}
 
     monkeypatch.setattr(
         "subretrans.pipeline_cli.load_config_sdk",
-        lambda **kwargs: type(
-            "Config", (), {"api_mode": "response", "use_stream": False}
-        )(),
+        lambda **kwargs: SimpleNamespace(
+            refine=SimpleNamespace(protocol=SimpleNamespace(value="openai-responses")),
+            use_stream=False,
+        ),
     )
 
     def fake_process(input_path, output_path, config_value, **kwargs):

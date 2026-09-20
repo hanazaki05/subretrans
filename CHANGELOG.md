@@ -13,11 +13,14 @@ All notable changes to this project will be documented in this file.
 - Provider selection for OpenAI Responses, Anthropic Messages, Google Gemini, and legacy OpenAI-compatible chat APIs.
 - A pinned wrapper around Subtitle Edit's headless `seconv` project for source preprocessing and UTF-8 SRT generation.
 - Strict translation manifests, SRT-to-ASS merging, structural subtitle QA, and CLI commands for running or approving pipeline jobs.
+- A dedicated `agent` model role for semantic QA and bounded, targeted repair of failed subtitle pairs.
 
 ### Changed
 - Split subtitle postprocessing into generic normalization and ordered show/episode-specific replacements configured through `pipeline.episode_replacements`.
+- Mirrored the active Subtitle Edit Batch convert preprocessing profile with explicit HI-removal settings, line-break removal, multiple-replace rules, and selected Fix Common Errors rules.
 - Removed the separate `experiment/` layer; the production package now contains the unified workflow implementation.
 - Serial refinement now commits subtitle output before its matching memory/progress checkpoint so resumed story memory cannot advance beyond the saved artifact.
+- Consolidated all model endpoints into the strict `api.primer`, `api.refine`, `api.extraction`, and `api.agent` YAML suite; removed the old global API/model blocks and `runtime.api_mode`.
 
 ## [0.0.10] - 2026-01-03
 

@@ -7,15 +7,14 @@ while maintaining compatibility with the main project's structure.
 
 import json
 import time
-import os
-from pathlib import Path
-from typing import List, Tuple, Optional, Union, Callable
+from typing import List, Tuple, Optional, Callable
 
 # OpenAI SDK imports
 from openai import OpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
-from .config import ConfigSDK, MainModelSettings, TerminologyModelSettings, load_api_key_from_file
+from .config import ConfigSDK, RoleModelSettings
+from .providers import ModelProtocol
 from .pairs import SubtitlePair
 from .memory import (
     GlobalMemory,
@@ -34,82 +33,16 @@ from .utils import extract_json_from_response
 from .serializers import serialize, deserialize, deserialize_best_effort, SerializationError
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-
-
 class LLMAPIError(Exception):
     """Exception raised for LLM API errors."""
     pass
 
 
-def _resolve_model_credentials(
-    config: ConfigSDK,
-    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
-    verbose: bool = False
-) -> Tuple[str, str]:
-    """
-    Resolve API key and base URL for a specific model.
-
-    Args:
-        config: Global ConfigSDK object
-        model_settings: Optional model-specific settings
-        verbose: Whether to print credential resolution info
-
-    Returns:
-        Tuple of (api_key, base_url)
-    """
-    # Default to global config values
-    api_key = config.api_key
-    base_url = config.api_base_url
-
-    # Track what overrides were applied
-    key_override = False
-    url_override = False
-    model_name = model_settings.name if model_settings else "unknown"
-
-    # Override with model-specific settings if available
-    if model_settings:
-        # Check for model-specific base URL
-        if model_settings.base_url:
-            base_url = model_settings.base_url
-            url_override = True
-
-        # Check for model-specific API key file
-        if model_settings.key_file:
-            # Resolve key file path relative to the repository root
-            key_file_path = model_settings.key_file
-            if not os.path.isabs(key_file_path):
-                key_file_path = str(REPOSITORY_ROOT / key_file_path)
-
-            try:
-                api_key = load_api_key_from_file(key_file_path)
-                key_override = True
-            except Exception as e:
-                raise LLMAPIError(f"Failed to load model-specific API key from {key_file_path}: {str(e)}")
-
-    # Print credential info in verbose mode
-    if verbose:
-        print(f"\n  [Credential Resolution for {model_name}]")
-        if key_override:
-            print(f"    API Key: Model-specific ({model_settings.key_file}) [{api_key[:20]}...]")
-        else:
-            print(f"    API Key: Global (api.key_file) [{api_key[:20]}...]")
-
-        if url_override:
-            print(f"    Base URL: Model-specific → {base_url}")
-        else:
-            print(f"    Base URL: Global (api.base_url) → {base_url}")
-        print()
-
-    return api_key, base_url
-
-
 def call_openai_api_sdk(
     messages: List[dict],
     config: ConfigSDK,
-    max_retries: int = 3,
     *,
-    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    model_settings: Optional[RoleModelSettings] = None,
     model_name: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
@@ -121,7 +54,6 @@ def call_openai_api_sdk(
     Args:
         messages: List of message dictionaries with 'role' and 'content'
         config: ConfigSDK object
-        max_retries: Maximum number of retry attempts
         model_settings: Optional model settings block
         model_name: Optional explicit model override
         max_output_tokens: Override completion token limit
@@ -135,27 +67,26 @@ def call_openai_api_sdk(
         LLMAPIError: If API call fails after retries
     """
     # Determine model settings
-    settings = model_settings or getattr(config, "main_model", None)
-
-    # Resolve credentials (may use model-specific overrides)
-    # Show credential info in debug mode (-vvv)
-    verbose_creds = getattr(config, "debug_prompts", False)
-    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+    settings = model_settings or config.refine
+    provider_config = settings.config
+    if provider_config.protocol is not ModelProtocol.OPENAI_CHAT_COMPATIBLE:
+        raise LLMAPIError(
+            f"chat completions require openai-chat-compatible, got {provider_config.protocol}"
+        )
 
     # Initialize OpenAI client with resolved credentials
     client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=config.api_timeout
+        api_key=provider_config.api_key,
+        base_url=provider_config.base_url,
+        timeout=provider_config.timeout,
+        max_retries=0,
     )
 
-    target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
-    target_output_tokens = max_output_tokens or (
-        settings.max_output_tokens if settings else getattr(config, "max_output_tokens", None)
-    )
-    default_reasoning = getattr(settings, "reasoning_effort", None)
+    target_model = model_name or settings.model
+    target_output_tokens = max_output_tokens or settings.max_output_tokens
+    default_reasoning = settings.reasoning_effort
     target_reasoning = reasoning_effort if reasoning_effort is not None else default_reasoning
-    target_temperature = temperature if temperature is not None else getattr(settings, "temperature", None)
+    target_temperature = temperature if temperature is not None else settings.temperature
 
     if not target_model:
         raise LLMAPIError("Model name is not configured")
@@ -163,8 +94,9 @@ def call_openai_api_sdk(
     if target_output_tokens is None:
         raise LLMAPIError("max_output_tokens must be specified for the selected model")
 
+    retry_limit = settings.max_retries
     attempt = 0
-    while attempt < max_retries:
+    while attempt <= retry_limit:
         # Build API call parameters
         api_params = {
             "model": target_model,
@@ -222,19 +154,19 @@ def call_openai_api_sdk(
 
             # Check if this is a timeout error
             if "timeout" in error_msg.lower():
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Request timeout. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Request timeout. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
-                raise LLMAPIError(f"API request timed out after {max_retries} attempts")
+                raise LLMAPIError(f"API request timed out after {retry_limit + 1} attempts")
 
             # Check if this is a server error (500+)
             if "status_code" in error_msg or "500" in error_msg or "503" in error_msg:
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Server error. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Server error. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
@@ -244,7 +176,7 @@ def call_openai_api_sdk(
 
         attempt += 1
 
-    raise LLMAPIError(f"Failed after {max_retries} attempts")
+    raise LLMAPIError(f"Failed after {retry_limit + 1} attempts")
 
 
 def _strip_thinking_blocks(text: str) -> str:
@@ -523,7 +455,7 @@ def refine_chunk_sdk(
         response_text, usage = call_openai_api_sdk(
             messages,
             config,
-            model_settings=config.main_model
+            model_settings=config.refine
         )
 
         # Clean response (remove thinking blocks, extract from code blocks)
@@ -644,6 +576,26 @@ def refine_chunk_sdk(
     except Exception as e:
         raise LLMAPIError(f"Error during chunk refinement: {str(e)}")
 
+def call_role_api_sdk(
+    messages: List[dict],
+    config: ConfigSDK,
+    model_settings: RoleModelSettings,
+) -> Tuple[str, UsageStats]:
+    """Dispatch one role call according to its configured OpenAI protocol."""
+
+    if model_settings.protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE:
+        return call_openai_api_sdk(
+            messages, config, model_settings=model_settings
+        )
+    if model_settings.protocol is ModelProtocol.OPENAI_RESPONSES:
+        return call_openai_api_response(
+            messages, config, model_settings=model_settings
+        )
+    raise LLMAPIError(
+        f"role API requires an OpenAI protocol, got {model_settings.protocol}"
+    )
+
+
 def compress_memory_sdk(
     global_memory: GlobalMemory,
     config: ConfigSDK,
@@ -677,11 +629,7 @@ def compress_memory_sdk(
 
     # Call API using SDK
     try:
-        response_text, usage = call_openai_api_sdk(
-            messages,
-            config,
-            model_settings=config.main_model
-        )
+        response_text, usage = call_role_api_sdk(messages, config, config.refine)
 
         # Extract JSON
         json_str = extract_json_from_response(response_text)
@@ -720,12 +668,7 @@ def test_api_connection_sdk(config: ConfigSDK) -> bool:
         messages = [
             {"role": "user", "content": "Reply with just 'OK'"}
         ]
-        response_text, _ = call_openai_api_sdk(
-            messages,
-            config,
-            max_retries=1,
-            model_settings=config.main_model
-        )
+        response_text, _ = call_role_api_sdk(messages, config, config.refine)
         return "OK" in response_text or "ok" in response_text.lower()
     except Exception as e:
         print(f"API connection test failed: {str(e)}")
@@ -740,9 +683,8 @@ def test_api_connection_sdk(config: ConfigSDK) -> bool:
 def call_openai_api_sdk_streaming(
     messages: List[dict],
     config: ConfigSDK,
-    max_retries: int = 3,
     *,
-    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    model_settings: Optional[RoleModelSettings] = None,
     model_name: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
@@ -755,7 +697,6 @@ def call_openai_api_sdk_streaming(
     Args:
         messages: List of message dictionaries with 'role' and 'content'
         config: ConfigSDK object
-        max_retries: Maximum number of retry attempts
         model_settings: Optional model settings block
         model_name: Optional explicit model override
         max_output_tokens: Override completion token limit
@@ -770,27 +711,26 @@ def call_openai_api_sdk_streaming(
         LLMAPIError: If API call fails after retries
     """
     # Determine model settings
-    settings = model_settings or getattr(config, "main_model", None)
-
-    # Resolve credentials (may use model-specific overrides)
-    # Show credential info in debug mode (-vvv)
-    verbose_creds = getattr(config, "debug_prompts", False)
-    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+    settings = model_settings or config.refine
+    provider_config = settings.config
+    if provider_config.protocol is not ModelProtocol.OPENAI_CHAT_COMPATIBLE:
+        raise LLMAPIError(
+            f"chat completions require openai-chat-compatible, got {provider_config.protocol}"
+        )
 
     # Initialize OpenAI client with resolved credentials
     client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=config.api_timeout
+        api_key=provider_config.api_key,
+        base_url=provider_config.base_url,
+        timeout=provider_config.timeout,
+        max_retries=0,
     )
 
-    target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
-    target_output_tokens = max_output_tokens or (
-        settings.max_output_tokens if settings else getattr(config, "max_output_tokens", None)
-    )
-    default_reasoning = getattr(settings, "reasoning_effort", None)
+    target_model = model_name or settings.model
+    target_output_tokens = max_output_tokens or settings.max_output_tokens
+    default_reasoning = settings.reasoning_effort
     target_reasoning = reasoning_effort if reasoning_effort is not None else default_reasoning
-    target_temperature = temperature if temperature is not None else getattr(settings, "temperature", None)
+    target_temperature = temperature if temperature is not None else settings.temperature
 
     if not target_model:
         raise LLMAPIError("Model name is not configured")
@@ -798,8 +738,9 @@ def call_openai_api_sdk_streaming(
     if target_output_tokens is None:
         raise LLMAPIError("max_output_tokens must be specified for the selected model")
 
+    retry_limit = settings.max_retries
     attempt = 0
-    while attempt < max_retries:
+    while attempt <= retry_limit:
         # Build API call parameters
         api_params = {
             "model": target_model,
@@ -872,19 +813,19 @@ def call_openai_api_sdk_streaming(
 
             # Check if this is a timeout error
             if "timeout" in error_msg.lower():
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Request timeout. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Request timeout. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
-                raise LLMAPIError(f"API request timed out after {max_retries} attempts")
+                raise LLMAPIError(f"API request timed out after {retry_limit + 1} attempts")
 
             # Check if this is a server error (500+)
             if "status_code" in error_msg or "500" in error_msg or "503" in error_msg:
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Server error. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Server error. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
@@ -894,7 +835,7 @@ def call_openai_api_sdk_streaming(
 
         attempt += 1
 
-    raise LLMAPIError(f"Failed after {max_retries} attempts")
+    raise LLMAPIError(f"Failed after {retry_limit + 1} attempts")
 
 
 def refine_chunk_sdk_streaming(
@@ -949,7 +890,7 @@ def refine_chunk_sdk_streaming(
         response_text, usage = call_openai_api_sdk_streaming(
             messages,
             config,
-            model_settings=config.main_model,
+            model_settings=config.refine,
             chunk_callback=chunk_callback
         )
 
@@ -1080,9 +1021,8 @@ def refine_chunk_sdk_streaming(
 def call_openai_api_response(
     messages: List[dict],
     config: ConfigSDK,
-    max_retries: int = 3,
     *,
-    model_settings: Optional[Union[MainModelSettings, TerminologyModelSettings]] = None,
+    model_settings: Optional[RoleModelSettings] = None,
     model_name: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
@@ -1099,7 +1039,6 @@ def call_openai_api_response(
         messages: List of message dictionaries with 'role' and 'content'
                   (will be converted to Responses API format)
         config: ConfigSDK object
-        max_retries: Maximum number of retry attempts
         model_settings: Optional model settings block
         model_name: Optional explicit model override
         max_output_tokens: Override completion token limit
@@ -1114,26 +1053,26 @@ def call_openai_api_response(
         LLMAPIError: If API call fails after retries
     """
     # Determine model settings
-    settings = model_settings or getattr(config, "main_model", None)
-
-    # Resolve credentials
-    verbose_creds = getattr(config, "debug_prompts", False)
-    api_key, base_url = _resolve_model_credentials(config, settings, verbose=verbose_creds)
+    settings = model_settings or config.refine
+    provider_config = settings.config
+    if provider_config.protocol is not ModelProtocol.OPENAI_RESPONSES:
+        raise LLMAPIError(
+            f"Responses API requires openai-responses, got {provider_config.protocol}"
+        )
 
     # Initialize OpenAI client
     client = OpenAI(
-        api_key=api_key,
-        base_url=base_url,
-        timeout=config.api_timeout
+        api_key=provider_config.api_key,
+        base_url=provider_config.base_url,
+        timeout=provider_config.timeout,
+        max_retries=0,
     )
 
-    target_model = model_name or (settings.name if settings else getattr(config, "model_name", None))
-    target_output_tokens = max_output_tokens or (
-        settings.max_output_tokens if settings else getattr(config, "max_output_tokens", None)
-    )
-    default_reasoning = getattr(settings, "reasoning_effort", None)
+    target_model = model_name or settings.model
+    target_output_tokens = max_output_tokens or settings.max_output_tokens
+    default_reasoning = settings.reasoning_effort
     target_reasoning = reasoning_effort if reasoning_effort is not None else default_reasoning
-    target_temperature = temperature if temperature is not None else getattr(settings, "temperature", None)
+    target_temperature = temperature if temperature is not None else settings.temperature
 
     if not target_model:
         raise LLMAPIError("Model name is not configured")
@@ -1151,8 +1090,9 @@ def call_openai_api_response(
         else:
             input_messages.append(msg)
 
+    retry_limit = settings.max_retries
     attempt = 0
-    while attempt < max_retries:
+    while attempt <= retry_limit:
         # Build API call parameters for Responses API
         api_params = {
             "model": target_model,
@@ -1227,19 +1167,19 @@ def call_openai_api_response(
 
             # Check if this is a timeout error
             if "timeout" in error_msg.lower():
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Request timeout. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Request timeout. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
-                raise LLMAPIError(f"API request timed out after {max_retries} attempts")
+                raise LLMAPIError(f"API request timed out after {retry_limit + 1} attempts")
 
             # Check if this is a server error (500+)
             if "status_code" in error_msg or "500" in error_msg or "503" in error_msg:
-                if attempt < max_retries - 1:
+                if attempt < retry_limit:
                     wait_time = 2 ** attempt
-                    print(f"  Server error. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                    print(f"  Server error. Retrying in {wait_time}s... (retry {attempt + 1}/{retry_limit})")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
@@ -1249,7 +1189,7 @@ def call_openai_api_response(
 
         attempt += 1
 
-    raise LLMAPIError(f"Failed after {max_retries} attempts")
+    raise LLMAPIError(f"Failed after {retry_limit + 1} attempts")
 
 
 def refine_chunk_sdk_response(
@@ -1304,7 +1244,7 @@ def refine_chunk_sdk_response(
         response_text, usage = call_openai_api_response(
             messages,
             config,
-            model_settings=config.main_model,
+            model_settings=config.refine,
             chunk_callback=chunk_callback
         )
 

@@ -24,6 +24,8 @@ def settings(tmp_path: Path, *, operations: tuple[str, ...] = ()) -> SubtitleEdi
         source_dir=tmp_path / "source",
         build_dir=tmp_path / "build",
         dotnet_executable="dotnet-test",
+        settings_file=tmp_path / "subtitle-edit-settings.json",
+        multiple_replace_file=tmp_path / "multiple-replace.template",
         operations=operations,
     )
 
@@ -46,6 +48,8 @@ def test_settings_reject_invalid_values(
         "source_dir": tmp_path / "source",
         "build_dir": tmp_path / "build",
         "dotnet_executable": "dotnet",
+        "settings_file": tmp_path / "subtitle-edit-settings.json",
+        "multiple_replace_file": tmp_path / "multiple-replace.template",
         "operations": (),
     }
     values.update(overrides)
@@ -206,8 +210,10 @@ def test_preprocess_invokes_exact_command_and_strictly_parses_output(
             "--overwrite",
             "--encoding:utf-8-no-bom",
             "--json",
+            f"--settings:{configured.settings_file}",
             "--remove-text-for-hearing-impaired",
             "--fix-common-errors",
+            f"--multiple-replace:{configured.multiple_replace_file}",
         ]
     ]
 

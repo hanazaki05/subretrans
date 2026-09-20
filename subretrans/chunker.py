@@ -48,7 +48,7 @@ def chunk_pairs(
     safety_margin = 1000  # Reserve for JSON formatting overhead
     max_chunk_tokens = available_tokens - safety_margin
 
-    current_model = config.main_model.name
+    current_model = config.refine.model
 
     for pair in pairs:
         pair_tokens = estimate_pair_tokens(pair, current_model)
