@@ -202,3 +202,32 @@ def test_missing_handler_fails_when_building_pipeline() -> None:
 
     with pytest.raises(ValueError, match="missing stage handlers: qa"):
         build_pipeline(handlers, checkpointer=InMemorySaver())
+
+
+def test_failed_stage_resumes_without_repeating_completed_stages() -> None:
+    calls: list[str] = []
+    handlers = recording_handlers(calls)
+    attempts = 0
+    original_refine = handlers["refine_serial"]
+
+    def refine(state: PipelineState) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient refine failure")
+        return original_refine(state)
+
+    handlers["refine_serial"] = refine
+    pipeline = build_pipeline(handlers, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "resume-failure"}}
+
+    with pytest.raises(RuntimeError, match="transient refine failure"):
+        pipeline.invoke(initial_state(), config)
+
+    result = pipeline.invoke(None, config)
+
+    assert result["__interrupt__"]
+    assert calls.count("preprocess") == 1
+    assert calls.count("translate_parallel") == 1
+    assert calls.count("merge_ass") == 1
+    assert attempts == 2

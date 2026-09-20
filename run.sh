@@ -4,19 +4,19 @@
 #
 # Usage:
 #   ./run.sh input.ass output.ass [options]             # Run subretrans.cli
-#   ./run.sh genreq input.ass --pairs-per-chunk 120     # Run subretrans.genreq
+#   ./run.sh genreq input.ass --refine-batch-size 120   # Run subretrans.genreq
 #   ./run.sh pipeline run input.srt output.ass [...]     # Run agent pipeline
 #
 # Examples:
 #   ./run.sh ~/files/input.ass ~/files/output.ass --stream -v
 #   ./run.sh input.ass output.ass --dry-run
-#   ./run.sh genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
+#   ./run.sh genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120
 #   cd /tmp && /path/to/subretrans/run.sh input.ass output.ass
 #
 # Works with symlinks:
 #   ln -s /path/to/subretrans/run.sh ~/bin/subretrans
 #   subretrans input.ass output.ass --stream -v
-#   subretrans genreq input.ass --pairs-per-chunk 120
+#   subretrans genreq input.ass --refine-batch-size 120
 #
 
 # Resolve the real path of this script, even if it's a symlink

@@ -73,6 +73,8 @@ def build_chat_model(
     if config.protocol is ModelProtocol.GOOGLE_GEMINI:
         if config.max_output_tokens is not None:
             common_args["max_output_tokens"] = config.max_output_tokens
+        if config.reasoning_effort is not None:
+            common_args["reasoning_effort"] = config.reasoning_effort
         if config.temperature is not None:
             common_args["temperature"] = config.temperature
         if config.base_url is not None:

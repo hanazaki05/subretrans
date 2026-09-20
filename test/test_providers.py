@@ -149,6 +149,28 @@ def test_google_gemini_routes_custom_base_url(chat_google) -> None:
     )
 
 
+@patch("subretrans.providers.ChatGoogleGenerativeAI")
+def test_google_gemini_maps_reasoning_effort(chat_google) -> None:
+    config = ModelConfig(
+        protocol=ModelProtocol.GOOGLE_GEMINI,
+        model="gemini-test",
+        api_key="test-key",
+        base_url=None,
+        timeout=45.0,
+        reasoning_effort="high",
+    )
+
+    build_chat_model(config)
+
+    chat_google.assert_called_once_with(
+        model="gemini-test",
+        api_key="test-key",
+        timeout=45.0,
+        max_retries=0,
+        reasoning_effort="high",
+    )
+
+
 @patch("subretrans.providers.ChatOpenAI")
 def test_legacy_openai_chat_compatible_disables_responses_api(chat_openai) -> None:
     config = model_config(

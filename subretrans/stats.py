@@ -98,34 +98,13 @@ def accumulate_usage(total: UsageStats, new_usage: UsageStats) -> UsageStats:
     return total + new_usage
 
 
-def estimate_cost(
-    usage: UsageStats,
-    price_per_1k_prompt: float,
-    price_per_1k_completion: float
-) -> float:
-    """
-    Estimate cost based on usage statistics and pricing.
-
-    Args:
-        usage: UsageStats object
-        price_per_1k_prompt: Price per 1000 prompt tokens (USD)
-        price_per_1k_completion: Price per 1000 completion tokens (USD)
-
-    Returns:
-        Estimated cost in USD
-    """
-    prompt_cost = (usage.prompt_tokens / 1000.0) * price_per_1k_prompt
-    completion_cost = (usage.completion_tokens / 1000.0) * price_per_1k_completion
-    return prompt_cost + completion_cost
-
-
-def format_usage_report(usage: UsageStats, cost: float) -> str:
+def format_usage_report(usage: UsageStats, cost: object | None = None) -> str:
     """
     Format usage statistics as human-readable report.
 
     Args:
         usage: UsageStats object
-        cost: Estimated cost in USD
+        cost: Estimated cost in USD, if pricing was available
 
     Returns:
         Formatted report string
@@ -143,15 +122,16 @@ def format_usage_report(usage: UsageStats, cost: float) -> str:
 
     lines.append(f"Total tokens:      {usage.total_tokens:>10,}")
 
-    lines.extend([
-        "-" * 50,
-        f"Estimated cost:    ${cost:>10.4f} USD",
-        "=" * 50 + "\n"
-    ])
+    lines.append("-" * 50)
+    if cost is None:
+        lines.append("Estimated cost:    unavailable")
+    else:
+        lines.append(f"Estimated cost:    ${cost:>10.4f} USD")
+    lines.append("=" * 50 + "\n")
     return "\n".join(lines)
 
 
-def print_usage_report(usage: UsageStats, cost: float) -> None:
+def print_usage_report(usage: UsageStats, cost: object | None = None) -> None:
     """
     Print usage statistics report to console.
 

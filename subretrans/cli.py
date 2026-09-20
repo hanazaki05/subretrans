@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Main entry point for subtitle refinement using OpenAI SDK.
-
-This is the SDK version that supports both streaming and non-streaming modes.
-"""
+"""Command-line entry point for provider-neutral subtitle refinement."""
 
 import argparse
 import hashlib
@@ -47,7 +43,6 @@ from .memory import (
 from .stats import (
     init_usage_stats,
     accumulate_usage,
-    estimate_cost,
     print_usage_report,
     print_chunk_progress
 )
@@ -251,17 +246,22 @@ def process_subtitles(
             mode_str = "openai response stream"
         elif protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE:
             mode_str = f"openai chat-completion {'stream' if use_stream else 'non-stream'}"
+        elif protocol in {
+            ModelProtocol.ANTHROPIC_MESSAGES,
+            ModelProtocol.GOOGLE_GEMINI,
+        }:
+            mode_str = f"{protocol.value} non-stream"
         else:
             raise ValueError(f"unsupported refinement protocol: {protocol}")
 
         print(f"\n{'='*60}")
-        print(f"SUBTITLE REFINEMENT TOOL (OpenAI SDK)")
+        print("SUBTITLE REFINEMENT TOOL")
         print(f"{'='*60}")
         print(f"Input:     {input_path}")
         print(f"Output:    {output_path}")
         print(f"Model:     {config.refine.model}")
         print(f"Mode:      {mode_str}")
-        print(f"Format:    {config.intermediate_format.upper()}")
+        print(f"Representation: {config.intermediate_representation.upper()}")
         print(f"{'='*60}\n")
 
         # Step 1: Parse ASS file
@@ -394,8 +394,8 @@ def process_subtitles(
         base_prompt_tokens = estimate_base_prompt_tokens(config, global_memory)
         print(f"  Base prompt tokens: {base_prompt_tokens:,}")
 
-        if config.pairs_per_chunk:
-            print(f"  Chunking strategy: Fixed {config.pairs_per_chunk} pairs per chunk")
+        if config.refine_batch_size:
+            print(f"  Chunking strategy: Fixed {config.refine_batch_size} pairs per chunk")
         else:
             print(f"  Chunking strategy: Token-based (max ~{config.chunk_token_soft_limit:,} tokens)")
 
@@ -471,7 +471,7 @@ def process_subtitles(
                         print()  # New line after stream output
                         if config.debug_prompts:
                             print("  " + "-" * 58)
-                elif use_stream:
+                elif protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE and use_stream:
                     if config.debug_prompts:
                         # In debug mode, show header for real-time LLM output
                         print("\n  LLM Output (real-time):")
@@ -619,12 +619,24 @@ def process_subtitles(
             )
 
         # Step 8: Print statistics
-        cost = estimate_cost(
-            total_usage,
-            config.price_per_1k_prompt_tokens,
-            config.price_per_1k_completion_tokens
-        )
-        print_usage_report(total_usage, cost)
+        from .pricing import calculate_cost, load_model_pricing
+
+        pricing = load_model_pricing(config.refine.model)
+        if pricing is None:
+            print_usage_report(total_usage)
+            print(f"  CCH pricing: no exact match for {config.refine.model}")
+        else:
+            cost = calculate_cost(
+                pricing,
+                prompt_tokens=total_usage.prompt_tokens,
+                completion_tokens=total_usage.completion_tokens,
+            )
+            print_usage_report(total_usage, cost)
+            print(
+                "  CCH pricing: "
+                f"{pricing.model_name} via {pricing.provider}; "
+                f"table {pricing.version} ({pricing.refreshed_at})"
+            )
 
         print("\n✓ Subtitle refinement completed successfully!\n")
         return True
@@ -639,7 +651,7 @@ def process_subtitles(
 def main():
     """Main CLI entry point for SDK version."""
     parser = argparse.ArgumentParser(
-        description="Refine bilingual (English-Chinese) ASS subtitles using OpenAI SDK",
+        description="Refine bilingual (English-Chinese) ASS subtitles",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -656,13 +668,13 @@ Examples:
   python -m subretrans.cli input.ass output.ass --stream -v
 
   # Fixed pairs per chunk
-  python -m subretrans.cli input.ass output.ass --pairs-per-chunk 50
+  python -m subretrans.cli input.ass output.ass --refine-batch-size 50
 
   # Limit number of chunks
   python -m subretrans.cli input.ass output.ass --max-chunks 5
 
   # Resume from a specific pair index (e.g., after error)
-  python -m subretrans.cli input.ass output.ass --resume 680 --pairs-per-chunk 75
+  python -m subretrans.cli input.ass output.ass --resume 680 --refine-batch-size 75
 
   # Enable checkpointing for glossary and incremental episode story
   python -m subretrans.cli input.ass output.ass --checkpoint --stream
@@ -698,27 +710,13 @@ Note: Per-block update is enabled by default for data safety (write after each c
         action="store_true",
         default=None,
         dest="stream",
-        help="Use stream mode for real-time token generation (default: from config.yaml)"
+        help="Use stream mode for OpenAI chat-compatible refinement"
     )
     parser.add_argument(
         "--no-stream",
         action="store_false",
         dest="stream",
         help="Disable stream mode"
-    )
-    # Deprecated aliases for backward compatibility
-    parser.add_argument(
-        "--streaming",
-        action="store_true",
-        default=None,
-        dest="stream",
-        help=argparse.SUPPRESS  # hidden deprecated alias
-    )
-    parser.add_argument(
-        "--no-streaming",
-        action="store_false",
-        dest="stream",
-        help=argparse.SUPPRESS  # hidden deprecated alias
     )
     parser.add_argument(
         "--model",
@@ -743,22 +741,22 @@ Note: Per-block update is enabled by default for data safety (write after each c
         help="Memory token limit"
     )
     parser.add_argument(
-        "--pairs-per-chunk",
+        "--refine-batch-size",
         type=int,
         default=None,
         help="Number of subtitle pairs per chunk (overrides token-based chunking)"
+    )
+    parser.add_argument(
+        "--intermediate-representation",
+        choices=("json", "xml-pair", "pseudo-toml"),
+        default=None,
+        help="Override refine intermediate representation",
     )
     parser.add_argument(
         "-v", "--verbose",
         action="count",
         default=0,
         help="Enable verbose output (-v), very verbose (-vv) for full responses, or ultra verbose (-vvv) for system prompts"
-    )
-    parser.add_argument(
-        "--stats",
-        type=float,
-        default=1.0,
-        help="Stats refresh interval in seconds for verbose mode (default: 1.0)"
     )
     parser.add_argument(
         "--test-connection",
@@ -790,7 +788,7 @@ Note: Per-block update is enabled by default for data safety (write after each c
         action="store_true",
         default=None,
         dest="per_block_update",
-        help="Update output file after each chunk/block (default: from config.yaml, typically enabled for safety)"
+        help="Update output file after each chunk/block (enabled by default)"
     )
     parser.add_argument(
         "--no-per-block-update",
@@ -798,22 +796,6 @@ Note: Per-block update is enabled by default for data safety (write after each c
         default=None,
         dest="per_block_update",
         help="Write output file only once at the end (disables per-block updates)"
-    )
-
-    # Backward-compatible flags (deprecated)
-    parser.add_argument(
-        "--incremental-output",
-        action="store_true",
-        default=None,
-        dest="per_block_update",
-        help="DEPRECATED: use --per-block-update"
-    )
-    parser.add_argument(
-        "--no-incremental-output",
-        action="store_false",
-        default=None,
-        dest="per_block_update",
-        help="DEPRECATED: use --no-per-block-update"
     )
 
     args = parser.parse_args()
@@ -833,11 +815,11 @@ Note: Per-block update is enabled by default for data safety (write after each c
             dry_run=args.dry_run,
             max_chunks=args.max_chunks,
             memory_limit=args.memory_limit,
-            pairs_per_chunk=args.pairs_per_chunk,
+            refine_batch_size=args.refine_batch_size,
             verbose=verbose_enabled,
             very_verbose=very_verbose_enabled,
             debug_prompts=debug_prompts_enabled,
-            stats_interval=args.stats
+            intermediate_representation=args.intermediate_representation,
         )
     except ValueError as e:
         print(f"Configuration error: {e}")

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from subretrans.subtitle_processing import (
+    POSTPROCESS_OPERATIONS,
     AssAudit,
     SrtCue,
     audit_ass,
@@ -113,6 +114,7 @@ Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,<I>A.J. -- SECNAV</I>
     assert postprocess_ass(
         source,
         output,
+        POSTPROCESS_OPERATIONS,
         (
             ("萨拉", "莎拉"),
             ("罗伯茨", "罗伯特"),
@@ -127,6 +129,23 @@ Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,<I>A.J. -- SECNAV</I>
     assert "Dialogue:  1,0:00:01.00,0:00:02.00,C3,,0,0,0,,莎拉 罗伯特" in content
     assert r"Dialogue: -1,0:00:01.00,0:00:02.00,E3,,0,0,0,,{\i1}AJ ... SecNav{\i0}" in content
     assert source.read_text(encoding="utf-8-sig").startswith("[V4+ Styles]")
+
+
+def test_postprocess_ass_runs_only_selected_operations(tmp_path: Path) -> None:
+    source = _write(
+        tmp_path / "input.ass",
+        "Style: Chinese3,Arial\n萨拉……\n",
+    )
+    output = tmp_path / "output.ass"
+
+    postprocess_ass(
+        source,
+        output,
+        ("normalize_style_names",),
+        (("萨拉", "莎拉"),),
+    )
+
+    assert output.read_text(encoding="utf-8") == "Style: C3,Arial\n萨拉……\n"
 
 
 def test_audit_ass_reports_structural_failures(tmp_path: Path) -> None:

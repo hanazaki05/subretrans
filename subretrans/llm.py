@@ -10,11 +10,12 @@ import time
 from typing import List, Tuple, Optional, Callable
 
 # OpenAI SDK imports
+from langchain_core.messages import AIMessage
 from openai import OpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from .config import ConfigSDK, RoleModelSettings
-from .providers import ModelProtocol
+from .providers import ModelProtocol, build_chat_model
 from .pairs import SubtitlePair
 from .memory import (
     GlobalMemory,
@@ -435,7 +436,7 @@ def refine_chunk_sdk(
     system_content = build_system_prompt(global_memory, config)
 
     # Serialize pairs using configured format
-    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_representation)
     user_content = build_user_prompt_for_chunk(pairs_serialized)
 
     # Prepare messages
@@ -452,17 +453,13 @@ def refine_chunk_sdk(
 
     # Call API using SDK
     try:
-        response_text, usage = call_openai_api_sdk(
-            messages,
-            config,
-            model_settings=config.refine
-        )
+        response_text, usage = call_role_api_sdk(messages, config, config.refine)
 
         # Clean response (remove thinking blocks, extract from code blocks)
         cleaned = _clean_llm_response(response_text)
 
         # For JSON format, additional validation
-        if config.intermediate_format.lower() == "json":
+        if config.intermediate_representation.lower() == "json":
             if not validate_response_format(cleaned):
                 try:
                     preview = (response_text or "").rstrip()
@@ -473,24 +470,24 @@ def refine_chunk_sdk(
                 print(preview if preview else "[Empty response]")
                 print()
 
-                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_representation} format")
 
         # Deserialize using configured format (with fallback pattern extraction)
         try:
-            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+            corrected_pairs = deserialize(cleaned, config.intermediate_representation)
         except SerializationError as e:
             # Stage 2: Fallback - try pattern-based extraction
             print(f"\n  [Deserialization failed, attempting pattern extraction...]")
 
-            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_representation)
             if extracted is not None:
                 print(f"  [Pattern extraction successful, retrying deserialization...]")
                 try:
-                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    corrected_pairs = deserialize(extracted, config.intermediate_representation)
                     print(f"  [Recovery successful!]\n")
                 except SerializationError as e2:
                     # Stage 3: Best-effort recovery - salvage valid pairs and skip malformed ones
-                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_representation)
                     if recovered_pairs:
                         skipped = len(recovery_errors)
                         print(f"  [Recovery failed]: {str(e2)}")
@@ -501,10 +498,10 @@ def refine_chunk_sdk(
                         print(f"  [Recovery failed]: {str(e2)}")
                         print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                         print(f"  [Extracted excerpt]: {extracted[:500]}...")
-                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
             else:
                 # Pattern extraction found nothing
-                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_representation)
                 if recovered_pairs:
                     skipped = len(recovery_errors)
                     print(f"  [Pattern extraction found no markers]")
@@ -514,7 +511,7 @@ def refine_chunk_sdk(
                     print(f"  [Pattern extraction found no markers]")
                     print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                     print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
 
         # Check for duplicate pairs
         duplicates = _detect_duplicate_pairs(corrected_pairs)
@@ -581,7 +578,7 @@ def call_role_api_sdk(
     config: ConfigSDK,
     model_settings: RoleModelSettings,
 ) -> Tuple[str, UsageStats]:
-    """Dispatch one role call according to its configured OpenAI protocol."""
+    """Dispatch one role call according to its configured provider protocol."""
 
     if model_settings.protocol is ModelProtocol.OPENAI_CHAT_COMPATIBLE:
         return call_openai_api_sdk(
@@ -591,9 +588,29 @@ def call_role_api_sdk(
         return call_openai_api_response(
             messages, config, model_settings=model_settings
         )
-    raise LLMAPIError(
-        f"role API requires an OpenAI protocol, got {model_settings.protocol}"
-    )
+    if model_settings.protocol in {
+        ModelProtocol.ANTHROPIC_MESSAGES,
+        ModelProtocol.GOOGLE_GEMINI,
+    }:
+        try:
+            response = build_chat_model(model_settings.config).invoke(messages)
+        except Exception as error:
+            raise LLMAPIError(f"API request failed: {error}") from error
+        if not isinstance(response, AIMessage):
+            raise LLMAPIError("model response must be an AIMessage")
+        response_text = response.text
+        if not isinstance(response_text, str):
+            raise LLMAPIError("AIMessage text must be a string")
+        raw_usage = response.usage_metadata or {}
+        output_details = raw_usage.get("output_token_details") or {}
+        usage = UsageStats(
+            prompt_tokens=raw_usage.get("input_tokens", 0),
+            completion_tokens=raw_usage.get("output_tokens", 0),
+            total_tokens=raw_usage.get("total_tokens", 0),
+            reasoning_tokens=output_details.get("reasoning", 0),
+        )
+        return response_text, usage
+    raise LLMAPIError(f"unsupported role API protocol: {model_settings.protocol}")
 
 
 def compress_memory_sdk(
@@ -870,7 +887,7 @@ def refine_chunk_sdk_streaming(
     system_content = build_system_prompt(global_memory, config)
 
     # Serialize pairs using configured format
-    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_representation)
     user_content = build_user_prompt_for_chunk(pairs_serialized)
 
     # Prepare messages
@@ -898,7 +915,7 @@ def refine_chunk_sdk_streaming(
         cleaned = _clean_llm_response(response_text)
 
         # For JSON format, additional validation
-        if config.intermediate_format.lower() == "json":
+        if config.intermediate_representation.lower() == "json":
             if not validate_response_format(cleaned):
                 try:
                     preview = (response_text or "").rstrip()
@@ -909,24 +926,24 @@ def refine_chunk_sdk_streaming(
                 print(preview if preview else "[Empty response]")
                 print()
 
-                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_representation} format")
 
         # Deserialize using configured format (with fallback pattern extraction)
         try:
-            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+            corrected_pairs = deserialize(cleaned, config.intermediate_representation)
         except SerializationError as e:
             # Stage 2: Fallback - try pattern-based extraction
             print(f"\n  [Deserialization failed, attempting pattern extraction...]")
 
-            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_representation)
             if extracted is not None:
                 print(f"  [Pattern extraction successful, retrying deserialization...]")
                 try:
-                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    corrected_pairs = deserialize(extracted, config.intermediate_representation)
                     print(f"  [Recovery successful!]\n")
                 except SerializationError as e2:
                     # Stage 3: Best-effort recovery - salvage valid pairs and skip malformed ones
-                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_representation)
                     if recovered_pairs:
                         skipped = len(recovery_errors)
                         print(f"  [Recovery failed]: {str(e2)}")
@@ -937,10 +954,10 @@ def refine_chunk_sdk_streaming(
                         print(f"  [Recovery failed]: {str(e2)}")
                         print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                         print(f"  [Extracted excerpt]: {extracted[:500]}...")
-                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
             else:
                 # Pattern extraction found nothing
-                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_representation)
                 if recovered_pairs:
                     skipped = len(recovery_errors)
                     print(f"  [Pattern extraction found no markers]")
@@ -950,7 +967,7 @@ def refine_chunk_sdk_streaming(
                     print(f"  [Pattern extraction found no markers]")
                     print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                     print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
 
         # Check for duplicate pairs
         duplicates = _detect_duplicate_pairs(corrected_pairs)
@@ -1224,7 +1241,7 @@ def refine_chunk_sdk_response(
     system_content = build_system_prompt(global_memory, config)
 
     # Serialize pairs using configured format
-    pairs_serialized = serialize(pairs_chunk, config.intermediate_format)
+    pairs_serialized = serialize(pairs_chunk, config.intermediate_representation)
     user_content = build_user_prompt_for_chunk(pairs_serialized)
 
     # Prepare messages (will be converted to Responses API format internally)
@@ -1252,7 +1269,7 @@ def refine_chunk_sdk_response(
         cleaned = _clean_llm_response(response_text)
 
         # For JSON format, additional validation
-        if config.intermediate_format.lower() == "json":
+        if config.intermediate_representation.lower() == "json":
             if not validate_response_format(cleaned):
                 try:
                     preview = (response_text or "").rstrip()
@@ -1263,24 +1280,24 @@ def refine_chunk_sdk_response(
                 print(preview if preview else "[Empty response]")
                 print()
 
-                raise LLMAPIError(f"Response is not in expected {config.intermediate_format} format")
+                raise LLMAPIError(f"Response is not in expected {config.intermediate_representation} format")
 
         # Deserialize using configured format (with fallback pattern extraction)
         try:
-            corrected_pairs = deserialize(cleaned, config.intermediate_format)
+            corrected_pairs = deserialize(cleaned, config.intermediate_representation)
         except SerializationError as e:
             # Stage 2: Fallback - try pattern-based extraction
             print(f"\n  [Deserialization failed, attempting pattern extraction...]")
 
-            extracted = _extract_from_format_marker(cleaned, config.intermediate_format)
+            extracted = _extract_from_format_marker(cleaned, config.intermediate_representation)
             if extracted is not None:
                 print(f"  [Pattern extraction successful, retrying deserialization...]")
                 try:
-                    corrected_pairs = deserialize(extracted, config.intermediate_format)
+                    corrected_pairs = deserialize(extracted, config.intermediate_representation)
                     print(f"  [Recovery successful!]\n")
                 except SerializationError as e2:
                     # Stage 3: Best-effort recovery
-                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_format)
+                    recovered_pairs, recovery_errors = deserialize_best_effort(extracted, config.intermediate_representation)
                     if recovered_pairs:
                         skipped = len(recovery_errors)
                         print(f"  [Recovery failed]: {str(e2)}")
@@ -1290,9 +1307,9 @@ def refine_chunk_sdk_response(
                         print(f"  [Recovery failed]: {str(e2)}")
                         print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                         print(f"  [Extracted excerpt]: {extracted[:500]}...")
-                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                        raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
             else:
-                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_format)
+                recovered_pairs, recovery_errors = deserialize_best_effort(cleaned, config.intermediate_representation)
                 if recovered_pairs:
                     skipped = len(recovery_errors)
                     print(f"  [Pattern extraction found no markers]")
@@ -1302,7 +1319,7 @@ def refine_chunk_sdk_response(
                     print(f"  [Pattern extraction found no markers]")
                     print(f"  [Cleaned response excerpt]: {cleaned[:500]}...")
                     print(f"  [Raw response excerpt]: {response_text[:500]}...\n")
-                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_format} response: {str(e)}")
+                    raise LLMAPIError(f"Failed to deserialize {config.intermediate_representation} response: {str(e)}")
 
         # Check for duplicate pairs
         duplicates = _detect_duplicate_pairs(corrected_pairs)

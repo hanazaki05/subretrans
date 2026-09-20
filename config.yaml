@@ -1,5 +1,4 @@
-# Configuration for OpenAI SDK-based subtitle refinement
-# This file controls all aspects of the subtitle processing pipeline
+# Unified configuration for the subtitle processing pipeline.
 
 # Model roles. Every role is self-contained and uses paths relative to this file.
 api:
@@ -11,7 +10,7 @@ api:
     timeout: 30000
     max_retries: 0
     max_output_tokens: 27000
-    reasoning_effort: "high"
+    reasoning_effort: null
     temperature: 1.0
   refine:
     protocol: "google-gemini"
@@ -41,19 +40,37 @@ api:
     timeout: 30000
     max_retries: 2
     max_output_tokens: 27000
-    reasoning_effort: "high"
+    reasoning_effort: null
     temperature: 1.0
 
-# Agent pipeline persistence and initial-translation settings.
+# Persistent pipeline state and agent repair policy.
 pipeline:
   state_dir: ".subretrans-runs"
   checkpoint_db: ".subretrans-runs/pipeline.sqlite3"
-  batch_size: 20
-  max_workers: 4
   agent_max_repair_attempts: 2
+
+primer:
+  batch_size: 60
+  max_workers: 4
   source_language: "English"
   target_language: "Simplified Chinese"
   user_instruction: "Preserve subtitle line breaks and formatting tags."
+
+refine:
+  batch_size: 77  # null uses token-based chunking
+  chunk_token_soft_limit: 85000
+  memory_token_limit: 4000
+  intermediate_representation: "xml-pair"
+  prompt_path: "rm/prompt_afters6e24.md"
+
+postprocess:
+  operations:
+    - "clean_chinese_dialogue"
+    - "normalize_punctuation"
+    - "normalize_style_names"
+    - "normalize_event_fields"
+    - "normalize_italics"
+    - "episode_replacements"
   episode_replacements:
     - {from: "萨拉", to: "莎拉"}
     - {from: "罗伯茨", to: "罗伯特"}
@@ -75,41 +92,8 @@ subtitle_edit:
     - "--remove-line-breaks"
     - "--fix-common-errors-rules:FixEmptyLines,FixInvalidItalicTags,FixUnneededSpaces,FixMissingSpaces,FixUnneededPeriods,FixCommas,FixShortLines,FixDoubleApostrophes,FixCommonOcrErrors,FixMissingOpenBracket,FixDoubleGreaterThan,FixDoubleDash,FixHyphensRemoveDashSingleLine,AddMissingQuotes"
 
-# Token management
-tokens:
-  max_context_tokens: 160000
-  memory_token_limit: 4000
-  chunk_token_soft_limit: 85000
-
-format:
-  intermediate_format: "xml-pair"
-
-# Chunking strategy
-chunking:
-  pairs_per_chunk: null  # If set, use fixed pair count instead of token-based chunking
-
-# Pricing (USD per 1000 tokens)
-pricing:
-  prompt_tokens: 0.03
-  completion_tokens: 0.06
-
 # Glossary settings
 glossary:
   max_entries: 100
   policy: "lock"  # lock: user glossary is authoritative; learned terms cannot override
   terminology_min_confidence: 0.6  # Minimum confidence for extracted terminology entries
-
-# User customization
-user:
-  prompt_path: "/Users/zerozaki07/Downloads/subretrans/rm/prompt_afters6e24.md"  # Path to main prompt template file (plan3.md strategy)
-
-# Runtime options (can be overridden by CLI flags)
-runtime:
-  use_streaming: true  # Use OpenAI `chat/completion` stream API for real-time output (recommended)
-  per_block_update: true  # Update output file after each chunk/block (recommended for safety)
-  verbose: false  # Enable verbose output with detailed progress
-  very_verbose: false  # Dump full API responses (requires verbose)
-  debug_prompts: false  # Print system prompt/memory (requires very_verbose)
-  stats_interval: 1.0  # Stats refresh interval in seconds (for verbose mode)
-  dry_run: false  # Process limited pairs for testing
-  max_chunks: null  # Maximum chunks to process (null = all)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -33,9 +34,12 @@ from .workflow_config import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 RUN_METADATA_FIELDS = {
     "version",
     "config_path",
+    "review_path",
     "release_path",
     "translation_mode",
 }
@@ -70,11 +74,11 @@ def _load_run_metadata(path: Path) -> dict[str, Any]:
         payload = json.load(handle)
     if type(payload) is not dict or set(payload) != RUN_METADATA_FIELDS:
         raise ValueError(f"invalid run metadata: {path}")
-    if payload["version"] != 1:
-        raise ValueError("run metadata version must be 1")
+    if payload["version"] != 2:
+        raise ValueError("run metadata version must be 2")
     if payload["translation_mode"] not in {"parallel_initial", "serial_memory"}:
         raise ValueError("invalid run translation mode")
-    for field in ("config_path", "release_path"):
+    for field in ("config_path", "review_path", "release_path"):
         if type(payload[field]) is not str or not payload[field]:
             raise ValueError(f"run metadata {field} must be a non-empty string")
     return payload
@@ -156,18 +160,16 @@ def _refine_callable(config_path: Path):
 
         config = load_config_sdk(yaml_file_path=str(config_path))
         config.per_block_update = True
-        if config.refine.protocol.value == "openai-responses":
-            api_mode = "response"
-        elif config.refine.protocol.value == "openai-chat-compatible":
-            api_mode = "chat-completion"
-        else:
-            raise ValueError("refine API must use an OpenAI protocol")
+        use_stream = (
+            config.use_stream
+            if config.refine.protocol.value == "openai-chat-compatible"
+            else False
+        )
         success = process_subtitles(
             str(processing_input),
             str(output_path),
             config,
-            api_mode=api_mode,
-            use_stream=config.use_stream,
+            use_stream=use_stream,
             resume_index=resume_index or None,
             enable_checkpoint=True,
             checkpoint_path_override=str(checkpoint_path),
@@ -191,15 +193,18 @@ def _handlers(
     pipeline_settings: PipelineSettings,
     config_path: Path,
     run_dir: Path,
+    review_path: Path,
     release_path: Path,
 ):
     return build_stage_handlers(
         WorkflowSettings(
             run_dir=run_dir,
+            review_path=review_path,
             release_path=release_path,
-            batch_size=pipeline_settings.batch_size,
-            max_workers=pipeline_settings.max_workers,
+            primer_batch_size=pipeline_settings.primer_batch_size,
+            primer_max_workers=pipeline_settings.primer_max_workers,
             agent_max_repair_attempts=pipeline_settings.agent_max_repair_attempts,
+            postprocess_operations=pipeline_settings.postprocess_operations,
             episode_replacements=pipeline_settings.episode_replacements,
         ),
         preprocess_subtitle=_subtitle_preprocessor(config_path),
@@ -214,6 +219,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     config_path = Path(args.config).resolve()
     source_path = Path(args.input).resolve()
     release_path = Path(args.output).resolve()
+    review_path = source_path.parent / f"{release_path.stem}.review{release_path.suffix}"
     if not source_path.is_file():
         raise FileNotFoundError(f"input artifact not found: {source_path}")
     release_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,11 +231,31 @@ def run_pipeline(args: argparse.Namespace) -> int:
     run_dir.mkdir(parents=False, exist_ok=False)
     metadata_path = run_dir / "run.json"
     mode: TranslationMode = args.mode
+    model_versions = _configured_model_versions(config_path)
+    logger.info("Pipeline %s starting in %s mode", thread_id, mode)
+    logger.info("Input: %s", source_path)
+    logger.info("Run state: %s", run_dir)
+    logger.info("Review artifact: %s", review_path)
+    logger.info("Release artifact: %s", release_path)
+    logger.info(
+        "Models: primer=%s, refine=%s, extraction=%s, agent=%s",
+        model_versions["primer"],
+        model_versions["refine"],
+        model_versions["extraction"],
+        model_versions["agent"],
+    )
+    logger.info(
+        "Batching: primer=%d cues, primer_workers=%d, refine=%s",
+        pipeline_settings.primer_batch_size,
+        pipeline_settings.primer_max_workers,
+        pipeline_settings.refine_batch_size or "token-based",
+    )
     _atomic_json(
         metadata_path,
         {
-            "version": 1,
+            "version": 2,
             "config_path": str(config_path),
+            "review_path": str(review_path),
             "release_path": str(release_path),
             "translation_mode": mode,
         },
@@ -244,7 +270,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         "refine_chunk_cursor": 0,
         "memory_checkpoint_path": None,
         "memory_hash": "",
-        "model_versions": _configured_model_versions(config_path),
+        "model_versions": model_versions,
         "prompt_version": hashlib.sha256(config_path.read_bytes()).hexdigest(),
         "qa_conclusion": "pending",
         "qa_passed": False,
@@ -254,7 +280,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
     graph_config = {"configurable": {"thread_id": thread_id}}
     with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
         graph = build_pipeline(
-            _handlers(pipeline_settings, config_path, run_dir, release_path),
+            _handlers(
+                pipeline_settings, config_path, run_dir, review_path, release_path
+            ),
             checkpointer=saver,
         )
         result = graph.invoke(initial_state, graph_config)
@@ -263,6 +291,11 @@ def run_pipeline(args: argparse.Namespace) -> int:
     print(f"Pipeline '{thread_id}' is awaiting human review.")
     print(f"Review artifact: {result['artifact_path']}")
     print(f"QA: {result['qa_conclusion']}")
+    print(f"Agent repair attempts: {result['agent_repair_attempts']}")
+    print(
+        "Next: ./run.sh pipeline review "
+        f"{thread_id} approve --config {config_path}"
+    )
     return 0
 
 
@@ -275,16 +308,60 @@ def review_pipeline(args: argparse.Namespace) -> int:
     if Path(metadata["config_path"]) != config_path:
         raise ValueError("review config does not match the run config")
     release_path = Path(metadata["release_path"])
+    review_path = Path(metadata["review_path"])
+    logger.info(
+        "Pipeline %s review decision=%s; review artifact=%s",
+        thread_id,
+        args.decision,
+        review_path,
+    )
     graph_config = {"configurable": {"thread_id": thread_id}}
     with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
         graph = build_pipeline(
-            _handlers(pipeline_settings, config_path, run_dir, release_path),
+            _handlers(
+                pipeline_settings, config_path, run_dir, review_path, release_path
+            ),
             checkpointer=saver,
         )
         result = graph.invoke(Command(resume=args.decision), graph_config)
     print(f"Pipeline '{thread_id}' review decision: {args.decision}")
     if args.decision == "approve":
         print(f"Released artifact: {result['artifact_path']}")
+    else:
+        print(f"Not released: {release_path}")
+    return 0
+
+
+def resume_pipeline(args: argparse.Namespace) -> int:
+    thread_id = _validate_thread_id(args.thread_id)
+    config_path = Path(args.config).resolve()
+    pipeline_settings = load_pipeline_settings(config_path)
+    run_dir = pipeline_settings.state_dir / thread_id
+    metadata = _load_run_metadata(run_dir / "run.json")
+    if Path(metadata["config_path"]) != config_path:
+        raise ValueError("resume config does not match the run config")
+    review_path = Path(metadata["review_path"])
+    release_path = Path(metadata["release_path"])
+    logger.info("Pipeline %s resuming from its latest checkpoint", thread_id)
+    graph_config = {"configurable": {"thread_id": thread_id}}
+    with SqliteSaver.from_conn_string(str(pipeline_settings.checkpoint_db)) as saver:
+        graph = build_pipeline(
+            _handlers(
+                pipeline_settings, config_path, run_dir, review_path, release_path
+            ),
+            checkpointer=saver,
+        )
+        result = graph.invoke(None, graph_config)
+    if "__interrupt__" not in result:
+        raise RuntimeError("pipeline did not stop for human review")
+    print(f"Pipeline '{thread_id}' is awaiting human review.")
+    print(f"Review artifact: {result['artifact_path']}")
+    print(f"QA: {result['qa_conclusion']}")
+    print(f"Agent repair attempts: {result['agent_repair_attempts']}")
+    print(
+        "Next: ./run.sh pipeline review "
+        f"{thread_id} approve --config {config_path}"
+    )
     return 0
 
 
@@ -309,10 +386,20 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("decision", choices=("approve", "reject"))
     review.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
     review.set_defaults(func=review_pipeline)
+
+    resume = subparsers.add_parser("resume")
+    resume.add_argument("thread_id")
+    resume.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
+    resume.set_defaults(func=resume_pipeline)
     return parser
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
     args = build_parser().parse_args()
     return args.func(args)
 

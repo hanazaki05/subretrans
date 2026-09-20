@@ -1,6 +1,9 @@
 import json
 from types import SimpleNamespace
 
+from langchain_core.messages import AIMessage
+
+from subretrans.llm import call_role_api_sdk
 from subretrans.memory import (
     GlobalMemory,
     compress_memory_simple,
@@ -10,6 +13,7 @@ from subretrans.memory import (
 from subretrans.cli import load_memory_checkpoint, save_memory_checkpoint
 from subretrans.pairs import SubtitlePair
 from subretrans.prompts import build_system_prompt_legacy, inject_memory_into_template
+from subretrans.providers import ModelConfig, ModelProtocol
 
 
 def test_global_memory_roundtrip_and_compression_preserve_story_and_user_glossary() -> None:
@@ -126,3 +130,39 @@ def test_incremental_update_merges_glossary_and_replaces_story(monkeypatch) -> N
     assert updated.story_description == (
         "Harm briefs Mac; Webb is questioning a witness."
     )
+
+
+def test_gemini_role_dispatch_maps_langchain_usage(monkeypatch) -> None:
+    response = AIMessage(
+        content="result",
+        usage_metadata={
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "total_tokens": 18,
+            "output_token_details": {"reasoning": 3},
+        },
+    )
+    model = SimpleNamespace(invoke=lambda messages: response)
+    monkeypatch.setattr("subretrans.llm.build_chat_model", lambda config: model)
+    settings = SimpleNamespace(
+        protocol=ModelProtocol.GOOGLE_GEMINI,
+        config=ModelConfig(
+            protocol=ModelProtocol.GOOGLE_GEMINI,
+            model="gemini-test",
+            api_key="test-key",
+            base_url=None,
+            timeout=30,
+        ),
+    )
+
+    text, usage = call_role_api_sdk(
+        [{"role": "user", "content": "test"}], SimpleNamespace(), settings
+    )
+
+    assert text == "result"
+    assert usage.to_dict() == {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "total_tokens": 18,
+        "reasoning_tokens": 3,
+    }

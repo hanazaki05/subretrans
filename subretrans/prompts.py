@@ -194,10 +194,10 @@ def build_system_prompt_legacy(global_memory: 'GlobalMemory') -> str:
 
 def load_main_prompt_template(config) -> str:
     """
-    Load main prompt template from config.user_prompt_path.
+    Load the refine prompt template from config.refine_prompt_path.
 
     Args:
-        config: ConfigSDK-like object with user_prompt_path attribute
+        config: ConfigSDK-like object with refine_prompt_path attribute
 
     Returns:
         Template text as string
@@ -207,7 +207,7 @@ def load_main_prompt_template(config) -> str:
     """
     global _TEMPLATE_CACHE
 
-    prompt_path = getattr(config, "user_prompt_path", "main_prompt.md")
+    prompt_path = getattr(config, "refine_prompt_path", "main_prompt.md")
 
     # Resolve relative path
     if not os.path.isabs(prompt_path):
@@ -631,28 +631,30 @@ def build_system_prompt(global_memory: 'GlobalMemory', config=None) -> str:
     """
     Build complete system prompt with memory injection.
 
-    If config is provided and config.user_prompt_path exists, uses the new
+    If config is provided and config.refine_prompt_path exists, uses the new
     template-based approach from plan3.md. Otherwise falls back to legacy behavior.
 
     Args:
         global_memory: GlobalMemory object
-        config: Optional config object with user_prompt_path
+        config: Optional config object with refine_prompt_path
 
     Returns:
         Complete system prompt with memory
     """
     # Try new template-based approach if config is provided
     if config is not None:
-        prompt_path = getattr(config, "user_prompt_path", None)
+        prompt_path = getattr(config, "refine_prompt_path", None)
         if prompt_path:
             try:
                 template = load_main_prompt_template(config)
                 template = inject_memory_into_template(template, global_memory)
 
                 # Convert examples to target format if specified
-                intermediate_format = getattr(config, "intermediate_format", "json")
-                if intermediate_format and intermediate_format.lower() != "json":
-                    template = convert_examples_to_format(template, intermediate_format)
+                representation = getattr(
+                    config, "intermediate_representation", "json"
+                )
+                if representation and representation.lower() != "json":
+                    template = convert_examples_to_format(template, representation)
 
                 return template
             except FileNotFoundError as e:

@@ -19,16 +19,30 @@ def write_config(path: Path, content: str) -> Path:
     return path
 
 
-def pipeline_yaml(*, batch_size: str = "8", source_language: str = "English") -> str:
+def pipeline_yaml(
+    *, primer_batch_size: str = "8", refine_batch_size: str = "5",
+    source_language: str = "English"
+) -> str:
     return f"""pipeline:
   state_dir: runtime/state
   checkpoint_db: runtime/checkpoints.sqlite
-  batch_size: {batch_size}
-  max_workers: 3
   agent_max_repair_attempts: 2
+primer:
+  batch_size: {primer_batch_size}
+  max_workers: 3
   source_language: {source_language}
   target_language: Simplified Chinese
   user_instruction: Preserve speaker tone.
+refine:
+  batch_size: {refine_batch_size}
+  chunk_token_soft_limit: 80000
+  memory_token_limit: 4000
+  intermediate_representation: xml-pair
+  prompt_path: prompt.md
+postprocess:
+  operations:
+    - normalize_style_names
+    - episode_replacements
   episode_replacements:
     - {{from: old, to: new}}
 """
@@ -63,17 +77,19 @@ def test_pipeline_loader_resolves_paths_without_reading_translation_key(
     assert settings == PipelineSettings(
         state_dir=(tmp_path / "runtime/state").resolve(),
         checkpoint_db=(tmp_path / "runtime/checkpoints.sqlite").resolve(),
-        batch_size=8,
-        max_workers=3,
+        primer_batch_size=8,
+        refine_batch_size=5,
+        primer_max_workers=3,
         agent_max_repair_attempts=2,
         source_language="English",
         target_language="Simplified Chinese",
         user_instruction="Preserve speaker tone.",
+        postprocess_operations=("normalize_style_names", "episode_replacements"),
         episode_replacements=(("old", "new"),),
     )
     assert not (tmp_path / "missing-key").exists()
     with pytest.raises(FrozenInstanceError):
-        settings.batch_size = 4  # type: ignore[misc]
+        settings.primer_batch_size = 4  # type: ignore[misc]
 
 
 def test_pipeline_loader_accepts_absolute_paths_and_optional_instruction(
@@ -85,11 +101,21 @@ def test_pipeline_loader_accepts_absolute_paths_and_optional_instruction(
         f"""pipeline:
   state_dir: {absolute_state}
   checkpoint_db: checkpoint.sqlite
+  agent_max_repair_attempts: 0
+primer:
   batch_size: 1
   max_workers: 1
-  agent_max_repair_attempts: 0
   source_language: English
   target_language: Chinese
+  user_instruction: null
+refine:
+  batch_size: null
+  chunk_token_soft_limit: 80000
+  memory_token_limit: 4000
+  intermediate_representation: xml-pair
+  prompt_path: prompt.md
+postprocess:
+  operations: []
   episode_replacements: []
 """,
     )
@@ -98,23 +124,35 @@ def test_pipeline_loader_accepts_absolute_paths_and_optional_instruction(
 
     assert settings.state_dir == absolute_state.resolve()
     assert settings.checkpoint_db == (tmp_path / "checkpoint.sqlite").resolve()
+    assert settings.refine_batch_size is None
     assert settings.user_instruction is None
+    assert settings.postprocess_operations == ()
     assert settings.episode_replacements == ()
 
 
 @pytest.mark.parametrize(
     "content, match",
     [
-        (pipeline_yaml(batch_size="0"), "batch_size must be a positive integer"),
-        (pipeline_yaml(batch_size="true"), "batch_size must be a positive integer"),
+        (
+            pipeline_yaml(primer_batch_size="0"),
+            "primer.batch_size must be a positive integer",
+        ),
+        (
+            pipeline_yaml(refine_batch_size="true"),
+            "refine.batch_size must be a positive integer",
+        ),
         (pipeline_yaml(source_language="''"), "source_language must be a non-empty"),
         (
             pipeline_yaml().replace("  agent_max_repair_attempts: 2", "  agent_max_repair_attempts: -1"),
             "agent_max_repair_attempts must be a non-negative integer",
         ),
         (
-            pipeline_yaml() .replace("  max_workers: 3\n", "  max_workers: 3\n  extra: true\n"),
+            pipeline_yaml().replace("  max_workers: 3\n", "  max_workers: 3\n  extra: true\n"),
             "unknown fields: extra",
+        ),
+        (
+            pipeline_yaml().replace("    - normalize_style_names\n", "    - unknown\n"),
+            "postprocess.operations\\[0\\] is unsupported: unknown",
         ),
     ],
 )

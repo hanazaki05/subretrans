@@ -86,6 +86,7 @@ def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -
     source = tmp_path / "episode.mkv"
     source.write_bytes(b"fake media")
     run_dir = tmp_path / "run"
+    review_path = tmp_path / "episode.review.ass"
     release_path = tmp_path / "release.ass"
     preprocess_calls = []
     seen_batches = []
@@ -109,9 +110,10 @@ def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -
     handlers = build_stage_handlers(
         WorkflowSettings(
             run_dir,
+            review_path,
             release_path,
-            batch_size=1,
-            max_workers=1,
+            primer_batch_size=1,
+            primer_max_workers=1,
             agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
@@ -164,11 +166,17 @@ def test_parallel_handlers_run_core_chain_without_memory_in_manifest(tmp_path) -
     apply_update(state, handlers["postprocess"](state))
     apply_update(state, handlers["qa"](state))
     assert state["qa_conclusion"] == "passed"
+    assert state["artifact_path"] == str(review_path)
+    assert review_path.read_bytes() == (run_dir / "postprocessed.ass").read_bytes()
     assert handlers["human_review"](state) == {}
+    review_path.write_text(
+        review_path.read_text(encoding="utf-8-sig").replace("中:Hello", "人工修改"),
+        encoding="utf-8-sig",
+    )
     apply_update(state, handlers["release"](state))
     assert state["artifact_path"] == str(release_path)
     assert state["artifact_hash"] == sha256(release_path)
-    assert release_path.read_bytes() == (run_dir / "postprocessed.ass").read_bytes()
+    assert "人工修改" in release_path.read_text(encoding="utf-8-sig")
 
 
 def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
@@ -179,9 +187,10 @@ def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
     handlers = build_stage_handlers(
         WorkflowSettings(
             run_dir,
+            tmp_path / "serial-review.ass",
             release_path,
-            batch_size=2,
-            max_workers=2,
+            primer_batch_size=2,
+            primer_max_workers=2,
             agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
@@ -226,9 +235,10 @@ def test_refine_rejects_invalid_progress(tmp_path, mutate, match) -> None:
     handlers = build_stage_handlers(
         WorkflowSettings(
             tmp_path / "run",
+            tmp_path / "review.ass",
             tmp_path / "release.ass",
-            batch_size=1,
-            max_workers=1,
+            primer_batch_size=1,
+            primer_max_workers=1,
             agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
@@ -248,9 +258,10 @@ def test_qa_failure_reports_counts(tmp_path) -> None:
     handlers = build_stage_handlers(
         WorkflowSettings(
             tmp_path / "run",
+            tmp_path / "review.ass",
             tmp_path / "release.ass",
-            batch_size=1,
-            max_workers=1,
+            primer_batch_size=1,
+            primer_max_workers=1,
             agent_max_repair_attempts=2,
             episode_replacements=(),
         ),
@@ -275,9 +286,10 @@ def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> N
     handlers = build_stage_handlers(
         WorkflowSettings(
             run_dir,
+            tmp_path / "review.ass",
             tmp_path / "release.ass",
-            batch_size=1,
-            max_workers=1,
+            primer_batch_size=1,
+            primer_max_workers=1,
             agent_max_repair_attempts=1,
             episode_replacements=(),
         ),
@@ -306,7 +318,7 @@ def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> N
     exhausted_state["agent_repair_attempts"] = 1
     exhausted = handlers["qa"](exhausted_state)
     assert exhausted["qa_repair_applied"] is False
-    assert "artifact_path" not in exhausted
+    assert exhausted["artifact_path"] == str(tmp_path / "review.ass")
 
 
 def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_path) -> None:
@@ -317,9 +329,10 @@ def test_serial_preprocess_rejects_wrong_artifact_type_and_malformed_ass(tmp_pat
     handlers = build_stage_handlers(
         WorkflowSettings(
             tmp_path / "run",
+            tmp_path / "review.ass",
             tmp_path / "release.ass",
-            batch_size=1,
-            max_workers=1,
+            primer_batch_size=1,
+            primer_max_workers=1,
             agent_max_repair_attempts=2,
             episode_replacements=(),
         ),

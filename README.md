@@ -56,7 +56,7 @@ echo "YOUR_KEY" > key
 
 # 4. Process subtitles (not suggested)
 ./run.sh example_input.ass output.ass \
---streaming --pairs-per-chunk 105  \
+--stream --refine-batch-size 105 \
 --checkpoint --per-block-update -vvv
 ```
 
@@ -78,15 +78,31 @@ The persistent pipeline has two modes:
 
 # Resume the final human-review gate
 ./run.sh pipeline review episode-s07e01 approve --config config.yaml
+
+# Resume a failed pipeline from its latest checkpoint
+./run.sh pipeline resume episode-s07e01 --config config.yaml
 ```
+
+`primer.batch_size` controls the number of source cues in each parallel
+initial-translation request. `refine.batch_size` independently controls the
+serial refinement chunk size; set it to `null` to retain token-based chunking.
+`primer.max_workers` applies only to primer requests. Refine serialization is
+selected by `refine.intermediate_representation`.
+
+The run writes the human-review candidate beside the input subtitle, inserting
+`.review` before the output extension (for example,
+`JAG.S07E07.en-cn.review.ass`). Approval publishes that review file, including
+any manual edits, to the requested output path.
 
 `parallel_initial` wraps Subtitle Edit's official headless `seconv` project.
 On first use it clones the configured repository revision, builds `seconv`, and
 converts/cleans the source into the run's UTF-8 SRT artifact. Building the
 pinned source requires the .NET 10 SDK/runtime. The generic ASS normalization
-and structural QA live in `subtitle_processing.py`; show/episode replacements
-are ordered rules under `pipeline.episode_replacements` rather than built into
-that module. The default `subtitle_edit` section reproduces the checked options
+and structural QA live in `subtitle_processing.py`. Deterministic cleanup is an
+ordered allowlist under `postprocess.operations`; removing an operation disables
+it. Show/episode replacements are configured separately under
+`postprocess.episode_replacements` and run only when the `episode_replacements`
+operation is enabled. The default `subtitle_edit` section reproduces the checked options
 from Subtitle Edit's Batch convert window through
 `subtitle_edit_settings.json`, `subtitle_edit_multiple_replace.template`, and
 an explicit `operations` list.
@@ -161,8 +177,8 @@ This will:
 
 ```
 usage: ./run.sh [-h] [--model MODEL] [--dry-run] [--max-chunks MAX_CHUNKS]
-               [--memory-limit MEMORY_LIMIT] [--pairs-per-chunk PAIRS_PER_CHUNK]
-               [-v] [--stats STATS] [--test-connection]
+               [--memory-limit MEMORY_LIMIT] [--refine-batch-size PAIRS_PER_CHUNK]
+               [-v] [--test-connection]
                input output
 
 positional arguments:
@@ -175,9 +191,8 @@ optional arguments:
   --dry-run             Process only first 10 pairs for testing
   --max-chunks N        Process only first N chunks
   --memory-limit N      Memory token limit (default: 2000)
-  --pairs-per-chunk N   Number of subtitle pairs per chunk (overrides token-based chunking)
+  --refine-batch-size N   Number of subtitle pairs per chunk (overrides token-based chunking)
   -v, --verbose         Enable verbose output with timing and preview
-  --stats STATS         Stats refresh interval in seconds for verbose mode (default: 1.0)
   --test-connection     Test API connection and exit
 ```
 
@@ -191,13 +206,13 @@ optional arguments:
 ./run.sh input.ass output.ass --dry-run
 
 # 3. Process with fixed chunk size (50 pairs per chunk)
-./run.sh input.ass output.ass --pairs-per-chunk 50
+./run.sh input.ass output.ass --refine-batch-size 50
 
 # 4. Process only first 3 chunks
 ./run.sh input.ass output.ass --max-chunks 3
 
 # 5. Combine chunk size with max chunks (30 pairs per chunk, max 2 chunks)
-./run.sh input.ass output.ass --pairs-per-chunk 30 --max-chunks 2
+./run.sh input.ass output.ass --refine-batch-size 30 --max-chunks 2
 
 # 6. Use a different model
 ./run.sh input.ass output.ass --model gpt-4o
@@ -211,8 +226,6 @@ optional arguments:
 # 9. Enable verbose mode with timing and response preview
 ./run.sh input.ass output.ass -v
 
-# 10. Verbose mode with custom stats interval
-./run.sh input.ass output.ass -v --stats 0.5
 ```
 
 ### Running the Example Script
@@ -227,7 +240,7 @@ chmod +x example_usage.sh
 ```
 .
 ├── run.sh                   # CLI entry point and workflow orchestration
-├── config.yaml              # Configuration settings (API, tokens, pricing)
+├── config.yaml              # Unified pipeline and model-role configuration
 ├── subretrans/
 │   ├── cli.py               # CLI implementation and workflow orchestration
 │   ├── config.py            # Configuration loading and settings
@@ -266,7 +279,7 @@ chmod +x example_usage.sh
 3. **Split into Chunks**
    - Two chunking strategies available:
      - **Token-based** (default): Uses tiktoken to fit chunks within context window
-     - **Pair-based** (with `--pairs-per-chunk`): Fixed number of pairs per chunk
+     - **Pair-based** (with `--refine-batch-size`): Fixed number of pairs per chunk
    - Accounts for system prompt and memory overhead
 
 4. **Process Each Chunk**
@@ -304,20 +317,20 @@ The tool supports two chunking strategies:
 - **How it works**: Splits subtitles into fixed-size chunks by pair count
 - **Advantages**: Predictable chunk sizes, easier cost estimation
 - **Best for**: Consistent processing, testing, batch operations
-- **Usage**: Specify with `--pairs-per-chunk N`
+- **Usage**: Specify with `--refine-batch-size N`
 
 ```bash
 # Process 50 pairs at a time
-./run.sh input.ass output.ass --pairs-per-chunk 50
+./run.sh input.ass output.ass --refine-batch-size 50
 
 # Smaller chunks for testing
-./run.sh input.ass output.ass --pairs-per-chunk 10
+./run.sh input.ass output.ass --refine-batch-size 10
 ```
 
 **Tip**: Combine with `--max-chunks` to limit processing:
 ```bash
 # Process first 100 pairs only (50 pairs/chunk × 2 chunks)
-./run.sh input.ass output.ass --pairs-per-chunk 50 --max-chunks 2
+./run.sh input.ass output.ass --refine-batch-size 50 --max-chunks 2
 ```
 
 ### Verbose Mode
@@ -335,8 +348,6 @@ The tool supports verbose mode for detailed progress tracking:
 # Ultra verbose (-vvv) also prints the full system prompt/memory sent to the model
 ./run.sh input.ass output.ass -vvv
 
-# Verbose with custom stats interval
-./run.sh input.ass output.ass -v --stats 0.5
 ```
 
 #### Verbose Output Includes:
@@ -506,7 +517,7 @@ pipeline:
 ```
 
 - **API roles**: `primer`, `refine`, `extraction`, and `agent` are mandatory and use the same strict fields. Key paths are relative to the selected YAML file.
-- **Protocols**: Choose `openai-responses`, `openai-chat-compatible`, `anthropic-messages`, or `google-gemini`. Refinement and extraction currently require an OpenAI protocol; primer and agent use the provider-neutral adapters.
+- **Protocols**: Choose `openai-responses`, `openai-chat-compatible`, `anthropic-messages`, or `google-gemini`. Model calls use the provider-neutral adapters; streaming refinement is limited to OpenAI chat-compatible endpoints.
 - **Reasoning and temperature**: Configure these independently for each role; use `null` when the endpoint does not accept the option.
 - **Glossary policy**: `glossary.policy: lock` means learned terminology can add entries but cannot override user-defined mappings.
 - **Terminology confidence**: `glossary.terminology_min_confidence` controls both the extraction prompt threshold and local filtering.
@@ -561,11 +572,10 @@ Estimated cost:    $    0.5815 USD
 ==================================================
 ```
 
-### Pricing (Default)
-- Prompt tokens: $0.03 per 1K tokens
-- Completion tokens: $0.06 per 1K tokens
-
-**Note**: Actual costs may vary based on your OpenAI plan and model used. Update pricing in [config.yaml](config.yaml) for accurate estimates.
+Pricing is resolved by exact model name, slug, or alias from the
+[Claude Code Hub price table](https://cch-plus.com/pricing/v1/models.json).
+The report names the selected provider and table version. If no exact model is
+present, token usage is still reported but no cost is guessed.
 
 ## Troubleshooting
 

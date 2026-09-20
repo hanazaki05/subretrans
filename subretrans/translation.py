@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
+
+logger = logging.getLogger(__name__)
 
 MANIFEST_VERSION = 1
 
@@ -220,16 +223,37 @@ def translate_manifest(
         )
         for start in range(0, len(pending), batch_size)
     ]
+    completed_units = len(manifest.units) - len(pending)
+    logger.info(
+        "Initial translation: %d/%d cues already complete; %d batches pending "
+        "(batch_size=%d, workers=%d)",
+        completed_units,
+        len(manifest.units),
+        len(batches),
+        batch_size,
+        max_workers,
+    )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures: dict[Future[Sequence[TranslationResult]], TranslationBatch] = {
-            executor.submit(translate_batch, batch): batch for batch in batches
+        futures: dict[
+            Future[Sequence[TranslationResult]], tuple[int, TranslationBatch]
+        ] = {
+            executor.submit(translate_batch, batch): (index, batch)
+            for index, batch in enumerate(batches, start=1)
         }
         for future in as_completed(futures):
-            batch = futures[future]
+            batch_index, batch = futures[future]
             translations = _validate_batch_result(batch, future.result())
             for request in batch:
                 units_by_id[request.id].translation = translations[request.id]
             save_manifest(manifest, manifest_path)
+            completed_units += len(batch)
+            logger.info(
+                "Initial translation batch %d/%d complete: %d/%d cues",
+                batch_index,
+                len(batches),
+                completed_units,
+                len(manifest.units),
+            )
 
     return manifest

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -20,7 +21,15 @@ from .ass_parser import (
     write_ass_file,
 )
 from .model_agent import AgentQA
-from .subtitle_processing import SrtCue, audit_ass, merge_srt_to_ass, postprocess_ass, read_srt, write_srt
+from .subtitle_processing import (
+    POSTPROCESS_OPERATIONS,
+    SrtCue,
+    audit_ass,
+    merge_srt_to_ass,
+    postprocess_ass,
+    read_srt,
+    write_srt,
+)
 from .state import MemorylessTranslationState, PipelineState, Stage
 from .translation import (
     MANIFEST_VERSION,
@@ -33,6 +42,8 @@ from .translation import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 StageUpdate = Mapping[str, Any]
 PreprocessSubtitle = Callable[[Path, Path], Path]
 Refine = Callable[[Path, Path, Path, Path], None]
@@ -41,11 +52,13 @@ Refine = Callable[[Path, Path, Path, Path], None]
 @dataclass(frozen=True)
 class WorkflowSettings:
     run_dir: Path
+    review_path: Path
     release_path: Path
-    batch_size: int
-    max_workers: int
+    primer_batch_size: int
+    primer_max_workers: int
     agent_max_repair_attempts: int
     episode_replacements: tuple[tuple[str, str], ...]
+    postprocess_operations: tuple[str, ...] = POSTPROCESS_OPERATIONS
 
 
 def _sha256(path: Path) -> str:
@@ -159,12 +172,14 @@ def build_stage_handlers(
     """Build all concrete handlers for one run directory and release target."""
 
     run_dir = Path(settings.run_dir)
+    review_path = Path(settings.review_path)
     release_path = Path(settings.release_path)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     def preprocess(state: PipelineState) -> StageUpdate:
         source_path = Path(state["artifact_path"])
         if state["translation_mode"] == "parallel_initial":
+            logger.info("Stage preprocess: cleaning %s", source_path)
             preprocessed_path = run_dir / "preprocessed.en.srt"
             _require_distinct(source_path, preprocessed_path)
             produced_path = preprocess_subtitle(source_path, preprocessed_path)
@@ -173,6 +188,11 @@ def build_stage_handlers(
                     "subtitle preprocessor must return run_dir/preprocessed.en.srt"
                 )
             cues = read_srt(preprocessed_path)
+            logger.info(
+                "Stage preprocess complete: %d cues -> %s",
+                len(cues),
+                preprocessed_path,
+            )
             translated_path = run_dir / "translated.zh.srt"
             _require_distinct(preprocessed_path, translated_path)
             manifest_path = run_dir / "translation.json"
@@ -193,25 +213,28 @@ def build_stage_handlers(
             return {"translation_manifest_path": str(manifest_path)}
 
         if state["translation_mode"] == "serial_memory":
+            logger.info("Stage preprocess: validating bilingual ASS %s", source_path)
             _require_extension(source_path, ".ass")
             audit = audit_ass(source_path)
             if audit.parse_errors:
                 raise ValueError(
                     f"ASS artifact is not parseable: parse_errors={audit.parse_errors}"
                 )
+            logger.info("Stage preprocess complete: bilingual ASS is parseable")
             return {"translation_manifest_path": None}
 
         raise ValueError(f"unsupported translation mode: {state['translation_mode']}")
 
     def translate_parallel(state: MemorylessTranslationState) -> StageUpdate:
+        logger.info("Stage translate_parallel: starting memoryless initial translation")
         manifest_path = Path(state["translation_manifest_path"])
         manifest_run_dir = manifest_path.parent
         translated_path = manifest_run_dir / "translated.zh.srt"
         manifest = translate_manifest(
             manifest_path,
             translate_batch,
-            settings.batch_size,
-            settings.max_workers,
+            settings.primer_batch_size,
+            settings.primer_max_workers,
         )
         if manifest.translated_artifact_path != str(translated_path):
             raise ValueError(
@@ -238,9 +261,11 @@ def build_stage_handlers(
                 SrtCue(cue.index, cue.start, cue.end, unit.translation)
             )
         write_srt(translated_cues, translated_path)
+        logger.info("Stage translate_parallel complete: %s", translated_path)
         return {}
 
     def merge_ass(state: PipelineState) -> StageUpdate:
+        logger.info("Stage merge_ass: merging bilingual ASS")
         manifest_value = state["translation_manifest_path"]
         if manifest_value is None:
             raise ValueError("merge_ass requires translation_manifest_path")
@@ -251,6 +276,7 @@ def build_stage_handlers(
         _require_distinct(source_path, output_path)
         _require_distinct(translated_path, output_path)
         merge_srt_to_ass(source_path, translated_path, output_path)
+        logger.info("Stage merge_ass complete: %s", output_path)
         return {
             "artifact_path": str(output_path),
             "artifact_hash": _sha256(output_path),
@@ -261,12 +287,18 @@ def build_stage_handlers(
         output_path = run_dir / "refined.ass"
         checkpoint_path = run_dir / "memory.yaml"
         progress_path = run_dir / "refine-progress.json"
+        logger.info("Stage refine_serial: refining %s", input_path)
         _require_distinct(input_path, output_path)
         result = refine(input_path, output_path, checkpoint_path, progress_path)
         if result is not None:
             raise ValueError("refine must return None")
         next_pair, artifact_hash, memory_hash = _load_refine_progress(
             progress_path, output_path, checkpoint_path
+        )
+        logger.info(
+            "Stage refine_serial complete: %d pairs committed -> %s",
+            next_pair,
+            output_path,
         )
         return {
             "artifact_path": str(output_path),
@@ -281,8 +313,18 @@ def build_stage_handlers(
         attempt = state["agent_repair_attempts"]
         output_name = "postprocessed.ass" if attempt == 0 else f"postprocessed-{attempt:03d}.ass"
         output_path = run_dir / output_name
+        logger.info(
+            "Stage postprocess: applying deterministic cleanup (repair attempt %d)",
+            attempt,
+        )
         _require_distinct(input_path, output_path)
-        postprocess_ass(input_path, output_path, settings.episode_replacements)
+        postprocess_ass(
+            input_path,
+            output_path,
+            settings.postprocess_operations,
+            settings.episode_replacements,
+        )
+        logger.info("Stage postprocess complete: %s", output_path)
         return {
             "artifact_path": str(output_path),
             "artifact_hash": _sha256(output_path),
@@ -296,10 +338,19 @@ def build_stage_handlers(
         structural_qa = _qa_conclusion(input_path)
         header, ass_lines = parse_ass_file(str(input_path))
         pairs = build_pairs_from_ass_lines(ass_lines)
+        logger.info(
+            "Stage qa: auditing %d pairs; structural QA=%s",
+            len(pairs),
+            structural_qa,
+        )
         result = agent_qa(tuple(pairs), structural_qa)
         passed = structural_qa == "passed" and result.passed
         if passed:
+            _atomic_copy(input_path, review_path)
+            logger.info("Stage qa passed; review artifact: %s", review_path)
             return {
+                "artifact_path": str(review_path),
+                "artifact_hash": _sha256(review_path),
                 "qa_conclusion": "passed",
                 "qa_passed": True,
                 "qa_repair_applied": False,
@@ -315,7 +366,17 @@ def build_stage_handlers(
             if (pair_by_id[repair.id].meta or {}).get("chinese_line_id", -1) >= 0
         )
         if not applicable_repairs or attempt >= settings.agent_max_repair_attempts:
+            _atomic_copy(input_path, review_path)
+            logger.warning(
+                "Stage qa requires human review: issues=%d, applicable_repairs=%d; "
+                "review artifact: %s",
+                len(result.issues),
+                len(applicable_repairs),
+                review_path,
+            )
             return {
+                "artifact_path": str(review_path),
+                "artifact_hash": _sha256(review_path),
                 "qa_conclusion": conclusion,
                 "qa_passed": False,
                 "qa_repair_applied": False,
@@ -326,6 +387,13 @@ def build_stage_handlers(
         repaired_path = run_dir / f"qa-repair-{attempt + 1:03d}.ass"
         updated_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
         write_ass_file(str(repaired_path), render_ass_file(header, updated_lines))
+        logger.warning(
+            "Stage qa found %d issues; applied %d repairs (attempt %d/%d)",
+            len(result.issues),
+            len(applicable_repairs),
+            attempt + 1,
+            settings.agent_max_repair_attempts,
+        )
         return {
             "artifact_path": str(repaired_path),
             "artifact_hash": _sha256(repaired_path),
@@ -340,7 +408,9 @@ def build_stage_handlers(
 
     def release(state: PipelineState) -> StageUpdate:
         source_path = Path(state["artifact_path"])
+        logger.info("Stage release: publishing %s -> %s", source_path, release_path)
         _atomic_copy(source_path, release_path)
+        logger.info("Stage release complete: %s", release_path)
         return {
             "artifact_path": str(release_path),
             "artifact_hash": _sha256(release_path),

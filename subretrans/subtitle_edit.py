@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from pathlib import Path
 
 from .subtitle_processing import read_srt
 
+
+logger = logging.getLogger(__name__)
 
 _REVISION_RE = re.compile(r"[0-9a-fA-F]{40}")
 _REVISION_MARKER = ".subtitle-edit-revision"
@@ -54,7 +57,13 @@ class SeconvCommand:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, check=True, capture_output=True, text=True)
+    try:
+        return subprocess.run(argv, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        details = (error.stderr or error.stdout or "no command output").strip()
+        raise RuntimeError(
+            f"Command failed with exit code {error.returncode}: {details}"
+        ) from error
 
 
 def _validate_checkout(settings: SubtitleEditSettings) -> None:
@@ -79,12 +88,12 @@ def _validate_checkout(settings: SubtitleEditSettings) -> None:
 
 
 def _built_command(settings: SubtitleEditSettings) -> Path | SeconvCommand | None:
-    executable = settings.build_dir / "seconv"
-    if executable.is_file():
-        return executable
     assembly = settings.build_dir / "seconv.dll"
     if assembly.is_file():
         return SeconvCommand((settings.dotnet_executable, str(assembly)))
+    executable = settings.build_dir / "seconv"
+    if executable.is_file():
+        return executable
     return None
 
 
@@ -92,8 +101,10 @@ def ensure_seconv(settings: SubtitleEditSettings) -> Path | SeconvCommand:
     """Ensure the pinned checkout and its corresponding ``seconv`` build exist."""
 
     if settings.source_dir.exists():
+        logger.info("Subtitle Edit: validating pinned checkout")
         _validate_checkout(settings)
     else:
+        logger.info("Subtitle Edit: cloning %s", settings.repository_url)
         settings.source_dir.parent.mkdir(parents=True, exist_ok=True)
         _run(
             [
@@ -122,8 +133,10 @@ def ensure_seconv(settings: SubtitleEditSettings) -> Path | SeconvCommand:
         and marker.read_text(encoding="ascii").strip().lower()
         == settings.revision.lower()
     ):
+        logger.info("Subtitle Edit: reusing pinned seconv build")
         return command
 
+    logger.info("Subtitle Edit: building seconv with %s", settings.dotnet_executable)
     _run(
         [
             settings.dotnet_executable,
@@ -159,8 +172,7 @@ def preprocess_with_seconv(
     argv_prefix = (
         command.argv_prefix if isinstance(command, SeconvCommand) else (str(command),)
     )
-    subprocess.run(
-        [
+    argv = [
             *argv_prefix,
             str(input_path),
             "subrip",
@@ -171,12 +183,17 @@ def preprocess_with_seconv(
             f"--settings:{settings.settings_file}",
             *settings.operations,
             f"--multiple-replace:{settings.multiple_replace_file}",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+        ]
+    try:
+        subprocess.run(argv, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        details = (error.stderr or error.stdout or "no seconv output").strip()
+        raise RuntimeError(
+            f"Subtitle Edit preprocessing failed with exit code "
+            f"{error.returncode}: {details}"
+        ) from error
     if not output_path.is_file():
         raise FileNotFoundError(f"seconv did not create output file: {output_path}")
     read_srt(output_path)
+    logger.info("Subtitle Edit: generated and validated %s", output_path)
     return output_path

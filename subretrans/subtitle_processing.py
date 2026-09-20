@@ -414,7 +414,7 @@ def _strip_dot(content: str) -> str:
     return "\n".join(lines)
 
 
-def _normalize_ass(content: str) -> str:
+def _normalize_punctuation(content: str) -> str:
     replacements = (
         ("……", "..."),
         ("…", "..."),
@@ -423,31 +423,66 @@ def _normalize_ass(content: str) -> str:
         ("- ", "-"),
         ("————", "-"),
         ("—", "-"),
-        ("Chinese3", "C3"),
-        ("English3", "E3"),
-        ("0000,0000,0000,,", "0,0,0,,"),
-        ("Dialogue: 1,", "Dialogue:  1,"),
     )
     for old, new in replacements:
         content = content.replace(old, new)
+    return content
+
+
+def _normalize_style_names(content: str) -> str:
+    return content.replace("Chinese3", "C3").replace("English3", "E3")
+
+
+def _normalize_event_fields(content: str) -> str:
+    return content.replace("0000,0000,0000,,", "0,0,0,,").replace(
+        "Dialogue: 1,", "Dialogue:  1,"
+    )
+
+
+def _normalize_italics(content: str) -> str:
     content = re.sub(r"<i>", r"{\\i1}", content, flags=re.IGNORECASE)
     content = re.sub(r"</i>", r"{\\i0}", content, flags=re.IGNORECASE)
     return content
 
 
+POSTPROCESS_OPERATIONS = (
+    "clean_chinese_dialogue",
+    "normalize_punctuation",
+    "normalize_style_names",
+    "normalize_event_fields",
+    "normalize_italics",
+    "episode_replacements",
+)
+
+
 def postprocess_ass(
     input_path: Path,
     output_path: Path,
+    operations: Sequence[str],
     episode_replacements: Sequence[tuple[str, str]],
 ) -> Path:
-    """Apply generic normalization followed by ordered episode-specific rules."""
+    """Apply the configured deterministic operations in order."""
 
     content = Path(input_path).read_text(encoding="utf-8-sig")
-    content = _normalize_ass(_strip_dot(content))
-    for old, new in episode_replacements:
-        if not old:
-            raise ValueError("episode replacement source must not be empty")
-        content = content.replace(old, new)
+    operation_handlers = {
+        "clean_chinese_dialogue": _strip_dot,
+        "normalize_punctuation": _normalize_punctuation,
+        "normalize_style_names": _normalize_style_names,
+        "normalize_event_fields": _normalize_event_fields,
+        "normalize_italics": _normalize_italics,
+    }
+    for operation in operations:
+        if operation == "episode_replacements":
+            for old, new in episode_replacements:
+                if not old:
+                    raise ValueError("episode replacement source must not be empty")
+                content = content.replace(old, new)
+            continue
+        try:
+            handler = operation_handlers[operation]
+        except KeyError as exc:
+            raise ValueError(f"unsupported postprocess operation: {operation}") from exc
+        content = handler(content)
     output = Path(output_path)
     _atomic_write(output, content)
     return output

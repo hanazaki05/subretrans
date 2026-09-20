@@ -3,9 +3,16 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from subretrans.cli import file_sha256
 from subretrans.model_agent import AgentQAResult
-from subretrans.pipeline_cli import _refine_callable, review_pipeline, run_pipeline
+from subretrans.pipeline_cli import (
+    _refine_callable,
+    resume_pipeline,
+    review_pipeline,
+    run_pipeline,
+)
 
 
 VALID_ASS = """[Script Info]
@@ -18,7 +25,7 @@ Dialogue:  1,0:00:01.00,0:00:02.00,Chinese3,,0,0,0,,你好
 """
 
 
-def test_serial_pipeline_cli_persists_review_and_releases(
+def test_serial_pipeline_cli_resumes_failure_and_releases_review(
     tmp_path: Path, monkeypatch
 ) -> None:
     source = tmp_path / "input.ass"
@@ -45,19 +52,40 @@ def test_serial_pipeline_cli_persists_review_and_releases(
 pipeline:
   state_dir: {tmp_path / 'state'}
   checkpoint_db: {tmp_path / 'state/checkpoints.sqlite3'}
+  agent_max_repair_attempts: 1
+primer:
   batch_size: 2
   max_workers: 2
-  agent_max_repair_attempts: 1
   source_language: English
   target_language: Simplified Chinese
   user_instruction: null
+refine:
+  batch_size: 1
+  chunk_token_soft_limit: 80000
+  memory_token_limit: 4000
+  intermediate_representation: xml-pair
+  prompt_path: {tmp_path / 'prompt.md'}
+postprocess:
+  operations:
+    - clean_chinese_dialogue
+    - normalize_punctuation
+    - normalize_style_names
+    - normalize_event_fields
+    - normalize_italics
+    - episode_replacements
   episode_replacements: []
 """,
         encoding="utf-8",
     )
 
+    refine_attempts = 0
+
     def fake_refine_factory(config_path):
         def refine(input_path, output_path, checkpoint_path, progress_path):
+            nonlocal refine_attempts
+            refine_attempts += 1
+            if refine_attempts == 1:
+                raise RuntimeError("transient refine failure")
             output_path.write_bytes(input_path.read_bytes())
             checkpoint_path.write_text("story_description: test\n", encoding="utf-8")
             progress_path.write_text(
@@ -95,12 +123,22 @@ pipeline:
         decision="approve",
         config=str(config),
     )
+    resume_args = argparse.Namespace(thread_id="episode-01", config=str(config))
 
-    assert run_pipeline(run_args) == 0
+    with pytest.raises(RuntimeError, match="transient refine failure"):
+        run_pipeline(run_args)
+    assert resume_pipeline(resume_args) == 0
+    assert refine_attempts == 2
+    review = tmp_path / "release.review.ass"
+    assert review.exists()
     assert not release.exists()
+    review.write_text(
+        review.read_text(encoding="utf-8-sig").replace("你好", "人工修改"),
+        encoding="utf-8-sig",
+    )
     assert review_pipeline(review_args) == 0
     assert release.exists()
-    assert "你好" in release.read_text(encoding="utf-8")
+    assert "人工修改" in release.read_text(encoding="utf-8-sig")
 
 
 def test_refine_resume_continues_from_committed_output(
@@ -144,7 +182,12 @@ def test_refine_resume_continues_from_committed_output(
     )
 
     def fake_process(input_path, output_path, config_value, **kwargs):
-        seen.update(input_path=input_path, output_path=output_path, kwargs=kwargs)
+        seen.update(
+            input_path=input_path,
+            output_path=output_path,
+            config=config_value,
+            kwargs=kwargs,
+        )
         return True
 
     monkeypatch.setattr("subretrans.pipeline_cli.process_subtitles", fake_process)

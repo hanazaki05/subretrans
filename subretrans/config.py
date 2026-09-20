@@ -54,6 +54,25 @@ def _nonempty_string(value: Any, field_name: str) -> str:
     return value.strip()
 
 
+def _strict_section(
+    payload: dict[str, Any], section_name: str, fields: set[str]
+) -> dict[str, Any]:
+    section = payload.get(section_name)
+    if not isinstance(section, dict):
+        raise ValueError(f"{section_name} must be a mapping")
+    unknown = set(section) - fields
+    missing = fields - set(section)
+    if unknown:
+        raise ValueError(
+            f"{section_name} has unknown fields: {', '.join(sorted(unknown))}"
+        )
+    if missing:
+        raise ValueError(
+            f"{section_name} has missing fields: {', '.join(sorted(missing))}"
+        )
+    return section
+
+
 @dataclass
 class RoleModelSettings:
     """Complete provider and generation settings for one model role."""
@@ -189,31 +208,28 @@ class ConfigSDK:
     refine: RoleModelSettings
     extraction: RoleModelSettings
     agent: RoleModelSettings
-    max_context_tokens: int = 128000
     memory_token_limit: int = 4000
     chunk_token_soft_limit: int = 60000
-    pairs_per_chunk: Optional[int] = None
+    refine_batch_size: Optional[int] = None
     use_stream: bool = True
     per_block_update: bool = True
     verbose: bool = False
     very_verbose: bool = False
     debug_prompts: bool = False
-    stats_interval: float = 1.0
     dry_run: bool = False
     max_chunks: Optional[int] = None
-    price_per_1k_prompt_tokens: float = 0.03
-    price_per_1k_completion_tokens: float = 0.06
     glossary_max_entries: int = 100
     glossary_policy: str = "lock"
-    user_prompt_path: str = "custom_main_prompt.md"
+    refine_prompt_path: str = "main_prompt.md"
     terminology_min_confidence: float = 0.6
-    intermediate_format: str = "json"
+    intermediate_representation: str = "json"
 
     def __post_init__(self) -> None:
         valid_formats = {"json", "xml-pair", "pseudo-toml"}
-        if self.intermediate_format.lower() not in valid_formats:
+        if self.intermediate_representation.lower() not in valid_formats:
             raise ValueError(
-                f"Invalid intermediate format: {self.intermediate_format}. "
+                "Invalid intermediate representation: "
+                f"{self.intermediate_representation}. "
                 f"Valid formats: {', '.join(sorted(valid_formats))}"
             )
 
@@ -222,6 +238,21 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
     """Load complete application configuration from YAML."""
 
     payload = load_yaml_config(yaml_file_path)
+    allowed_sections = {
+        "api",
+        "pipeline",
+        "primer",
+        "refine",
+        "postprocess",
+        "subtitle_edit",
+        "glossary",
+    }
+    unknown_sections = set(payload) - allowed_sections
+    if unknown_sections:
+        raise ValueError(
+            "configuration has unknown sections: "
+            + ", ".join(sorted(unknown_sections))
+        )
     deprecated_sections = {
         "main_model",
         "terminology_model",
@@ -233,47 +264,73 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
             + ", ".join(sorted(deprecated_sections))
         )
     roles = load_api_roles(yaml_file_path)
-    token_settings = payload.get("tokens", {})
-    chunking_settings = payload.get("chunking", {})
-    pricing_settings = payload.get("pricing", {})
-    glossary_settings = payload.get("glossary", {})
-    user_settings = payload.get("user", {})
-    runtime_settings = payload.get("runtime", {})
-    if "api_mode" in runtime_settings:
-        raise ValueError("runtime.api_mode is not supported; configure api.<role>.protocol")
-    format_settings = payload.get("format", {})
-
-    per_block_update = runtime_settings.get(
-        "per_block_update", runtime_settings.get("incremental_output", True)
+    obsolete_sections = {"tokens", "chunking", "format", "user", "runtime"}.intersection(
+        payload
     )
+    if obsolete_sections:
+        raise ValueError(
+            "obsolete configuration sections are not supported: "
+            + ", ".join(sorted(obsolete_sections))
+        )
+    refine_settings = _strict_section(
+        payload,
+        "refine",
+        {
+            "batch_size",
+            "chunk_token_soft_limit",
+            "memory_token_limit",
+            "intermediate_representation",
+            "prompt_path",
+        },
+    )
+    glossary_settings = _strict_section(
+        payload, "glossary", {"max_entries", "policy", "terminology_min_confidence"}
+    )
+
+    batch_size = refine_settings["batch_size"]
+    if batch_size is not None and (type(batch_size) is not int or batch_size <= 0):
+        raise ValueError("refine.batch_size must be a positive integer or null")
+    for field in ("chunk_token_soft_limit", "memory_token_limit"):
+        value = refine_settings[field]
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"refine.{field} must be a positive integer")
+    representation = _nonempty_string(
+        refine_settings["intermediate_representation"],
+        "refine.intermediate_representation",
+    )
+    prompt_path = Path(
+        _nonempty_string(refine_settings["prompt_path"], "refine.prompt_path")
+    )
+    yaml_path = Path(yaml_file_path or REPOSITORY_ROOT / "config.yaml").resolve()
+    if not prompt_path.is_absolute():
+        prompt_path = yaml_path.parent / prompt_path
+    max_entries = glossary_settings["max_entries"]
+    if type(max_entries) is not int or max_entries <= 0:
+        raise ValueError("glossary.max_entries must be a positive integer")
+    policy = _nonempty_string(glossary_settings["policy"], "glossary.policy")
+    confidence = glossary_settings["terminology_min_confidence"]
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0 <= confidence <= 1
+    ):
+        raise ValueError(
+            "glossary.terminology_min_confidence must be a number from 0 to 1"
+        )
+
     return ConfigSDK(
         primer=roles["primer"],
         refine=roles["refine"],
         extraction=roles["extraction"],
         agent=roles["agent"],
-        max_context_tokens=token_settings.get("max_context_tokens", 128000),
-        memory_token_limit=token_settings.get("memory_token_limit", 4000),
-        chunk_token_soft_limit=token_settings.get("chunk_token_soft_limit", 60000),
-        pairs_per_chunk=chunking_settings.get("pairs_per_chunk"),
-        price_per_1k_prompt_tokens=pricing_settings.get("prompt_tokens", 0.03),
-        price_per_1k_completion_tokens=pricing_settings.get("completion_tokens", 0.06),
-        glossary_max_entries=glossary_settings.get("max_entries", 100),
-        glossary_policy=glossary_settings.get("policy", "lock"),
-        terminology_min_confidence=glossary_settings.get(
-            "terminology_min_confidence", 0.6
-        ),
-        user_prompt_path=user_settings.get("prompt_path", "custom_main_prompt.md"),
-        use_stream=runtime_settings.get(
-            "use_stream", runtime_settings.get("use_streaming", True)
-        ),
-        per_block_update=per_block_update,
-        verbose=runtime_settings.get("verbose", False),
-        very_verbose=runtime_settings.get("very_verbose", False),
-        debug_prompts=runtime_settings.get("debug_prompts", False),
-        stats_interval=runtime_settings.get("stats_interval", 1.0),
-        dry_run=runtime_settings.get("dry_run", False),
-        max_chunks=runtime_settings.get("max_chunks"),
-        intermediate_format=format_settings.get("intermediate_format", "json"),
+        memory_token_limit=refine_settings["memory_token_limit"],
+        chunk_token_soft_limit=refine_settings["chunk_token_soft_limit"],
+        refine_batch_size=batch_size,
+        glossary_max_entries=max_entries,
+        glossary_policy=policy,
+        terminology_min_confidence=float(confidence),
+        refine_prompt_path=str(prompt_path.resolve()),
+        intermediate_representation=representation,
     )
 
 
@@ -281,20 +338,17 @@ def load_config_sdk(
     yaml_file_path: str | Path | None = None,
     model_name: Optional[str] = None,
     use_stream: Optional[bool] = None,
-    use_streaming: Optional[bool] = None,
     per_block_update: Optional[bool] = None,
-    incremental_output: Optional[bool] = None,
     dry_run: bool = False,
     max_chunks: Optional[int] = None,
     memory_limit: Optional[int] = None,
-    pairs_per_chunk: Optional[int] = None,
+    refine_batch_size: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     api_timeout: Optional[int] = None,
     verbose: bool = False,
     very_verbose: bool = False,
     debug_prompts: bool = False,
-    stats_interval: Optional[float] = None,
-    intermediate_format: Optional[str] = None,
+    intermediate_representation: Optional[str] = None,
 ) -> ConfigSDK:
     """Load YAML configuration and apply command-line runtime overrides."""
 
@@ -303,20 +357,16 @@ def load_config_sdk(
         config.refine.model = model_name
     if use_stream is not None:
         config.use_stream = use_stream
-    elif use_streaming is not None:
-        config.use_stream = use_streaming
     if per_block_update is not None:
         config.per_block_update = per_block_update
-    elif incremental_output is not None:
-        config.per_block_update = incremental_output
     if dry_run:
         config.dry_run = True
     if max_chunks is not None:
         config.max_chunks = max_chunks
     if memory_limit is not None:
         config.memory_token_limit = memory_limit
-    if pairs_per_chunk is not None:
-        config.pairs_per_chunk = pairs_per_chunk
+    if refine_batch_size is not None:
+        config.refine_batch_size = refine_batch_size
     if reasoning_effort is not None:
         config.refine.reasoning_effort = reasoning_effort
     if api_timeout is not None:
@@ -330,8 +380,6 @@ def load_config_sdk(
         config.debug_prompts = True
         config.very_verbose = True
         config.verbose = True
-    if stats_interval is not None:
-        config.stats_interval = stats_interval
-    if intermediate_format is not None:
-        config.intermediate_format = intermediate_format
+    if intermediate_representation is not None:
+        config.intermediate_representation = intermediate_representation
     return config

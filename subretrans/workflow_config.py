@@ -8,18 +8,21 @@ import yaml
 
 from .config import RoleModelSettings, load_api_roles
 from .subtitle_edit import SubtitleEditSettings
+from .subtitle_processing import POSTPROCESS_OPERATIONS
 
 
 @dataclass(frozen=True)
 class PipelineSettings:
     state_dir: Path
     checkpoint_db: Path
-    batch_size: int
-    max_workers: int
+    primer_batch_size: int
+    refine_batch_size: int | None
+    primer_max_workers: int
     agent_max_repair_attempts: int
     source_language: str
     target_language: str
     user_instruction: str | None
+    postprocess_operations: tuple[str, ...]
     episode_replacements: tuple[tuple[str, str], ...]
 
 
@@ -81,69 +84,107 @@ def _resolve_path(value: Any, field_name: str, yaml_dir: Path) -> Path:
 
 
 def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
-    """Load only the non-secret ``pipeline`` section of a workflow config."""
+    """Load the strict orchestration, primer, refine, and postprocess sections."""
 
-    section, yaml_dir = _load_section(yaml_path, "pipeline")
+    pipeline, yaml_dir = _load_section(yaml_path, "pipeline")
     _validate_fields(
-        section,
+        pipeline,
         "pipeline",
+        required={"state_dir", "checkpoint_db", "agent_max_repair_attempts"},
+    )
+    primer, _ = _load_section(yaml_path, "primer")
+    _validate_fields(
+        primer,
+        "primer",
         required={
-            "state_dir",
-            "checkpoint_db",
             "batch_size",
             "max_workers",
-            "agent_max_repair_attempts",
             "source_language",
             "target_language",
-            "episode_replacements",
+            "user_instruction",
         },
-        optional={"user_instruction"},
+    )
+    refine, _ = _load_section(yaml_path, "refine")
+    _validate_fields(
+        refine,
+        "refine",
+        required={
+            "batch_size",
+            "chunk_token_soft_limit",
+            "memory_token_limit",
+            "intermediate_representation",
+            "prompt_path",
+        },
+    )
+    postprocess, _ = _load_section(yaml_path, "postprocess")
+    _validate_fields(
+        postprocess,
+        "postprocess",
+        required={"operations", "episode_replacements"},
     )
 
-    user_instruction = section.get("user_instruction")
+    user_instruction = primer["user_instruction"]
     if user_instruction is not None and not isinstance(user_instruction, str):
-        raise ValueError("pipeline.user_instruction must be a string or null")
+        raise ValueError("primer.user_instruction must be a string or null")
 
-    raw_replacements = section["episode_replacements"]
+    refine_batch_size = refine["batch_size"]
+    if refine_batch_size is not None:
+        refine_batch_size = _positive_integer(
+            refine_batch_size, "refine.batch_size"
+        )
+
+    raw_operations = postprocess["operations"]
+    if not isinstance(raw_operations, list):
+        raise ValueError("postprocess.operations must be a list")
+    postprocess_operations: list[str] = []
+    for index, operation in enumerate(raw_operations):
+        name = _nonempty_string(operation, f"postprocess.operations[{index}]")
+        if name not in POSTPROCESS_OPERATIONS:
+            raise ValueError(
+                f"postprocess.operations[{index}] is unsupported: {name}"
+            )
+        if name in postprocess_operations:
+            raise ValueError(f"postprocess.operations contains duplicate: {name}")
+        postprocess_operations.append(name)
+
+    raw_replacements = postprocess["episode_replacements"]
     if not isinstance(raw_replacements, list):
-        raise ValueError("pipeline.episode_replacements must be a list")
+        raise ValueError("postprocess.episode_replacements must be a list")
     episode_replacements: list[tuple[str, str]] = []
     for index, replacement in enumerate(raw_replacements):
+        prefix = f"postprocess.episode_replacements[{index}]"
         if type(replacement) is not dict or set(replacement) != {"from", "to"}:
-            raise ValueError(
-                f"pipeline.episode_replacements[{index}] must contain exactly from and to"
-            )
-        source = _nonempty_string(
-            replacement["from"],
-            f"pipeline.episode_replacements[{index}].from",
-        )
+            raise ValueError(f"{prefix} must contain exactly from and to")
+        source = _nonempty_string(replacement["from"], f"{prefix}.from")
         target = replacement["to"]
         if not isinstance(target, str):
-            raise ValueError(
-                f"pipeline.episode_replacements[{index}].to must be a string"
-            )
+            raise ValueError(f"{prefix}.to must be a string")
         episode_replacements.append((source, target))
 
     return PipelineSettings(
-        state_dir=_resolve_path(section["state_dir"], "pipeline.state_dir", yaml_dir),
+        state_dir=_resolve_path(pipeline["state_dir"], "pipeline.state_dir", yaml_dir),
         checkpoint_db=_resolve_path(
-            section["checkpoint_db"], "pipeline.checkpoint_db", yaml_dir
+            pipeline["checkpoint_db"], "pipeline.checkpoint_db", yaml_dir
         ),
-        batch_size=_positive_integer(section["batch_size"], "pipeline.batch_size"),
-        max_workers=_positive_integer(
-            section["max_workers"], "pipeline.max_workers"
+        primer_batch_size=_positive_integer(
+            primer["batch_size"], "primer.batch_size"
+        ),
+        refine_batch_size=refine_batch_size,
+        primer_max_workers=_positive_integer(
+            primer["max_workers"], "primer.max_workers"
         ),
         agent_max_repair_attempts=_nonnegative_integer(
-            section["agent_max_repair_attempts"],
+            pipeline["agent_max_repair_attempts"],
             "pipeline.agent_max_repair_attempts",
         ),
         source_language=_nonempty_string(
-            section["source_language"], "pipeline.source_language"
+            primer["source_language"], "primer.source_language"
         ),
         target_language=_nonempty_string(
-            section["target_language"], "pipeline.target_language"
+            primer["target_language"], "primer.target_language"
         ),
         user_instruction=user_instruction,
+        postprocess_operations=tuple(postprocess_operations),
         episode_replacements=tuple(episode_replacements),
     )
 

@@ -23,14 +23,14 @@ from .serializers import serialize
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 
 
-def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, config):
+def generate_prompts(input_path, output_path, refine_batch_size, max_chunks, config):
     """
     Generate system and user prompts for each chunk without calling API.
 
     Args:
         input_path: Path to input .ass file
         output_path: Path to output markdown file
-        pairs_per_chunk: Number of subtitle pairs per chunk
+        refine_batch_size: Number of subtitle pairs per chunk
         max_chunks: Maximum number of chunks to process (None = all)
         config: Configuration object
 
@@ -43,7 +43,7 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
         print(f"{'='*60}")
         print(f"Input:  {input_path}")
         print(f"Output: {output_path}")
-        print(f"Pairs per chunk: {pairs_per_chunk}")
+        print(f"Pairs per chunk: {refine_batch_size}")
         print(f"{'='*60}\n")
 
         # Step 1: Parse ASS file
@@ -68,7 +68,7 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
         global_memory = init_global_memory()
 
         # Load custom main prompt (if present)
-        prompt_path_cfg = getattr(config, "user_prompt_path", "custom_main_prompt.md")
+        prompt_path_cfg = getattr(config, "refine_prompt_path", "custom_main_prompt.md")
         if os.path.isabs(prompt_path_cfg):
             custom_prompt_path = prompt_path_cfg
         else:
@@ -89,15 +89,15 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
         # Step 4: Chunk pairs
         print("\nStep 3: Splitting into chunks...")
 
-        # Temporarily set pairs_per_chunk in config
-        config.pairs_per_chunk = pairs_per_chunk
+        # Temporarily set refine_batch_size in config
+        config.refine_batch_size = refine_batch_size
 
         base_prompt_tokens = estimate_tokens(
             build_system_prompt(global_memory),
             config.refine.model
         )
         print(f"  Base prompt tokens: {base_prompt_tokens:,}")
-        print(f"  Chunking strategy: Fixed {pairs_per_chunk} pairs per chunk")
+        print(f"  Chunking strategy: Fixed {refine_batch_size} pairs per chunk")
 
         chunks = chunk_pairs(pairs, config, base_prompt_tokens)
         print(f"  Created {len(chunks)} chunks")
@@ -118,8 +118,8 @@ def generate_prompts(input_path, output_path, pairs_per_chunk, max_chunks, confi
             # Build system prompt (with format-aware example conversion)
             system_prompt = build_system_prompt(global_memory, config)
 
-            # Build user prompt using configured intermediate format
-            pairs_serialized = serialize(chunk, config.intermediate_format)
+            # Build user prompt using the configured intermediate representation
+            pairs_serialized = serialize(chunk, config.intermediate_representation)
             user_prompt = build_user_prompt_for_chunk(pairs_serialized)
 
             # Estimate tokens
@@ -184,9 +184,12 @@ def write_markdown(chunks, prompts, output_path, config, input_filename, total_p
         # Write configuration
         f.write("## Configuration\n\n")
         f.write(f"- **Total pairs:** {total_pairs}\n")
-        f.write(f"- **Pairs per chunk:** {config.pairs_per_chunk}\n")
+        f.write(f"- **Pairs per chunk:** {config.refine_batch_size}\n")
         f.write(f"- **Total chunks:** {len(chunks)}\n")
-        f.write(f"- **Intermediate format:** {config.intermediate_format}\n")
+        f.write(
+            "- **Intermediate representation:** "
+            f"{config.intermediate_representation}\n"
+        )
         f.write(f"- **Model:** {config.refine.model}\n")
         f.write(f"- **Max output tokens:** {config.refine.max_output_tokens:,}\n")
         f.write(f"- **Temperature:** {config.refine.temperature}\n")
@@ -252,13 +255,13 @@ def main():
         epilog="""
 Examples:
   # Generate prompts with 120 pairs per chunk
-  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120
+  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120
 
   # Limit to first 2 chunks
-  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --pairs-per-chunk 120 --max-chunks 2
+  python -m subretrans.genreq JAG.S04E09.zh-cn.ass --refine-batch-size 120 --max-chunks 2
 
   # Custom output file
-  python -m subretrans.genreq input.ass --pairs-per-chunk 100 --output my_prompts.md
+  python -m subretrans.genreq input.ass --refine-batch-size 100 --output my_prompts.md
 
 Note: This tool does NOT call the API, it only generates the prompts.
         """
@@ -269,10 +272,15 @@ Note: This tool does NOT call the API, it only generates the prompts.
         help="Input .ass subtitle file"
     )
     parser.add_argument(
-        "--pairs-per-chunk",
+        "--refine-batch-size",
         type=int,
         required=True,
         help="Number of subtitle pairs per chunk (required)"
+    )
+    parser.add_argument(
+        "--config",
+        default=str(REPOSITORY_ROOT / "config.yaml"),
+        help="Configuration YAML path",
     )
     parser.add_argument(
         "--output",
@@ -298,7 +306,8 @@ Note: This tool does NOT call the API, it only generates the prompts.
     # Load configuration (SDK version)
     try:
         config = load_config_sdk(
-            pairs_per_chunk=args.pairs_per_chunk,
+            yaml_file_path=args.config,
+            refine_batch_size=args.refine_batch_size,
             verbose=False
         )
     except ValueError as e:
@@ -309,7 +318,7 @@ Note: This tool does NOT call the API, it only generates the prompts.
     success = generate_prompts(
         args.input,
         output_path,
-        args.pairs_per_chunk,
+        args.refine_batch_size,
         args.max_chunks,
         config
     )

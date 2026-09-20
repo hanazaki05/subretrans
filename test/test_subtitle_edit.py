@@ -143,6 +143,53 @@ def test_ensure_validates_existing_pin_and_reuses_dll_build(
     ]
 
 
+def test_ensure_prefers_dll_when_apphost_and_assembly_both_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = settings(tmp_path)
+    configured.source_dir.mkdir()
+    configured.build_dir.mkdir()
+    (configured.build_dir / "seconv").write_text("apphost", encoding="ascii")
+    assembly = configured.build_dir / "seconv.dll"
+    assembly.write_text("assembly", encoding="ascii")
+    (configured.build_dir / ".subtitle-edit-revision").write_text(
+        REVISION, encoding="ascii"
+    )
+    outputs = iter(("true\n", f"{REPOSITORY}\n", f"{REVISION}\n"))
+    monkeypatch.setattr(
+        subtitle_edit,
+        "_run",
+        lambda argv: subprocess.CompletedProcess(
+            argv, 0, stdout=next(outputs), stderr=""
+        ),
+    )
+
+    assert ensure_seconv(configured) == SeconvCommand(
+        ("dotnet-test", str(assembly))
+    )
+
+
+def test_preprocess_reports_seconv_error_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured = settings(tmp_path)
+    input_path = tmp_path / "episode.srt"
+    input_path.write_text("source", encoding="utf-8")
+    monkeypatch.setattr(
+        subtitle_edit,
+        "ensure_seconv",
+        lambda value: SeconvCommand(("dotnet-test", "/build/seconv.dll")),
+    )
+
+    def fail(argv, **kwargs):
+        raise subprocess.CalledProcessError(131, argv, stderr="runtime not found")
+
+    monkeypatch.setattr(subtitle_edit.subprocess, "run", fail)
+
+    with pytest.raises(RuntimeError, match="exit code 131: runtime not found"):
+        preprocess_with_seconv(configured, input_path, tmp_path / "output.srt")
+
+
 @pytest.mark.parametrize(
     "outputs, match",
     [

@@ -20,7 +20,7 @@ def chunk_pairs(
     Split subtitle pairs into chunks that fit within token limits or pair count.
 
     Each chunk will be processed separately by the LLM. The function can chunk
-    either by token limits (default) or by fixed pair count (if pairs_per_chunk is set).
+    either by token limits (default) or by fixed pair count (if refine_batch_size is set).
 
     Args:
         pairs: List of all SubtitlePair objects to chunk
@@ -33,9 +33,9 @@ def chunk_pairs(
     if not pairs:
         return []
 
-    # If pairs_per_chunk is set, use simple pair-count-based chunking
-    if config.pairs_per_chunk is not None and config.pairs_per_chunk > 0:
-        return chunk_pairs_by_count(pairs, config.pairs_per_chunk)
+    # If refine_batch_size is set, use simple pair-count-based chunking
+    if config.refine_batch_size is not None and config.refine_batch_size > 0:
+        return chunk_pairs_by_count(pairs, config.refine_batch_size)
 
     # Otherwise, use token-based chunking (original behavior)
     chunks = []
