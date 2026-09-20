@@ -203,6 +203,9 @@ def _handlers(
             release_path=release_path,
             primer_batch_size=pipeline_settings.primer_batch_size,
             primer_max_workers=pipeline_settings.primer_max_workers,
+            qa_batch_size=pipeline_settings.qa_batch_size,
+            qa_max_workers=pipeline_settings.qa_max_workers,
+            qa_window_offsets=pipeline_settings.qa_window_offsets,
             agent_max_repair_attempts=pipeline_settings.agent_max_repair_attempts,
             postprocess_operations=pipeline_settings.postprocess_operations,
             episode_replacements=pipeline_settings.episode_replacements,
@@ -379,28 +382,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--thread-id", required=True)
     run.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
+    run.add_argument("--debug", action="store_true")
     run.set_defaults(func=run_pipeline)
 
     review = subparsers.add_parser("review")
     review.add_argument("thread_id")
     review.add_argument("decision", choices=("approve", "reject"))
     review.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
+    review.add_argument("--debug", action="store_true")
     review.set_defaults(func=review_pipeline)
 
     resume = subparsers.add_parser("resume")
     resume.add_argument("thread_id")
     resume.add_argument("--config", default=str(Path(__file__).parent.parent / "config.yaml"))
+    resume.add_argument("--debug", action="store_true")
     resume.set_defaults(func=resume_pipeline)
     return parser
 
 
 def main() -> int:
+    args = build_parser().parse_args()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    args = build_parser().parse_args()
+    if not args.debug:
+        for logger_name in ("httpx", "httpcore", "httpx2", "google_genai"):
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
     return args.func(args)
 
 

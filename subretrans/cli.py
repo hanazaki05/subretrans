@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import logging
 import sys
 import os
 import tempfile
@@ -48,6 +49,9 @@ from .stats import (
 )
 from .prompts import build_system_prompt
 from .utils import estimate_tokens, print_verbose_preview, format_time
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_checkpoint_path(input_path: str) -> str:
@@ -564,6 +568,18 @@ def process_subtitles(
                         artifact_path=output_path,
                         memory_checkpoint_path=checkpoint_path,
                     )
+                logger.info(
+                    "Refine progress: chunk %d/%d committed; %d/%d pairs (%.1f%%); "
+                    "elapsed=%s; prompt_tokens=%d; completion_tokens=%d",
+                    i + 1,
+                    len(chunks),
+                    cumulative_pairs_processed,
+                    len(pairs),
+                    cumulative_pairs_processed / len(pairs) * 100,
+                    format_time(elapsed_time),
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                )
 
                 # Check if memory needs compression
                 memory_tokens = estimate_memory_tokens(global_memory, config.refine.model)

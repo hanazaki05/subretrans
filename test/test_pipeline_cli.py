@@ -65,6 +65,10 @@ refine:
   memory_token_limit: 4000
   intermediate_representation: xml-pair
   prompt_path: {tmp_path / 'prompt.md'}
+qa:
+  batch_size: 10
+  max_workers: 2
+  window_offsets: [0, 5]
 postprocess:
   operations:
     - clean_chinese_dialogue
@@ -109,7 +113,7 @@ postprocess:
     )
     monkeypatch.setattr(
         "subretrans.pipeline_cli.build_agent_qa",
-        lambda settings: lambda pairs, structural_qa: AgentQAResult(True, (), ()),
+        lambda settings: lambda pairs, structural_qa, repair_history: AgentQAResult(True, (), ()),
     )
     run_args = argparse.Namespace(
         input=str(source),

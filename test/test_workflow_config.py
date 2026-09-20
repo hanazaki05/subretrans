@@ -39,6 +39,10 @@ refine:
   memory_token_limit: 4000
   intermediate_representation: xml-pair
   prompt_path: prompt.md
+qa:
+  batch_size: 40
+  max_workers: 3
+  window_offsets: [0, 20]
 postprocess:
   operations:
     - normalize_style_names
@@ -80,6 +84,9 @@ def test_pipeline_loader_resolves_paths_without_reading_translation_key(
         primer_batch_size=8,
         refine_batch_size=5,
         primer_max_workers=3,
+        qa_batch_size=40,
+        qa_max_workers=3,
+        qa_window_offsets=(0, 20),
         agent_max_repair_attempts=2,
         source_language="English",
         target_language="Simplified Chinese",
@@ -114,6 +121,10 @@ refine:
   memory_token_limit: 4000
   intermediate_representation: xml-pair
   prompt_path: prompt.md
+qa:
+  batch_size: 25
+  max_workers: 2
+  window_offsets: [0]
 postprocess:
   operations: []
   episode_replacements: []
@@ -125,6 +136,9 @@ postprocess:
     assert settings.state_dir == absolute_state.resolve()
     assert settings.checkpoint_db == (tmp_path / "checkpoint.sqlite").resolve()
     assert settings.refine_batch_size is None
+    assert settings.qa_batch_size == 25
+    assert settings.qa_max_workers == 2
+    assert settings.qa_window_offsets == (0,)
     assert settings.user_instruction is None
     assert settings.postprocess_operations == ()
     assert settings.episode_replacements == ()
@@ -140,6 +154,14 @@ postprocess:
         (
             pipeline_yaml(refine_batch_size="true"),
             "refine.batch_size must be a positive integer",
+        ),
+        (
+            pipeline_yaml().replace("qa:\n  batch_size: 40", "qa:\n  batch_size: 0"),
+            "qa.batch_size must be a positive integer",
+        ),
+        (
+            pipeline_yaml().replace("  window_offsets: [0, 20]", "  window_offsets: [20]"),
+            "qa.window_offsets must start with 0",
         ),
         (pipeline_yaml(source_language="''"), "source_language must be a non-empty"),
         (

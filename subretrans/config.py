@@ -243,6 +243,7 @@ def load_config_from_yaml(yaml_file_path: str | Path | None = None) -> ConfigSDK
         "pipeline",
         "primer",
         "refine",
+        "qa",
         "postprocess",
         "subtitle_edit",
         "glossary",

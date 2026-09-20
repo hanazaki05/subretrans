@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -11,6 +12,9 @@ from langchain_core.messages import AIMessage
 from .config import RoleModelSettings
 from .pairs import SubtitlePair
 from .providers import build_chat_model
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -22,6 +26,16 @@ class AgentRepair:
 
 
 @dataclass(frozen=True)
+class AgentRepairHistory:
+    """One previously applied repair supplied to a later QA pass."""
+
+    attempt: int
+    id: int
+    before: str
+    after: str
+
+
+@dataclass(frozen=True)
 class AgentQAResult:
     """Strict semantic-QA decision returned by the agent model."""
 
@@ -30,7 +44,14 @@ class AgentQAResult:
     repairs: tuple[AgentRepair, ...]
 
 
-AgentQA = Callable[[tuple[SubtitlePair, ...] | list[SubtitlePair], str], AgentQAResult]
+AgentQA = Callable[
+    [
+        tuple[SubtitlePair, ...] | list[SubtitlePair],
+        str,
+        tuple[AgentRepairHistory, ...],
+    ],
+    AgentQAResult,
+]
 
 
 def _exact_object(
@@ -63,9 +84,13 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
         "specific, non-empty issue. Propose a repair only when a targeted "
         "replacement of an input pair's complete Chinese translation is "
         "needed; preserve its input id exactly.\n"
-        "The user message is one JSON object with exactly the keys \"pairs\" "
-        "and \"structural_qa\". Each pairs element has exactly the keys "
+        "The user message is one JSON object with exactly the keys \"pairs\", "
+        "\"structural_qa\", and \"repair_history\". Each pairs element has exactly the keys "
         "\"id\", \"english\", and \"chinese\". Return JSON only: one object "
+        "repair_history contains prior applied changes for pairs in the current "
+        "window, with attempt, id, before, and after. Judge the current Chinese "
+        "text, use that history to avoid reverting valid repairs, and report a "
+        "new repair only when the current text still needs correction. "
         "with exactly the keys \"passed\", \"issues\", and \"repairs\". "
         "passed must be a boolean. issues must be an array of non-empty "
         "strings. repairs must be an array whose elements contain exactly "
@@ -76,7 +101,9 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
     )
 
     def agent_qa(
-        pairs: tuple[SubtitlePair, ...] | list[SubtitlePair], structural_qa: str
+        pairs: tuple[SubtitlePair, ...] | list[SubtitlePair],
+        structural_qa: str,
+        repair_history: tuple[AgentRepairHistory, ...] = (),
     ) -> AgentQAResult:
         if type(pairs) not in (tuple, list):
             raise TypeError("pairs must be a tuple or list")
@@ -84,6 +111,10 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
             raise TypeError("pairs must contain only SubtitlePair values")
         if type(structural_qa) is not str:
             raise TypeError("structural_qa must be a string")
+        if type(repair_history) is not tuple or any(
+            not isinstance(entry, AgentRepairHistory) for entry in repair_history
+        ):
+            raise TypeError("repair_history must contain AgentRepairHistory values")
 
         input_ids = {pair.id for pair in pairs}
         request_payload = {
@@ -92,6 +123,15 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
                 for pair in pairs
             ],
             "structural_qa": structural_qa,
+            "repair_history": [
+                {
+                    "attempt": entry.attempt,
+                    "id": entry.id,
+                    "before": entry.before,
+                    "after": entry.after,
+                }
+                for entry in repair_history
+            ],
         }
         response = model.invoke(
             [
@@ -104,6 +144,16 @@ def build_agent_qa(settings: RoleModelSettings) -> AgentQA:
         response_text = response.text
         if not isinstance(response_text, str):
             raise TypeError("AIMessage text must be a string")
+        logger.debug(
+            "Agent QA raw response: content=%r metadata=%r",
+            response.content,
+            response.response_metadata,
+        )
+        if not response_text.strip():
+            stop_reason = response.response_metadata.get("stop_reason", "unknown")
+            raise ValueError(
+                f"agent QA returned no text content (stop_reason={stop_reason})"
+            )
 
         payload = _exact_object(
             json.loads(response_text),

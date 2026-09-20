@@ -88,6 +88,9 @@ initial-translation request. `refine.batch_size` independently controls the
 serial refinement chunk size; set it to `null` to retain token-based chunking.
 `primer.max_workers` applies only to primer requests. Refine serialization is
 selected by `refine.intermediate_representation`.
+`qa.batch_size` controls how many bilingual pairs each semantic-QA request
+audits. Pipeline commands report committed refine and QA progress at `INFO`;
+pass `--debug` to expose provider HTTP and raw model-response diagnostics.
 
 The run writes the human-review candidate beside the input subtitle, inserting
 `.review` before the output extension (for example,
@@ -514,6 +517,11 @@ api:
 
 pipeline:
   agent_max_repair_attempts: 2
+
+qa:
+  batch_size: 64
+  max_workers: 4
+  window_offsets: [0, 32]
 ```
 
 - **API roles**: `primer`, `refine`, `extraction`, and `agent` are mandatory and use the same strict fields. Key paths are relative to the selected YAML file.

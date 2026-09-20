@@ -39,7 +39,7 @@ api:
     base_url: "https://zenmux.ai/api/anthropic"
     timeout: 30000
     max_retries: 2
-    max_output_tokens: 27000
+    max_output_tokens: 131072
     reasoning_effort: null
     temperature: 0.6
 
@@ -61,6 +61,11 @@ refine:
   memory_token_limit: 4000
   intermediate_representation: "xml-pair"
   prompt_path: "rm/prompt_afters5e9.md"
+
+qa:
+  batch_size: 64
+  max_workers: 4
+  window_offsets: [0, 32]
 
 postprocess:
   operations:

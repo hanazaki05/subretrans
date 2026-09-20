@@ -4,7 +4,12 @@ from unittest.mock import Mock, patch
 import pytest
 from langchain_core.messages import AIMessage
 
-from subretrans.model_agent import AgentQAResult, AgentRepair, build_agent_qa
+from subretrans.model_agent import (
+    AgentQAResult,
+    AgentRepair,
+    AgentRepairHistory,
+    build_agent_qa,
+)
 from subretrans.pairs import SubtitlePair
 
 
@@ -56,6 +61,7 @@ def test_builds_model_and_parses_strict_semantic_qa(build_chat_model) -> None:
             {"id": 9, "english": "Stay here.", "chinese": "留在这里。"},
         ],
         "structural_qa": "Structural QA passed: all events are paired.",
+        "repair_history": [],
     }
     assert model.invoke.call_args.kwargs == {}
 
@@ -127,3 +133,39 @@ def test_rejects_invalid_semantic_qa_output(
 
     with pytest.raises(ValueError, match=match):
         qa(pairs(), "Structural QA passed.")
+
+
+@patch("subretrans.model_agent.build_chat_model")
+def test_rejects_empty_agent_text_with_stop_reason(build_chat_model) -> None:
+    build_chat_model.return_value.invoke.return_value = AIMessage(
+        content=[{"type": "thinking", "thinking": "still auditing"}],
+        response_metadata={"stop_reason": "max_tokens"},
+    )
+    qa = build_agent_qa(role_settings())
+
+    with pytest.raises(ValueError, match="no text content.*max_tokens"):
+        qa(pairs(), "Structural QA passed.")
+
+
+@patch("subretrans.model_agent.build_chat_model")
+def test_supplies_window_repair_history(build_chat_model) -> None:
+    model = build_chat_model.return_value
+    model.invoke.return_value = AIMessage(
+        content='{"passed":true,"issues":[],"repairs":[]}'
+    )
+    qa = build_agent_qa(role_settings())
+
+    qa(
+        pairs(),
+        "passed",
+        (AgentRepairHistory(1, 4, "他走了。", "他没有离开。"),),
+    )
+
+    assert json.loads(model.invoke.call_args.args[0][1][1])["repair_history"] == [
+        {
+            "attempt": 1,
+            "id": 4,
+            "before": "他走了。",
+            "after": "他没有离开。",
+        }
+    ]

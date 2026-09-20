@@ -8,6 +8,8 @@ import logging
 import os
 import shutil
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +22,7 @@ from .ass_parser import (
     render_ass_file,
     write_ass_file,
 )
-from .model_agent import AgentQA
+from .model_agent import AgentQA, AgentRepair, AgentRepairHistory
 from .subtitle_processing import (
     POSTPROCESS_OPERATIONS,
     SrtCue,
@@ -59,6 +61,9 @@ class WorkflowSettings:
     agent_max_repair_attempts: int
     episode_replacements: tuple[tuple[str, str], ...]
     postprocess_operations: tuple[str, ...] = POSTPROCESS_OPERATIONS
+    qa_batch_size: int = 100
+    qa_max_workers: int = 1
+    qa_window_offsets: tuple[int, ...] = (0,)
 
 
 def _sha256(path: Path) -> str:
@@ -95,6 +100,149 @@ def _atomic_copy(source: Path, destination: Path) -> None:
         os.replace(temporary_path, destination)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _load_qa_progress(
+    path: Path,
+    artifact_path: Path,
+    artifact_hash: str,
+    batch_size: int,
+    window_offsets: tuple[int, ...],
+    history_hash: str,
+) -> tuple[int, bool, list[str], list[dict[str, Any]]]:
+    if not path.exists():
+        return 0, True, [], []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    expected = {
+        "version",
+        "artifact_path",
+        "artifact_hash",
+        "batch_size",
+        "window_offsets",
+        "history_hash",
+        "next_window",
+        "agent_passed",
+        "issues",
+        "repairs",
+    }
+    if type(payload) is not dict or set(payload) != expected:
+        raise ValueError("QA progress has invalid fields")
+    if payload["version"] != 3:
+        raise ValueError("QA progress version must be 3")
+    if payload["artifact_path"] != str(artifact_path):
+        raise ValueError("QA progress artifact_path does not match")
+    if payload["artifact_hash"] != artifact_hash:
+        raise ValueError("QA progress artifact_hash does not match")
+    if payload["batch_size"] != batch_size:
+        raise ValueError("QA progress batch_size does not match qa.batch_size")
+    if payload["window_offsets"] != list(window_offsets):
+        raise ValueError("QA progress window_offsets do not match qa.window_offsets")
+    if payload["history_hash"] != history_hash:
+        raise ValueError("QA progress history_hash does not match repair history")
+    if type(payload["next_window"]) is not int or payload["next_window"] < 0:
+        raise ValueError("QA progress next_window must be a non-negative integer")
+    if type(payload["agent_passed"]) is not bool:
+        raise ValueError("QA progress agent_passed must be a boolean")
+    if type(payload["issues"]) is not list or not all(
+        isinstance(issue, str) for issue in payload["issues"]
+    ):
+        raise ValueError("QA progress issues must be a string list")
+    if type(payload["repairs"]) is not list or not all(
+        type(repair) is dict and set(repair) == {"id", "translation"}
+        for repair in payload["repairs"]
+    ):
+        raise ValueError("QA progress repairs must contain id and translation")
+    return (
+        payload["next_window"],
+        payload["agent_passed"],
+        payload["issues"],
+        payload["repairs"],
+    )
+
+
+def _read_repair_history(path: Path) -> list[AgentRepairHistory]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if type(payload) is not dict or set(payload) != {"version", "entries"}:
+        raise ValueError("repair history has invalid fields")
+    if payload["version"] != 1 or type(payload["entries"]) is not list:
+        raise ValueError("repair history must be version 1 with an entries list")
+    entries: list[AgentRepairHistory] = []
+    for index, value in enumerate(payload["entries"]):
+        if type(value) is not dict or set(value) != {"attempt", "id", "before", "after"}:
+            raise ValueError(f"repair history entry {index} has invalid fields")
+        entries.append(AgentRepairHistory(**value))
+    return entries
+
+
+def _write_repair_history(path: Path, entries: list[AgentRepairHistory]) -> None:
+    _atomic_json(
+        path,
+        {
+            "version": 1,
+            "entries": [
+                {
+                    "attempt": entry.attempt,
+                    "id": entry.id,
+                    "before": entry.before,
+                    "after": entry.after,
+                }
+                for entry in entries
+            ],
+        },
+    )
+
+
+def _reconstruct_repair_history(run_dir: Path, attempt: int) -> list[AgentRepairHistory]:
+    entries: list[AgentRepairHistory] = []
+    for repair_attempt in range(1, attempt + 1):
+        before_name = (
+            "postprocessed.ass"
+            if repair_attempt == 1
+            else f"postprocessed-{repair_attempt - 1:03d}.ass"
+        )
+        before_path = run_dir / before_name
+        after_path = run_dir / f"qa-repair-{repair_attempt:03d}.ass"
+        if not before_path.exists() or not after_path.exists():
+            raise ValueError(
+                f"cannot reconstruct QA repair history for attempt {repair_attempt}"
+            )
+        _, before_lines = parse_ass_file(str(before_path))
+        _, after_lines = parse_ass_file(str(after_path))
+        before_pairs = build_pairs_from_ass_lines(before_lines)
+        after_pairs = build_pairs_from_ass_lines(after_lines)
+        if len(before_pairs) != len(after_pairs):
+            raise ValueError("QA repair history artifacts have different pair counts")
+        for before, after in zip(before_pairs, after_pairs, strict=True):
+            if before.id != after.id:
+                raise ValueError("QA repair history artifacts have different pair ids")
+            if before.chinese != after.chinese:
+                entries.append(
+                    AgentRepairHistory(
+                        repair_attempt,
+                        before.id,
+                        before.chinese,
+                        after.chinese,
+                    )
+                )
+    return entries
 
 
 def _load_refine_progress(
@@ -338,13 +486,131 @@ def build_stage_handlers(
         structural_qa = _qa_conclusion(input_path)
         header, ass_lines = parse_ass_file(str(input_path))
         pairs = build_pairs_from_ass_lines(ass_lines)
+        attempt = state["agent_repair_attempts"]
+        repair_history_path = run_dir / "qa-repair-history.json"
+        repair_history = _read_repair_history(repair_history_path)
+        if attempt and not repair_history:
+            repair_history = _reconstruct_repair_history(run_dir, attempt)
+            _write_repair_history(repair_history_path, repair_history)
+        history_hash = _sha256(repair_history_path) if repair_history else ""
+        windows = [
+            (round_index, start, min(start + settings.qa_batch_size, len(pairs)))
+            for round_index, offset in enumerate(settings.qa_window_offsets, start=1)
+            for start in range(offset, len(pairs), settings.qa_batch_size)
+        ]
+        offset_key = "-".join(str(offset) for offset in settings.qa_window_offsets)
+        qa_progress_path = run_dir / (
+            f"qa-progress-{state['artifact_hash'][:12]}-"
+            f"{settings.qa_batch_size}-{offset_key}-"
+            f"{history_hash[:12] or 'nohistory'}.json"
+        )
+        next_window, agent_passed, issues, raw_repairs = _load_qa_progress(
+            qa_progress_path,
+            input_path,
+            state["artifact_hash"],
+            settings.qa_batch_size,
+            settings.qa_window_offsets,
+            history_hash,
+        )
+        if next_window > len(windows):
+            raise ValueError("QA progress next_window exceeds the window count")
+        repairs = [
+            AgentRepair(repair["id"], repair["translation"])
+            for repair in raw_repairs
+        ]
         logger.info(
-            "Stage qa: auditing %d pairs; structural QA=%s",
+            "Stage qa: auditing %d pairs in %d windows across %d passes; "
+            "workers=%d; structural QA=%s",
             len(pairs),
+            len(windows),
+            len(settings.qa_window_offsets),
+            settings.qa_max_workers,
             structural_qa,
         )
-        result = agent_qa(tuple(pairs), structural_qa)
-        passed = structural_qa == "passed" and result.passed
+        if next_window:
+            logger.info(
+                "Stage qa: resuming from window %d/%d (%.1f%%)",
+                next_window,
+                len(windows),
+                next_window / len(windows) * 100,
+            )
+        while next_window < len(windows):
+            wave = windows[next_window : next_window + settings.qa_max_workers]
+            logger.info(
+                "Stage qa progress: wave started with windows %d-%d/%d",
+                next_window + 1,
+                next_window + len(wave),
+                len(windows),
+            )
+            wave_started = time.monotonic()
+            results = {}
+            with ThreadPoolExecutor(max_workers=len(wave)) as executor:
+                futures = {
+                    executor.submit(
+                        agent_qa,
+                        tuple(pairs[start:end]),
+                        structural_qa,
+                        tuple(
+                            entry
+                            for entry in repair_history
+                            if start <= entry.id < end
+                        ),
+                    ): (index, round_index, start, end)
+                    for index, (round_index, start, end) in enumerate(
+                        wave, start=next_window
+                    )
+                }
+                for future in as_completed(futures):
+                    index, round_index, start, end = futures[future]
+                    result = future.result()
+                    results[index] = result
+                    logger.info(
+                        "Stage qa progress: window %d/%d complete "
+                        "(pass %d/%d, pairs %d-%d); passed=%s, issues=%d, repairs=%d",
+                        index + 1,
+                        len(windows),
+                        round_index,
+                        len(settings.qa_window_offsets),
+                        start,
+                        end - 1,
+                        result.passed,
+                        len(result.issues),
+                        len(result.repairs),
+                    )
+            for index in sorted(results):
+                result = results[index]
+                agent_passed = agent_passed and result.passed
+                issues.extend(result.issues)
+                repairs.extend(result.repairs)
+            next_window += len(wave)
+            _atomic_json(
+                qa_progress_path,
+                {
+                    "version": 3,
+                    "artifact_path": str(input_path),
+                    "artifact_hash": state["artifact_hash"],
+                    "batch_size": settings.qa_batch_size,
+                    "window_offsets": list(settings.qa_window_offsets),
+                    "history_hash": history_hash,
+                    "next_window": next_window,
+                    "agent_passed": agent_passed,
+                    "issues": issues,
+                    "repairs": [
+                        {"id": repair.id, "translation": repair.translation}
+                        for repair in repairs
+                    ],
+                },
+            )
+            logger.info(
+                "Stage qa progress: wave committed; %d/%d windows (%.1f%%); "
+                "elapsed=%.1fs",
+                next_window,
+                len(windows),
+                next_window / len(windows) * 100,
+                time.monotonic() - wave_started,
+            )
+
+        passed = structural_qa == "passed" and agent_passed
         if passed:
             _atomic_copy(input_path, review_path)
             logger.info("Stage qa passed; review artifact: %s", review_path)
@@ -356,13 +622,25 @@ def build_stage_handlers(
                 "qa_repair_applied": False,
             }
 
-        issue_text = "; ".join(result.issues)
-        conclusion = f"structural={structural_qa}; agent={issue_text}"
-        attempt = state["agent_repair_attempts"]
         pair_by_id = {pair.id: pair for pair in pairs}
+        repairs_by_id: dict[int, AgentRepair] = {}
+        conflicting_repair_ids: set[int] = set()
+        for repair in repairs:
+            existing = repairs_by_id.get(repair.id)
+            if existing is not None and existing.translation != repair.translation:
+                conflicting_repair_ids.add(repair.id)
+            else:
+                repairs_by_id[repair.id] = repair
+        for repair_id in sorted(conflicting_repair_ids):
+            repairs_by_id.pop(repair_id, None)
+            issues.append(
+                f"Overlapping QA windows proposed conflicting repairs for ID {repair_id}."
+            )
+        issue_text = "; ".join(issues)
+        conclusion = f"structural={structural_qa}; agent={issue_text}"
         applicable_repairs = tuple(
             repair
-            for repair in result.repairs
+            for repair in repairs_by_id.values()
             if (pair_by_id[repair.id].meta or {}).get("chinese_line_id", -1) >= 0
         )
         if not applicable_repairs or attempt >= settings.agent_max_repair_attempts:
@@ -370,7 +648,7 @@ def build_stage_handlers(
             logger.warning(
                 "Stage qa requires human review: issues=%d, applicable_repairs=%d; "
                 "review artifact: %s",
-                len(result.issues),
+                len(issues),
                 len(applicable_repairs),
                 review_path,
             )
@@ -383,13 +661,22 @@ def build_stage_handlers(
             }
 
         for repair in applicable_repairs:
+            repair_history.append(
+                AgentRepairHistory(
+                    attempt + 1,
+                    repair.id,
+                    pair_by_id[repair.id].chinese,
+                    repair.translation,
+                )
+            )
             pair_by_id[repair.id].chinese = repair.translation
+        _write_repair_history(repair_history_path, repair_history)
         repaired_path = run_dir / f"qa-repair-{attempt + 1:03d}.ass"
         updated_lines = apply_pairs_to_ass_lines(ass_lines, pairs)
         write_ass_file(str(repaired_path), render_ass_file(header, updated_lines))
         logger.warning(
             "Stage qa found %d issues; applied %d repairs (attempt %d/%d)",
-            len(result.issues),
+            len(issues),
             len(applicable_repairs),
             attempt + 1,
             settings.agent_max_repair_attempts,

@@ -78,7 +78,7 @@ def make_refine(*, progress_mutation=None):
     return refine
 
 
-def pass_agent_qa(pairs, structural_qa):
+def pass_agent_qa(pairs, structural_qa, repair_history):
     return AgentQAResult(True, (), ())
 
 
@@ -213,6 +213,132 @@ def test_serial_handlers_skip_manifest_and_run_core_chain(tmp_path) -> None:
     assert release_path.exists()
 
 
+def test_qa_runs_configured_batches(tmp_path) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(
+        VALID_ASS
+        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
+        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
+        encoding="utf-8",
+    )
+    seen_batches = []
+
+    def qa(batch, structural_qa, repair_history):
+        seen_batches.append(tuple(pair.id for pair in batch))
+        return AgentQAResult(True, (), ())
+
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            tmp_path / "run",
+            tmp_path / "review.ass",
+            tmp_path / "release.ass",
+            primer_batch_size=1,
+            primer_max_workers=1,
+            agent_max_repair_attempts=1,
+            episode_replacements=(),
+            qa_batch_size=1,
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=qa,
+    )
+
+    update = handlers["qa"](state_for(source, "serial_memory"))
+
+    assert seen_batches == [(0,), (1,)]
+    assert update["qa_passed"] is True
+
+
+def test_qa_runs_overlapping_windows_and_keeps_conflicts_for_review(tmp_path) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(
+        VALID_ASS
+        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
+        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
+        encoding="utf-8",
+    )
+
+    def qa(batch, structural_qa, repair_history):
+        translation = "甲" if batch[0].id == 0 else "乙"
+        return AgentQAResult(
+            False,
+            ("Needs correction",),
+            (AgentRepair(1, translation),),
+        )
+
+    review = tmp_path / "review.ass"
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            tmp_path / "run",
+            review,
+            tmp_path / "release.ass",
+            primer_batch_size=1,
+            primer_max_workers=1,
+            agent_max_repair_attempts=2,
+            episode_replacements=(),
+            qa_batch_size=2,
+            qa_max_workers=2,
+            qa_window_offsets=(0, 1),
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=qa,
+    )
+
+    update = handlers["qa"](state_for(source, "serial_memory"))
+
+    assert update["qa_repair_applied"] is False
+    assert "conflicting repairs for ID 1" in update["qa_conclusion"]
+    assert review.read_bytes() == source.read_bytes()
+
+
+def test_qa_resumes_after_last_committed_batch(tmp_path) -> None:
+    source = tmp_path / "input.ass"
+    source.write_text(
+        VALID_ASS
+        + "Dialogue: -1,0:00:03.00,0:00:04.00,English3,,0,0,0,,Bye\n"
+        + "Dialogue:  1,0:00:03.00,0:00:04.00,Chinese3,,0,0,0,,再见\n",
+        encoding="utf-8",
+    )
+    seen_batches = []
+    fail_second_batch = True
+
+    def qa(batch, structural_qa, repair_history):
+        nonlocal fail_second_batch
+        seen_batches.append(tuple(pair.id for pair in batch))
+        if batch[0].id == 1 and fail_second_batch:
+            fail_second_batch = False
+            raise RuntimeError("QA interrupted")
+        return AgentQAResult(True, (), ())
+
+    handlers = build_stage_handlers(
+        WorkflowSettings(
+            tmp_path / "run",
+            tmp_path / "review.ass",
+            tmp_path / "release.ass",
+            primer_batch_size=1,
+            primer_max_workers=1,
+            agent_max_repair_attempts=1,
+            episode_replacements=(),
+            qa_batch_size=1,
+        ),
+        preprocess_subtitle=lambda input_path, output_path: output_path,
+        translate_batch=lambda batch: (),
+        refine=make_refine(),
+        agent_qa=qa,
+    )
+    state = state_for(source, "serial_memory")
+
+    with pytest.raises(RuntimeError, match="QA interrupted"):
+        handlers["qa"](state)
+    update = handlers["qa"](state)
+
+    assert seen_batches == [(0,), (1,), (1,)]
+    assert update["qa_passed"] is True
+
+
 @pytest.mark.parametrize(
     "mutate, match",
     [
@@ -268,7 +394,7 @@ def test_qa_failure_reports_counts(tmp_path) -> None:
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa: AgentQAResult(
+        agent_qa=lambda pairs, structural_qa, repair_history: AgentQAResult(
             False, ("Missing translation",), ()
         ),
     )
@@ -296,7 +422,7 @@ def test_agent_qa_applies_bounded_targeted_repair_to_new_artifact(tmp_path) -> N
         preprocess_subtitle=lambda input_path, output_path: output_path,
         translate_batch=lambda batch: (),
         refine=make_refine(),
-        agent_qa=lambda pairs, structural_qa: AgentQAResult(
+        agent_qa=lambda pairs, structural_qa, repair_history: AgentQAResult(
             False,
             ("The Chinese translation is incorrect.",),
             (AgentRepair(0, "你好"),),

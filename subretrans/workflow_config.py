@@ -18,6 +18,9 @@ class PipelineSettings:
     primer_batch_size: int
     refine_batch_size: int | None
     primer_max_workers: int
+    qa_batch_size: int
+    qa_max_workers: int
+    qa_window_offsets: tuple[int, ...]
     agent_max_repair_attempts: int
     source_language: str
     target_language: str
@@ -116,6 +119,12 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
             "prompt_path",
         },
     )
+    qa, _ = _load_section(yaml_path, "qa")
+    _validate_fields(
+        qa,
+        "qa",
+        required={"batch_size", "max_workers", "window_offsets"},
+    )
     postprocess, _ = _load_section(yaml_path, "postprocess")
     _validate_fields(
         postprocess,
@@ -161,6 +170,23 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
             raise ValueError(f"{prefix}.to must be a string")
         episode_replacements.append((source, target))
 
+    qa_batch_size = _positive_integer(qa["batch_size"], "qa.batch_size")
+    raw_offsets = qa["window_offsets"]
+    if not isinstance(raw_offsets, list) or not raw_offsets:
+        raise ValueError("qa.window_offsets must be a non-empty list")
+    qa_window_offsets: list[int] = []
+    for index, offset in enumerate(raw_offsets):
+        if type(offset) is not int or not 0 <= offset < qa_batch_size:
+            raise ValueError(
+                f"qa.window_offsets[{index}] must be an integer from 0 to "
+                f"{qa_batch_size - 1}"
+            )
+        if offset in qa_window_offsets:
+            raise ValueError(f"qa.window_offsets contains duplicate: {offset}")
+        qa_window_offsets.append(offset)
+    if qa_window_offsets[0] != 0:
+        raise ValueError("qa.window_offsets must start with 0")
+
     return PipelineSettings(
         state_dir=_resolve_path(pipeline["state_dir"], "pipeline.state_dir", yaml_dir),
         checkpoint_db=_resolve_path(
@@ -173,6 +199,9 @@ def load_pipeline_settings(yaml_path: str | Path) -> PipelineSettings:
         primer_max_workers=_positive_integer(
             primer["max_workers"], "primer.max_workers"
         ),
+        qa_batch_size=qa_batch_size,
+        qa_max_workers=_positive_integer(qa["max_workers"], "qa.max_workers"),
+        qa_window_offsets=tuple(qa_window_offsets),
         agent_max_repair_attempts=_nonnegative_integer(
             pipeline["agent_max_repair_attempts"],
             "pipeline.agent_max_repair_attempts",
