@@ -106,7 +106,7 @@ Style: Chinese3,Arial
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 1,0:00:01.00,0:00:02.00,Chinese3,,0000,0000,0000,,{\\i1}萨拉。罗伯茨，{\\i0}
-Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,<I>A.J. -- SECNAV</I>
+Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,<I>A.J. -- SECNAV</I> English3 0000,0000,0000,,
 """,
         bom=True,
     )
@@ -128,7 +128,7 @@ Dialogue: -1,0:00:01.00,0:00:02.00,English3,,0,0,0,,<I>A.J. -- SECNAV</I>
     assert "Style: E3,Arial" in content
     assert "Style: C3,Arial" in content
     assert "Dialogue:  1,0:00:01.00,0:00:02.00,C3,,0,0,0,,莎拉 罗伯特" in content
-    assert r"Dialogue: -1,0:00:01.00,0:00:02.00,E3,,0,0,0,,{\i1}AJ ... SecNav{\i0}" in content
+    assert "Dialogue: -1,0:00:01.00,0:00:02.00,E3,,0,0,0,,<I>A.J. -- SECNAV</I> English3 0000,0000,0000,," in content
     assert source.read_text(encoding="utf-8-sig").startswith("[V4+ Styles]")
 
 

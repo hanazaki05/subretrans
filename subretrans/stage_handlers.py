@@ -977,8 +977,13 @@ def build_stage_handlers(
         if stage == "qa":
             return _commit(checked, manifest, "qa", "repair", "initial_audit_committed")
         suggestions = pool["suggestions"]
-        budget = manifest["budgets"]["repair_attempts"]
-        if suggestions and budget["used"] < budget["max"]:
+        attempt_budget = manifest["budgets"]["repair_attempts"]
+        tool_budget = manifest["budgets"]["tool_steps"]
+        if (
+            suggestions
+            and attempt_budget["used"] < attempt_budget["max"]
+            and tool_budget["used"] < tool_budget["max"]
+        ):
             return _commit(checked, manifest, "qa_verify", "repair", "actionable_suggestions_remain")
         reason = "qa_clean" if not suggestions else "repair_budget_exhausted"
         return _commit(checked, manifest, "qa_verify", "review_export", reason)
@@ -989,8 +994,9 @@ def build_stage_handlers(
     def repair(state: PipelineState) -> PipelineState:
         checked, manifest = mutable_manifest(state, expected_stage="repair")
         budget = manifest["budgets"]["repair_attempts"]
-        if budget["used"] >= budget["max"]:
-            return _commit(checked, manifest, "repair", "qa_verify", "repair_budget_exhausted")
+        tool_budget = manifest["budgets"]["tool_steps"]
+        if budget["used"] >= budget["max"] or tool_budget["used"] >= tool_budget["max"]:
+            return _commit(checked, manifest, "repair", "review_export", "repair_budget_exhausted")
         refined = artifact_path(checked["manifest_path"], manifest, "refined")
         current = artifact_path(checked["manifest_path"], manifest, "current")
         cues = artifact_path(checked["manifest_path"], manifest, "cue_manifest")
@@ -1034,7 +1040,7 @@ def build_stage_handlers(
             if not required.is_file():
                 raise ValueError(f"repair runner did not write its {label}")
         repaired_name = f"repaired_{attempt:03d}"
-        if repaired.resolve() != current.resolve():
+        if sha256_file(repaired) != sha256_file(current):
             register_artifact(
                 manifest,
                 checked["manifest_path"],

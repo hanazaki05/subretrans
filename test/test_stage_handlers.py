@@ -102,6 +102,7 @@ def make_handlers(
     qa_memories: list[AgentQAMemory] | None = None,
     qa_histories: list[tuple] | None = None,
     dismiss_suggestions: bool = False,
+    max_tool_steps: int = 4,
 ):
     state, refine, freeze_cues, freeze_glossary = setup_run(tmp_path)
 
@@ -158,7 +159,7 @@ def make_handlers(
             episode_replacements=(),
             qa_batch_size=10,
             max_repair_attempts=1,
-            max_tool_steps=4,
+            max_tool_steps=max_tool_steps,
             max_full_sweeps=1,
         ),
         preprocess_subtitle=lambda input_path, output_path: output_path,
@@ -428,6 +429,7 @@ def test_repair_runs_even_when_qa_pool_is_empty(tmp_path: Path) -> None:
     assert state["next_stage"] == "qa_verify"
     manifest = load_manifest(state["manifest_path"])
     assert manifest["budgets"]["repair_attempts"]["used"] == 1
+    assert manifest["heads"]["current"] == "postprocessed"
     for head in (
         "repair_state",
         "decision_log",
@@ -437,6 +439,29 @@ def test_repair_runs_even_when_qa_pool_is_empty(tmp_path: Path) -> None:
         "coverage",
     ):
         assert manifest["heads"][head] is not None
+
+
+def test_qa_verify_routes_to_review_when_tool_budget_is_exhausted(tmp_path: Path) -> None:
+    suggestion = AgentQASuggestion(
+        affected_ids=(0,),
+        kind="accuracy",
+        diagnosis="Meaning is reversed.",
+        evidence=(AgentQAEvidence((0,), "English and Chinese disagree."),),
+        suggested_translations=(AgentQATranslation(0, "你好"),),
+    )
+    state, handlers = make_handlers(
+        tmp_path,
+        qa_result=AgentQAResult(False, (suggestion,)),
+        repair_calls=[],
+        max_tool_steps=1,
+    )
+
+    state = run_to_qa(state, handlers)
+    state = handlers["repair"](state)
+    state = handlers["qa_verify"](state)
+
+    assert state["next_stage"] == "review_export"
+    assert state["route_reason"] == "repair_budget_exhausted"
 
 
 def test_qa_receives_only_the_frozen_effective_glossary(tmp_path: Path) -> None:

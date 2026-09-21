@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -321,7 +321,9 @@ def merge_srt_to_ass(en_path: Path, zh_path: Path, out_path: Path) -> Path:
     return output
 
 
-def _strip_dot(content: str) -> str:
+def _map_chinese_event_text(
+    content: str, transform: Callable[[str], str]
+) -> str:
     lines = content.splitlines()
     try:
         events_start = next(
@@ -363,17 +365,26 @@ def _strip_dot(content: str) -> str:
         parts = remainder.lstrip().split(",", field_count - 1)
         if len(parts) < field_count or not is_chinese_style(parts[style_index]):
             continue
-        updated = parts[text_index].replace("。", " ")
-        updated = updated.replace(r"{\i1}", "").replace(r"{\i0}", "")
-        if updated.endswith("，"):
-            updated = updated.rstrip("，")
+        updated = transform(parts[text_index])
         if updated != parts[text_index]:
             parts[text_index] = updated
-            lines[index] = f"{tag}: " + ",".join(parts)
+            leading = remainder[: len(remainder) - len(remainder.lstrip())]
+            lines[index] = f"{tag}:{leading}" + ",".join(parts)
     return "\n".join(lines)
 
 
-def _normalize_punctuation(content: str) -> str:
+def _strip_dot(content: str) -> str:
+    def transform(text: str) -> str:
+        updated = text.replace("。", " ")
+        updated = updated.replace(r"{\i1}", "").replace(r"{\i0}", "")
+        if updated.endswith("，"):
+            updated = updated.rstrip("，")
+        return updated
+
+    return _map_chinese_event_text(content, transform)
+
+
+def _normalize_punctuation_text(text: str) -> str:
     replacements = (
         ("……", "..."),
         ("…", "..."),
@@ -384,24 +395,75 @@ def _normalize_punctuation(content: str) -> str:
         ("—", "-"),
     )
     for old, new in replacements:
-        content = content.replace(old, new)
-    return content
+        text = text.replace(old, new)
+    return text
+
+
+def _normalize_punctuation(content: str) -> str:
+    return _map_chinese_event_text(content, _normalize_punctuation_text)
+
+
+def _map_event_fields(
+    content: str, transform: Callable[[str, list[str]], None]
+) -> str:
+    trailing_newline = content.endswith("\n")
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        if not (line.startswith("Dialogue:") or line.startswith("Comment:")):
+            continue
+        tag, remainder = line.split(":", 1)
+        leading = remainder[: len(remainder) - len(remainder.lstrip())]
+        parts = remainder.lstrip().split(",", 9)
+        if len(parts) != 10:
+            continue
+        transform(tag, parts)
+        lines[index] = f"{tag}:{leading}" + ",".join(parts)
+    result = "\n".join(lines)
+    return result + ("\n" if trailing_newline else "")
 
 
 def _normalize_style_names(content: str) -> str:
-    return content.replace("Chinese3", "C3").replace("English3", "E3")
+    names = {"Chinese3": "C3", "English3": "E3"}
+    trailing_newline = content.endswith("\n")
+    lines = content.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("Style:"):
+            continue
+        prefix, remainder = line.split(":", 1)
+        leading = remainder[: len(remainder) - len(remainder.lstrip())]
+        fields = remainder.lstrip().split(",", 1)
+        fields[0] = names.get(fields[0], fields[0])
+        lines[index] = f"{prefix}:{leading}" + ",".join(fields)
+
+    def normalize_event_style(_tag: str, fields: list[str]) -> None:
+        fields[3] = names.get(fields[3], fields[3])
+
+    result = "\n".join(lines) + ("\n" if trailing_newline else "")
+    return _map_event_fields(result, normalize_event_style)
 
 
 def _normalize_event_fields(content: str) -> str:
-    return content.replace("0000,0000,0000,,", "0,0,0,,").replace(
-        "Dialogue: 1,", "Dialogue:  1,"
-    )
+    def normalize_fields(_tag: str, fields: list[str]) -> None:
+        if fields[5:9] == ["0000", "0000", "0000", ""]:
+            fields[5:8] = ["0", "0", "0"]
+
+    normalized = _map_event_fields(content, normalize_fields)
+    trailing_newline = normalized.endswith("\n")
+    lines = normalized.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("Dialogue: 1,"):
+            lines[index] = "Dialogue:  1," + line[len("Dialogue: 1,") :]
+    result = "\n".join(lines)
+    return result + ("\n" if trailing_newline else "")
+
+
+def _normalize_italics_text(text: str) -> str:
+    text = re.sub(r"<i>", r"{\\i1}", text, flags=re.IGNORECASE)
+    return re.sub(r"</i>", r"{\\i0}", text, flags=re.IGNORECASE)
 
 
 def _normalize_italics(content: str) -> str:
-    content = re.sub(r"<i>", r"{\\i1}", content, flags=re.IGNORECASE)
-    content = re.sub(r"</i>", r"{\\i0}", content, flags=re.IGNORECASE)
-    return content
+    return _map_chinese_event_text(content, _normalize_italics_text)
 
 
 POSTPROCESS_OPERATIONS = (
@@ -446,9 +508,9 @@ def postprocess_chinese_cue(
             if result.endswith("，"):
                 result = result.rstrip("，")
         elif operation == "normalize_punctuation":
-            result = _normalize_punctuation(result)
+            result = _normalize_punctuation_text(result)
         elif operation == "normalize_italics":
-            result = _normalize_italics(result)
+            result = _normalize_italics_text(result)
         elif operation == "episode_replacements":
             for old, new in episode_replacements:
                 if not old:
@@ -470,10 +532,14 @@ def postprocess_ass(
     content = Path(input_path).read_text(encoding="utf-8-sig")
     for operation in operations:
         if operation == "episode_replacements":
-            for old, new in episode_replacements:
-                if not old:
-                    raise ValueError("episode replacement source must not be empty")
-                content = content.replace(old, new)
+            def replace_episode_terms(text: str) -> str:
+                for old, new in episode_replacements:
+                    if not old:
+                        raise ValueError("episode replacement source must not be empty")
+                    text = text.replace(old, new)
+                return text
+
+            content = _map_chinese_event_text(content, replace_episode_terms)
             continue
         try:
             handler = _OPERATION_HANDLERS[operation]
