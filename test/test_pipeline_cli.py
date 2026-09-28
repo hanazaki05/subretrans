@@ -253,6 +253,7 @@ def test_repair_callable_resumes_one_run_level_session_across_qa_rounds(
     seen_history_lengths: list[int] = []
 
     def fake_run_repair_agent(*, session, **kwargs):
+        assert kwargs["episode_memory"] == {"story_description": "Test episode context."}
         seen_history_lengths.append(len(session.history))
         session.history.append({"kind": "round", "index": len(seen_history_lengths)})
         session.tool_steps_used += 1

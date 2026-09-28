@@ -382,6 +382,9 @@ def test_tool_exchanges_are_persisted_and_hashed(tmp_path: Path, monkeypatch) ->
     )
 
     def fake_invoke(model, messages, tools, execute, *, max_tool_steps, on_exchange):
+        assert json.loads(messages[1][1])["episode_memory"] == {
+            "story_description": "Test episode context."
+        }
         on_exchange(exchange)
         return loop_result
 
@@ -394,7 +397,7 @@ def test_tool_exchanges_are_persisted_and_hashed(tmp_path: Path, monkeypatch) ->
         system_prompt="repair",
         session=session,
         effective_glossary={"authoritative": [], "learned": []},
-        episode_memory={},
+        episode_memory={"story_description": "Test episode context."},
     )
 
     exchanges_path = session.latest_artifact_path("exchanges.json")
