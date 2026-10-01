@@ -19,7 +19,13 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from .config import DEFAULT_CONFIG_PATH, AppConfig, load_config
-from .fsutil import atomic_copy, atomic_write_json, sha256_file
+from .fsutil import (
+    atomic_copy,
+    atomic_write_json,
+    atomic_write_text,
+    sha256_file,
+    sha256_json,
+)
 from .ass_parser import apply_pairs_to_ass_lines, build_pairs_from_ass_lines, parse_ass_file, render_ass_file, write_ass_file
 from .memory import load_memory_checkpoint
 from .model_agent import build_agent_qa
@@ -27,11 +33,18 @@ from .model_translation import build_model_translate_batch
 from .pipeline import build_pipeline
 from .prompts import compose_prompt, load_prompt_file, load_qa_prompt_template
 from .refine import RefineOptions, load_refine_progress, refine_serial
-from .run_manifest import create_manifest, load_manifest
+from .run_manifest import artifact_path, create_manifest, load_manifest
 from .stage_handlers import Refine, WorkflowSettings, build_stage_handlers
 from .state import TranslationMode
 from .subtitle_edit import preprocess_with_seconv
 from .translation import TranslateBatch, TranslationBatch
+from .unresolved_report import (
+    REPORT_SYSTEM_PROMPT,
+    build_report_source,
+    parse_agent_report,
+    render_markdown,
+    report_path_for_review,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -278,6 +291,102 @@ def _repair_callable(config: AppConfig):
     return run_repair
 
 
+def _unresolved_report_callable(config: AppConfig):
+    """Generate validated human-review guidance with the configured repair model."""
+
+    def run_report(**kwargs: object) -> dict[str, object]:
+        from .providers import build_chat_model, clean_response_text, invoke_text
+
+        paths = {
+            name: Path(cast(Any, kwargs[name]))
+            for name in (
+                "decision_log_path",
+                "repair_state_path",
+                "coverage_path",
+                "glossary_decisions_path",
+                "suggestion_pool_path",
+                "current_artifact_path",
+                "review_artifact_path",
+                "report_path",
+                "audit_path",
+            )
+        }
+        source = build_report_source(
+            decision_log_path=paths["decision_log_path"],
+            repair_state_path=paths["repair_state_path"],
+            coverage_path=paths["coverage_path"],
+            glossary_decisions_path=paths["glossary_decisions_path"],
+            suggestion_pool_path=paths["suggestion_pool_path"],
+            current_artifact_path=paths["current_artifact_path"],
+            review_artifact_path=paths["review_artifact_path"],
+        )
+        model_config = config.api.repair.config
+        source["generator"] = {"role": "repair", "model": model_config.model}
+        request = {
+            "task": "Summarize every supplied unresolved item for human subtitle review.",
+            "source": source,
+            "output_schema": {
+                "coverage_note": "non-empty Chinese string",
+                "glossary_items": [
+                    {
+                        "eng": "exact supplied term",
+                        "priority": "high|medium|low",
+                        "summary": "Chinese summary",
+                        "review_action": "Chinese action",
+                    }
+                ],
+                "groups": [
+                    {
+                        "issue_ids": ["one or more exact supplied issue ids"],
+                        "priority": "high|medium|low",
+                        "title": "short Chinese title",
+                        "summary": "Chinese summary",
+                        "review_action": "Chinese action",
+                    }
+                ],
+            },
+        }
+        model = build_chat_model(model_config)
+        response_text, usage = invoke_text(
+            model,
+            (
+                ("system", REPORT_SYSTEM_PROMPT),
+                ("human", json.dumps(request, ensure_ascii=False, sort_keys=True)),
+            ),
+        )
+        cleaned = clean_response_text(response_text)
+        agent_report = parse_agent_report(
+            json.loads(cleaned),
+            {
+                item["issue_id"]: set(item["affected_ids"])
+                for item in source["unresolved_issues"]
+            },
+            {item["eng"] for item in source["unresolved_glossary"]},
+        )
+        paths["report_path"].parent.mkdir(parents=True, exist_ok=True)
+        paths["audit_path"].parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(paths["report_path"], render_markdown(source, agent_report))
+        audit = {
+            "version": 2,
+            "model": model_config.model,
+            "protocol": model_config.protocol.value,
+            "instruction_sha256": hashlib.sha256(
+                REPORT_SYSTEM_PROMPT.encode("utf-8")
+            ).hexdigest(),
+            "request_sha256": sha256_json(request),
+            "review_sha256": source["review"]["sha256"],
+            "current_sha256": source["current_sha256"],
+            "source_sha256": sha256_json(source),
+            "usage": usage.to_dict(),
+            "agent_report": agent_report,
+            "response_text": response_text,
+        }
+        atomic_write_json(paths["audit_path"], audit)
+        return {"report_path": paths["report_path"], "audit_path": paths["audit_path"]}
+
+    return run_report
+
+
 def _glossary_research_callable(config: AppConfig):
     """Build a lazy bounded research runner; credentials are read only on use."""
 
@@ -457,6 +566,7 @@ def _handlers(context: RunContext):
         glossary_research_runner=_glossary_research_callable(config),
         glossary_repair_runner=_glossary_repair_callable(config),
         repair_runner=_repair_callable(config),
+        unresolved_report_runner=_unresolved_report_callable(config),
     )
 
 
@@ -478,13 +588,14 @@ def _existing_run(args: argparse.Namespace, command: str) -> RunContext:
     manifest = load_manifest(manifest_path, verify_artifacts=False)
     if Path(manifest["configuration"]["path"]) != config.path:
         raise ValueError(f"{command} config does not match the run config")
-    if manifest["configuration"]["sha256"] != sha256_file(config.path):
-        raise ValueError(f"{command} config content changed since the run started")
-    for name in ("shared", "refine", "qa", "repair"):
-        prompt = manifest["configuration"]["prompts"][name]
-        path = Path(getattr(config.prompts, name)).resolve()
-        if Path(prompt["path"]) != path or prompt["sha256"] != sha256_file(path):
-            raise ValueError(f"{command} {name} prompt changed since the run started")
+    if command == "resume":
+        if manifest["configuration"]["sha256"] != sha256_file(config.path):
+            raise ValueError(f"{command} config content changed since the run started")
+        for name in ("shared", "refine", "qa", "repair"):
+            prompt = manifest["configuration"]["prompts"][name]
+            path = Path(getattr(config.prompts, name)).resolve()
+            if Path(prompt["path"]) != path or prompt["sha256"] != sha256_file(path):
+                raise ValueError(f"{command} {name} prompt changed since the run started")
     return RunContext(thread_id, config, run_dir, manifest["translation_mode"])
 
 
@@ -494,6 +605,9 @@ def _report_review_wait(context: RunContext, result: Mapping[str, Any]) -> int:
     manifest = load_manifest(context.manifest_path, verify_artifacts=False)
     print(f"Pipeline '{context.thread_id}' is awaiting human review.")
     print(f"Review artifact: {manifest['review']['path']}")
+    report = report_path_for_review(Path(manifest["review"]["path"]))
+    if report.is_file():
+        print(f"Unresolved report: {report}")
     print(f"Reason: {manifest['route_reason']}")
     print(
         "Next: ./run.sh pipeline review "
@@ -554,6 +668,48 @@ def resume_pipeline(args: argparse.Namespace) -> int:
     return _report_review_wait(context, result)
 
 
+def unresolved_report_pipeline(args: argparse.Namespace) -> int:
+    """Backfill a sidecar for an existing run without advancing its checkpoint."""
+
+    context = _existing_run(args, "unresolved-report")
+    manifest = load_manifest(context.manifest_path, verify_artifacts=True)
+    if manifest["next_stage"] != "human_review" or manifest["review"]["status"] != "awaiting":
+        raise ValueError("unresolved-report requires a run awaiting human review")
+    review = Path(manifest["review"]["path"])
+    if sha256_file(review) != manifest["review"]["sha256"]:
+        raise ValueError("review artifact changed; generate the report before editing it")
+    required_heads = ("decision_log", "repair_state", "coverage", "suggestion_pool", "current")
+    if any(manifest["heads"][head] is None for head in required_heads):
+        raise ValueError("run lacks the repair artifacts required for an unresolved report")
+    report = report_path_for_review(review)
+    audit = context.run_dir / "repair" / f"unresolved-report-{manifest['revision']:03d}.json"
+    revision_before = manifest["revision"]
+    manifest_hash_before = sha256_file(context.manifest_path)
+    _unresolved_report_callable(context.config)(
+        run_dir=context.run_dir,
+        decision_log_path=artifact_path(context.manifest_path, manifest, "decision_log"),
+        repair_state_path=artifact_path(context.manifest_path, manifest, "repair_state"),
+        coverage_path=artifact_path(context.manifest_path, manifest, "coverage"),
+        glossary_decisions_path=(
+            context.run_dir / manifest["artifacts"]["glossary_decisions"]["path"]
+        ),
+        suggestion_pool_path=artifact_path(context.manifest_path, manifest, "suggestion_pool"),
+        current_artifact_path=artifact_path(context.manifest_path, manifest, "current"),
+        review_artifact_path=review,
+        report_path=report,
+        audit_path=audit,
+    )
+    if (
+        load_manifest(context.manifest_path, verify_artifacts=False)["revision"] != revision_before
+        or sha256_file(context.manifest_path) != manifest_hash_before
+    ):
+        raise RuntimeError("unresolved report backfill unexpectedly changed the run manifest")
+    print(f"Unresolved report: {report}")
+    print(f"Model audit: {audit}")
+    print("Run manifest and human-review checkpoint were not advanced.")
+    return 0
+
+
 def status_pipeline(args: argparse.Namespace) -> int:
     context = _existing_run(args, "status")
     manifest = load_manifest(context.manifest_path, verify_artifacts=False)
@@ -563,6 +719,8 @@ def status_pipeline(args: argparse.Namespace) -> int:
     print(f"Next stage: {manifest['next_stage']}")
     print(f"Reason: {manifest['route_reason']}")
     print(f"Review artifact: {manifest['review']['path']}")
+    report = report_path_for_review(Path(manifest["review"]["path"]))
+    print(f"Unresolved report: {report if report.is_file() else 'not generated'}")
     print(f"Release artifact: {manifest['release']['path']}")
     print(f"Status: {manifest['review']['status']}")
     return 0
@@ -599,6 +757,13 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("thread_id")
     add_common(status)
     status.set_defaults(func=status_pipeline)
+
+    unresolved = subparsers.add_parser(
+        "unresolved-report", help="generate unresolved guidance for a run awaiting review"
+    )
+    unresolved.add_argument("thread_id")
+    add_common(unresolved)
+    unresolved.set_defaults(func=unresolved_report_pipeline)
     return parser
 
 

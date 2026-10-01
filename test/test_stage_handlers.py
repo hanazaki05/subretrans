@@ -151,6 +151,10 @@ def make_handlers(
             "escalated": False,
         }
 
+    def unresolved_report_runner(**kwargs):
+        Path(kwargs["report_path"]).write_text("# 未决字幕审核事项\n", encoding="utf-8")
+        atomic_write_json(Path(kwargs["audit_path"]), {"version": 1})
+
     handlers = build_stage_handlers(
         WorkflowSettings(
             run_dir=tmp_path,
@@ -173,6 +177,7 @@ def make_handlers(
         freeze_cues=freeze_cues,
         freeze_glossary=freeze_glossary,
         repair_runner=repair_runner,
+        unresolved_report_runner=unresolved_report_runner,
     )
     return state, handlers
 
@@ -524,6 +529,11 @@ def test_review_is_run_local_and_approval_freezes_edited_copy(tmp_path: Path) ->
     manifest = load_manifest(state["manifest_path"])
     review = Path(manifest["review"]["path"])
     assert review.is_relative_to(tmp_path)
+    reports = [
+        ref for ref in manifest["artifacts"].values() if ref["kind"] == "human-review-report"
+    ]
+    assert len(reports) == 1
+    assert (tmp_path / reports[0]["path"]).name == "release.review.unresolved.md"
     review.write_text(review.read_text(encoding="utf-8-sig").replace("错误", "人工修改"), encoding="utf-8-sig")
 
     state = handlers["human_review"](state, "approve")

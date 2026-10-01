@@ -65,7 +65,11 @@ def build_pipeline(
     graph.add_edge("glossary", "qa")
     # Repair is mandatory even when QA returns an empty suggestion pool.
     graph.add_edge("qa", "repair")
-    graph.add_edge("repair", "qa_verify")
+    graph.add_conditional_edges(
+        "repair",
+        _route_after_repair,
+        {"qa_verify": "qa_verify", "review_export": "review_export"},
+    )
     graph.add_conditional_edges(
         "qa_verify",
         _route_after_verify,
@@ -93,6 +97,13 @@ def _route_after_verify(state: PipelineState) -> Stage:
     if checked["next_stage"] in {"repair", "review_export"}:
         return cast(Stage, checked["next_stage"])
     raise ValueError(f"qa_verify produced invalid route: {checked['next_stage']}")
+
+
+def _route_after_repair(state: PipelineState) -> Stage:
+    checked = _authoritative(state)
+    if checked["next_stage"] in {"qa_verify", "review_export"}:
+        return cast(Stage, checked["next_stage"])
+    raise ValueError(f"repair produced invalid route: {checked['next_stage']}")
 
 
 def _handler_node(stage: Stage, handler: StageHandler) -> StageHandler:

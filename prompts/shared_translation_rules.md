@@ -29,6 +29,7 @@ These rules are authoritative for refinement and semantic QA.
 
 ### User Terminology (Authoritative Glossary)
 - Admiral: 将军
+- Bobbi: 博比
 - Brumby: 布伦比
 - Bud: 巴德
 - Bud J Roberts: 小巴德·罗伯特
@@ -76,6 +77,7 @@ These rules are authoritative for refinement and semantic QA.
 - Rabb: 拉布
 - Sarah: 莎拉
 - Sims: 西姆斯
+- Sturgis: 斯特吉斯
 - Tiner: 泰纳
 - Webb: 韦布
 - XO: 大副

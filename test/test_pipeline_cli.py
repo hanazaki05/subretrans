@@ -82,6 +82,7 @@ def test_parser_exposes_all_subcommands() -> None:
     assert parser.parse_args(["status", "e1", "--debug"]).command == "status"
     assert parser.parse_args(["review", "e1", "reject"]).command == "review"
     assert parser.parse_args(["resume", "e1"]).command == "resume"
+    assert parser.parse_args(["unresolved-report", "e1"]).command == "unresolved-report"
 
 
 def test_run_creates_v3_manifest_with_run_local_review(
@@ -220,6 +221,9 @@ def test_existing_run_rejects_changed_prompt_content(tmp_path: Path, monkeypatch
         _existing_run(
             argparse.Namespace(thread_id="episode", config=str(config_path)), "resume"
         )
+    assert _existing_run(
+        argparse.Namespace(thread_id="episode", config=str(config_path)), "status"
+    ).thread_id == "episode"
 
 
 def test_repair_callable_resumes_one_run_level_session_across_qa_rounds(

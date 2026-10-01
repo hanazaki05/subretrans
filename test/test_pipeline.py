@@ -32,7 +32,9 @@ def initial_state(tmp_path: Path, mode: str = "parallel_initial") -> PipelineSta
     )
 
 
-def recording_handlers(calls: list[str], *, verify_repairs: int = 0):
+def recording_handlers(
+    calls: list[str], *, verify_repairs: int = 0, repair_to_review: bool = False
+):
     verify_calls = 0
 
     def handler(stage: Stage):
@@ -61,6 +63,8 @@ def recording_handlers(calls: list[str], *, verify_repairs: int = 0):
             elif stage == "qa_verify":
                 verify_calls += 1
                 next_stage = "repair" if verify_calls <= verify_repairs else "review_export"
+            elif stage == "repair" and repair_to_review:
+                next_stage = "review_export"
             else:
                 next_stage = routes[stage]
             return commit_manifest(
@@ -130,6 +134,21 @@ def test_repair_runs_when_initial_qa_is_empty_and_verify_can_loop(tmp_path: Path
     assert calls.count("qa") == 1
     assert calls.count("repair") == 2
     assert calls.count("qa_verify") == 2
+
+
+def test_repair_can_route_directly_to_review_when_budget_is_exhausted(tmp_path: Path) -> None:
+    calls: list[str] = []
+    graph = build_pipeline(
+        recording_handlers(calls, repair_to_review=True), checkpointer=InMemorySaver()
+    )
+
+    result = graph.invoke(
+        initial_state(tmp_path), {"configurable": {"thread_id": "repair-direct-review"}}
+    )
+
+    assert result["__interrupt__"]
+    assert calls.count("repair") == 1
+    assert "qa_verify" not in calls
 
 
 def test_missing_handler_fails_when_building_pipeline() -> None:

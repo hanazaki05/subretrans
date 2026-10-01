@@ -84,7 +84,7 @@ qa:
   window_offsets: [0, 32]
 
 repair:
-  max_tool_steps: 24
+  max_tool_steps: 64
   max_full_sweeps: 1
   max_repair_attempts: 2
   context_radius: 3

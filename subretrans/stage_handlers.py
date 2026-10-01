@@ -123,6 +123,23 @@ class RunRepair(Protocol):
     ) -> object: ...
 
 
+class UnresolvedReportRunner(Protocol):
+    def __call__(
+        self,
+        *,
+        run_dir: Path,
+        decision_log_path: Path,
+        repair_state_path: Path,
+        coverage_path: Path,
+        glossary_decisions_path: Path,
+        suggestion_pool_path: Path,
+        current_artifact_path: Path,
+        review_artifact_path: Path,
+        report_path: Path,
+        audit_path: Path,
+    ) -> object: ...
+
+
 @dataclass(frozen=True)
 class WorkflowSettings:
     run_dir: Path
@@ -645,6 +662,7 @@ def build_stage_handlers(
     glossary_research_runner: GlossaryResearch | None = None,
     glossary_repair_runner: GlossaryRepair | None = None,
     repair_runner: RunRepair | None = None,
+    unresolved_report_runner: UnresolvedReportRunner | None = None,
 ) -> dict[Stage, Callable[..., PipelineState]]:
     """Build concrete handlers; every handler commits exactly one manifest revision."""
 
@@ -1146,6 +1164,57 @@ def build_stage_handlers(
             head="review",
             depends_on=(manifest["heads"]["current"],),
         )
+        report_heads = ("decision_log", "repair_state", "coverage", "suggestion_pool")
+        if unresolved_report_runner is not None and all(
+            manifest["heads"][head] is not None for head in report_heads
+        ):
+            from .unresolved_report import report_path_for_review
+
+            report = report_path_for_review(review)
+            audit = run_dir / "repair" / f"unresolved-report-{manifest['revision'] + 1:03d}.json"
+            unresolved_report_runner(
+                run_dir=run_dir,
+                decision_log_path=artifact_path(
+                    checked["manifest_path"], manifest, "decision_log"
+                ),
+                repair_state_path=artifact_path(
+                    checked["manifest_path"], manifest, "repair_state"
+                ),
+                coverage_path=artifact_path(checked["manifest_path"], manifest, "coverage"),
+                glossary_decisions_path=(
+                    run_dir / manifest["artifacts"]["glossary_decisions"]["path"]
+                ),
+                suggestion_pool_path=artifact_path(
+                    checked["manifest_path"], manifest, "suggestion_pool"
+                ),
+                current_artifact_path=current,
+                review_artifact_path=review,
+                report_path=report,
+                audit_path=audit,
+            )
+            if not report.is_file() or not audit.is_file():
+                raise ValueError("unresolved report runner did not write both report artifacts")
+            audit_name = f"unresolved_report_model_{manifest['revision'] + 1:03d}"
+            report_name = f"unresolved_report_{manifest['revision'] + 1:03d}"
+            source_dependencies = tuple(
+                cast(str, manifest["heads"][head]) for head in report_heads
+            ) + ("glossary_decisions",)
+            register_artifact(
+                manifest,
+                checked["manifest_path"],
+                name=audit_name,
+                path=audit,
+                kind="unresolved-report-model",
+                depends_on=source_dependencies,
+            )
+            register_artifact(
+                manifest,
+                checked["manifest_path"],
+                name=report_name,
+                path=report,
+                kind="human-review-report",
+                depends_on=(name, audit_name),
+            )
         manifest["review"].update(status="awaiting", sha256=sha256_file(review))
         return _commit(checked, manifest, "review_export", "human_review", "awaiting_human_review")
 
@@ -1156,6 +1225,40 @@ def build_stage_handlers(
         review = Path(manifest["review"]["path"])
         if not review.is_file():
             raise FileNotFoundError(f"review artifact not found: {review}")
+        from .unresolved_report import report_path_for_review
+
+        backfilled_report = report_path_for_review(review)
+        report_is_registered = any(
+            ref["kind"] == "human-review-report"
+            and (run_dir / ref["path"]).resolve() == backfilled_report.resolve()
+            for ref in manifest["artifacts"].values()
+        )
+        backfill_audit = run_dir / "repair" / f"unresolved-report-{manifest['revision']:03d}.json"
+        if backfilled_report.is_file() and backfill_audit.is_file() and not report_is_registered:
+            report_heads = ("decision_log", "repair_state", "coverage", "suggestion_pool")
+            if not all(manifest["heads"][head] is not None for head in report_heads):
+                raise ValueError("backfilled unresolved report lacks required repair dependencies")
+            audit_name = f"unresolved_report_model_{manifest['revision']:03d}"
+            report_name = f"unresolved_report_{manifest['revision']:03d}"
+            register_artifact(
+                manifest,
+                checked["manifest_path"],
+                name=audit_name,
+                path=backfill_audit,
+                kind="unresolved-report-model",
+                depends_on=tuple(
+                    cast(str, manifest["heads"][head]) for head in report_heads
+                )
+                + ("glossary_decisions",),
+            )
+            register_artifact(
+                manifest,
+                checked["manifest_path"],
+                name=report_name,
+                path=backfilled_report,
+                kind="human-review-report",
+                depends_on=(cast(str, manifest["heads"]["review"]), audit_name),
+            )
         if decision == "reject":
             manifest["review"].update(status="rejected", sha256=sha256_file(review))
             review_name = manifest["heads"]["review"]
